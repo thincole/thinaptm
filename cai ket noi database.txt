@@ -1,0 +1,13 @@
+CÁCH 1: Dùng Tailscale (Khuyên dùng — Miễn phí, Cực kỳ an toàn, Như chung mạng LAN)
+Cách này tạo một mạng nội bộ ảo giữa các máy tính với nhau dù ở bất kỳ đâu trên thế giới.
+
+Trên máy chủ (Máy có DB & Server 3000):
+Tải và cài đặt Tailscale.
+Đăng nhập (bằng Gmail/Microsoft).
+Tailscale sẽ cấp cho máy chủ 1 địa chỉ IP cố định (VD: 100.110.120.130).
+Trên máy khách (Máy ở nơi khác):
+Cài Tailscale và đăng nhập cùng tài khoản Google đó.
+Cách dùng:
+Ở Extension/Phần mềm trên máy khách, phần Server URL chỉ cần điền: http://100.110.120.130:3000 (dùng IP Tailscale của máy chủ).
+
+https://tailscale.com/download/windows
