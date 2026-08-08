@@ -9,6 +9,13 @@ echo    Repo: https://github.com/thincole/thinaptm
 echo ====================================================
 echo.
 
+REM Kiem tra va thiet lap identity Git neu chua co
+git config user.name >nul 2>&1
+if errorlevel 1 (
+    git config user.name "thincole"
+    git config user.email "thincole@gmail.com"
+)
+
 if not exist ".git" (
     echo [!] Chua khoi tao Git repository trong thu muc nay.
     echo [*] Dang khoi tao Git va ket noi voi repo thincole/thinaptm...

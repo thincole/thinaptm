@@ -12,6 +12,7 @@ FILES = [
     "prompt_templates.py",
     "recaptcha_farm.py",
     "update.py", 
+    "UPDATE.bat",
     "requirements.txt", 
     "CHAY.bat", 
     "SETUP.bat",
