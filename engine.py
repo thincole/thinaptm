@@ -312,9 +312,8 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=2, proxy=
                     return None
             elif r.status_code == 429:
                 throttle_count += 1
-                wait = min(2 ** attempt + _rnd.uniform(0, 1.5), 30)
-                if attempt == 0:
-                    _log_err(f"upload_image 429 throttled — retry {attempt+1}/{max_retries}, chờ {wait:.0f}s")
+                wait = 4.0 + (attempt * 3.0) + _rnd.uniform(0, 1.5)
+                _log_err(f"upload_image 429 throttled — retry {attempt+1}/{max_retries}, chờ {wait:.1f}s")
                 time.sleep(wait)
                 continue
             elif r.status_code == 401:
@@ -620,7 +619,7 @@ def _find_status(o, out=None):
     return out
 
 
-def poll_video(bearer, ops, cookie=None, max_attempts=90, interval=8, timeout=60, proxy=None):
+def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=3.5, timeout=60, proxy=None):
     """Thăm dò trạng thái render của video qua endpoint media.getMediaUrlRedirect."""
     if not ops:
         return "failed", "ops_empty", None

@@ -92,7 +92,7 @@ def _find_brand():
 WORKERS_PER_ACCOUNT = 4    # Tối ưu: 4 workers (Tạo max = 4)
 GEN_ATTEMPTS = 60          
 # --- Cổng submit THÍCH ỨNG (AIMD):
-SUBMIT_START = 4.0         
+SUBMIT_START = 5.0         
 SUBMIT_MIN = 2.0           
 SUBMIT_MAX = 5.0           # Trần tốc độ lý tưởng (Tốc độ max = 5)
 SUBMIT_UP_AFTER = 5        
@@ -297,11 +297,15 @@ class AccountState:
         self.img_quota_exhausted = False    # True nếu account hết quota generate_image → skip Phase 1, dùng Pillow fallback
         self.proxy = None                  # dict {"http": ..., "https": ...} cho curl_cffi, gán bởi ProxyPool
         self.upload_throttle_streak = 0    # số lần upload 429 liên tiếp → tăng thời gian nghỉ
+        self.submit_throttle_streak = 0    # số lần submit 429 liên tiếp → nghỉ 30s-150s (Quy tắc 2)
         # --- Circuit Breaker (Lớp 1: Ngắt mạch tài khoản khi cookie chết) ---
         self.auth_fail_streak = 0          # số lần auth thất bại liên tiếp
         self._circuit_broken = False       # True khi bị ngắt mạch
         # --- Proxy health tracking ---
         self.proxy_fail_streak = 0         # số lần proxy fail liên tiếp (DNS/connection)
+        # --- Upload Rate Limit (mỗi luồng upload của CÙNG 1 tài khoản cách nhau 10s) ---
+        self.last_upload_ts = 0.0          # thời điểm upload gần nhất của tài khoản này
+        self.upload_lock = threading.Lock() # khóa giãn cách 10s giữa các lần upload của cùng 1 tài khoản
         # --- Cổng submit THÍCH ỨNG (AIMD) ---
         self._submit_max = submit_max          # trần tốc độ do người dùng cài đặt
         self.submit_limit = min(SUBMIT_START, submit_max)   # khởi đầu từ SUBMIT_START hoặc trần
@@ -314,6 +318,14 @@ class AccountState:
 
     def busy_dec(self):
         with self.blk: self.busy = max(0, self.busy - 1)
+
+    def wait_upload_spacing(self, min_interval=10.0):
+        """Bắt buộc mỗi lần upload của CÙNG 1 tài khoản phải cách nhau ít nhất min_interval (10s)."""
+        with self.upload_lock:
+            elapsed = time.time() - self.last_upload_ts
+            if elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+            self.last_upload_ts = time.time()
 
     def acquire_submit(self, stop_check):
         with self._gate:
@@ -331,8 +343,9 @@ class AccountState:
             self._gate.notify()
 
     def on_submit_ok(self):
-        """Submit trót lọt -> tăng dần giới hạn (additive increase) khi đủ chuỗi OK."""
+        """Submit trót lọt -> tăng dần giới hạn khi đủ chuỗi OK."""
         with self._gate:
+            self.submit_throttle_streak = 0
             self._ok_streak += 1
             if self._ok_streak >= SUBMIT_UP_AFTER and self.submit_limit < self._submit_max:
                 self.submit_limit = min(self._submit_max, self.submit_limit + 1)
@@ -340,10 +353,14 @@ class AccountState:
                 self._gate.notify_all()
 
     def on_throttle(self):
-        """Bị throttle -> giảm nhanh giới hạn (multiplicative decrease) để hạ nhiệt."""
+        """Bị throttle -> giảm giới hạn + cho TK nghỉ ngắn 15s-60s theo Rule #2 (Phương án 2)."""
         with self._gate:
             self._ok_streak = 0
             self.submit_limit = max(SUBMIT_MIN, self.submit_limit * SUBMIT_DOWN)
+            self.submit_throttle_streak += 1
+            n = self.submit_throttle_streak
+            secs = min(15.0 * (1.3 ** (n - 1)), 60.0)
+            self.rest(secs, "submit_throttle")
 
     def should_log_throttle(self):
         """True nếu nên ghi 1 dòng log throttle (giới hạn 1 dòng / 30s / account) — tránh ngập log."""
@@ -1917,20 +1934,12 @@ class App(ctk.CTk):
         bar = ctk.CTkFrame(f, fg_color="transparent"); bar.pack(fill="x", pady=10)
         self.btn_run = ctk.CTkButton(bar, text="▶ Bắt đầu", command=self._start, fg_color=AC, hover_color=AC2, height=38, width=120, font=("", 14, "bold")); self.btn_run.pack(side="left")
         ctk.CTkButton(bar, text="■ Dừng", command=self._stop_run, fg_color="#5f6368", height=38, width=90).pack(side="left", padx=6)
-        # ── Cài đặt Tạo + Tốc độ (thay vì hằng số cố định) ──
-        ctk.CTkLabel(bar, text="⚡ Tạo:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(16, 2))
-        self.spn_workers = ctk.CTkEntry(bar, width=45, height=30, font=("", 12, "bold"), justify="center")
-        self.spn_workers.pack(side="left", padx=(0, 2))
-        self.spn_workers.insert(0, str(self.settings.get("workers_per_account", 5)))
-        ctk.CTkLabel(bar, text="Tốc độ:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(8, 2))
-        self.spn_speed = ctk.CTkEntry(bar, width=45, height=30, font=("", 12, "bold"), justify="center")
-        self.spn_speed.pack(side="left", padx=(0, 2))
-        self.spn_speed.insert(0, str(self.settings.get("submit_max", 5)))
+
         ctk.CTkButton(bar, text="↻ Retry lỗi", command=self._retry, fg_color="#9aa0a6", height=38, width=100).pack(side="left", padx=(16, 4))
         ctk.CTkButton(bar, text="🗑 Xóa xong", command=self._clear_done, fg_color="#9aa0a6", height=38, width=100).pack(side="left", padx=4)
         ctk.CTkButton(bar, text="🗑 Xóa Vi Phạm CS", command=self._clear_violation, fg_color="#E57373", hover_color="#EF5350", height=38, width=130).pack(side="left", padx=4)
 
-        self.use_laundering = ctk.BooleanVar(value=self.settings.get("use_laundering", True))
+        self.use_laundering = ctk.BooleanVar(value=self.settings.get("use_laundering", False))
         self.chk_laundering = ctk.CTkCheckBox(bar, text="Rửa ảnh (Bypass 429)", variable=self.use_laundering, font=("", 11), checkbox_width=18, checkbox_height=18)
         self.chk_laundering.pack(side="left", padx=(16, 4))
 
@@ -2646,10 +2655,27 @@ class App(ctk.CTk):
         self._refresh_queue(force=True)
         self._log(f"✏ Đã đổi tên {count} job theo '{naming}'")
 
+    def _ensure_checked_accs_alive(self):
+        """Tự động kiểm tra + re-login lấy lại cookie mới cho các tài khoản được chọn ('Dùng' = True) mà bị chết/hết hạn cookie."""
+        dead_checked = [
+            a for a in self.accounts 
+            if a.get("enabled", True) 
+            and a.get("role") != "donor" 
+            and (not a.get("cookie") or str(a.get("status", "")).strip().lower() != "ok")
+        ]
+        if dead_checked:
+            emails_str = ", ".join([a.get("email", "?") for a in dead_checked[:3]])
+            if len(dead_checked) > 3: emails_str += "..."
+            self._log(f"🔑 [Auto Recovery] Phát hiện {len(dead_checked)} tài khoản được chọn bị chết cookie [{emails_str}] ➔ Tự động re-login lấy cookie mới...")
+            try:
+                self._do_health_check()
+            except Exception as ex:
+                self._log(f"⚠️ [Auto Recovery] Lỗi health check: {ex}")
+
     def _start(self):
         if self._running: return
-        accs = [a for a in self.accounts if a.get("cookie") and a.get("status") == "ok" and a.get("enabled", True) and a.get("role") != "donor"]
-        if not accs: messagebox.showwarning("Thiếu tài khoản", "Vào tab Tài khoản, thêm + Check/Chuẩn bị."); return
+        enabled_accs = [a for a in self.accounts if a.get("enabled", True) and a.get("role") != "donor"]
+        if not enabled_accs: messagebox.showwarning("Thiếu tài khoản", "Vào tab Tài khoản, tích chọn ít nhất 1 tài khoản."); return
         # Nếu có dòng đang được check → chỉ chạy các dòng đã check
         checked_indices = [i for i, v in enumerate(self.check_vars) if v.get()]
         if checked_indices:
@@ -2659,16 +2685,8 @@ class App(ctk.CTk):
         else:
             todo = [j for j in self.jobs if j["status"] in ("chờ", "lỗi")]
             if not todo: messagebox.showinfo("Trống", "Không có job chờ."); return
-        # Đọc cài đặt Tạo + Tốc độ từ giao diện
-        try:
-            wpa = max(1, int(self.spn_workers.get().strip()))
-        except (ValueError, AttributeError):
-            wpa = WORKERS_PER_ACCOUNT
-        try:
-            user_speed = max(1, int(self.spn_speed.get().strip()))
-        except (ValueError, AttributeError):
-            user_speed = SUBMIT_MAX
-        self._user_submit_max = float(user_speed)   # cache cho AccountState.on_submit_ok dùng
+        wpa = 5
+        self._user_submit_max = SUBMIT_MAX
         # Chốt danh sách key Gemini cho phiên chạy (mỗi dòng 1 key) + reset key hỏng
         self._gemini_active = [l.strip() for l in self.txt_gemini.get("1.0", "end").splitlines() if l.strip()]
         self._gemini_bad = set()
@@ -2688,7 +2706,13 @@ class App(ctk.CTk):
         self._log(f"🎙 Giọng nói: {E.VOICE_DESC[:80]}{'…' if len(E.VOICE_DESC) > 80 else ''}")
         threading.Thread(target=self._run, args=(accs, todo, wpa), daemon=True).start()
 
-    def _run(self, accs, todo, wpa):
+    def _run(self, accs_placeholder, todo, wpa):
+        self._ensure_checked_accs_alive()
+        accs = [a for a in self.accounts if a.get("cookie") and str(a.get("status", "")).strip().lower() == "ok" and a.get("enabled", True) and a.get("role") != "donor"]
+        if not accs:
+            self._log("❌ Không có tài khoản nào sẵn sàng sau khi check.")
+            self._running = False
+            return
         """Mô hình veo3top: 1 HÀNG ĐỢI CHUNG + mỗi tài khoản chạy wpa worker, tất cả pull từ hàng đợi chung.
         Account throttle -> nghỉ (cooldown), account khác gánh; job requeue. Submit KHÔNG khóa/không sleep —
         poll inline tự giãn nhịp (worker bận ~60-90s/video), tận dụng render server-side song song."""
@@ -2797,7 +2821,8 @@ class App(ctk.CTk):
             self._run_done0 = sum(1 for j in todo if j["status"] == "xong")
             self._done_timestamps = collections.deque()   # ghi timestamp mỗi video xong → tính tốc độ trượt 10 phút
 
-            upload_sem = threading.Semaphore(3)   # max 3 upload đồng thời → tránh 429
+            n_upload_threads = max(3, len(accs) * 3)
+            upload_sem = threading.Semaphore(n_upload_threads)   # số luồng upload = số TK × 3 (9 luồng cho 3 TK)
             jobq = queue.Queue()
             for j in todo:
                 j["_cycles"] = 0
@@ -2832,6 +2857,7 @@ class App(ctk.CTk):
                     with st.lock:
                         ref_mid = st.refcache.get(job["ref"])
                     if not ref_mid:
+                        st.wait_upload_spacing(10.0)  # giãn cách 10s giữa các lần upload cùng 1 TK
                         upload_sem.acquire()
                         try:
                             ref_mid = E.upload_image(bearer, project, job["ref"], proxy=st.proxy)
@@ -2987,11 +3013,16 @@ class App(ctk.CTk):
                         self._log(f"  🔒 {st.email[:16]} 401 -> nghỉ {AUTH_REST//60}p, đổi tài khoản.")
                         return "retry_soft"
                     elif kind == "throttle":
-                        # GIỚI HẠN TỐC ĐỘ (USER_REQUESTS_THROTTLED) -> tự GIẢM tốc độ submit + nghỉ ngắn, TỰ HỒI.
-                        st.on_throttle()                          # AIMD - : giảm nhanh giới hạn submit
-                        if st.should_log_throttle():
-                            self._log(f"  ⏳ {st.email[:16]}: 429 GIỚI HẠN TỐC ĐỘ — tự giảm tốc (còn {int(st.submit_limit)} luồng submit), sẽ hồi.")
-                        time.sleep(THROTTLE_SLEEP + random.uniform(0, 1.0))
+                        st.on_throttle()
+                        if self.proxy_pool and self.proxy_pool.has_proxies():
+                            new_px, old_px = self.proxy_pool.rotate(st.email)
+                            if new_px:
+                                st.proxy = self.proxy_pool.get_dict(st.email)
+                                st.clear_rest()
+                                self._log(f"  🔄 {st.email[:16]}: Submit 429 → Tự động xoay Proxy mới (xóa bỏ chờ resting)...")
+                        if st.rest_remaining() > 0 and st.should_log_throttle():
+                            self._log(f"  ⏳ {st.email[:16]}: 429 — nghỉ {st.rest_remaining():.0f}s hạ nhiệt.")
+                            time.sleep(min(3.0, st.rest_remaining()))
                     elif kind == "quota_hard":
                         # HẾT QUOTA THẬT (reason quota/credit/daily) -> cách ly DÀI + đổi account (grind vô ích).
                         st.rest(QUOTA_HARD_REST, "quota")
@@ -3338,20 +3369,9 @@ class App(ctk.CTk):
             font=("", 11)
         ).pack(side="left", padx=(0, 12))
 
-        self._sp_use_laundering = ctk.BooleanVar(value=self.settings.get("shopee_use_laundering", True))
+        self._sp_use_laundering = ctk.BooleanVar(value=self.settings.get("shopee_use_laundering", False))
         self._sp_chk_laundering = ctk.CTkCheckBox(row1_5, text="Rửa ảnh (Bypass 429)", variable=self._sp_use_laundering, font=("", 11), checkbox_width=18, checkbox_height=18)
         self._sp_chk_laundering.pack(side="left", padx=(4, 0))
-
-        # Cài đặt Tạo + Tốc độ trực tiếp trên tab Shopee
-        ctk.CTkLabel(row1_5, text="⚡ Tạo:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(12, 2))
-        self._sp_workers = ctk.CTkEntry(row1_5, width=42, height=28, font=("", 12, "bold"), justify="center")
-        self._sp_workers.pack(side="left", padx=(0, 4))
-        self._sp_workers.insert(0, str(self.settings.get("workers_per_account", 5)))
-
-        ctk.CTkLabel(row1_5, text="Tốc độ:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(4, 2))
-        self._sp_speed = ctk.CTkEntry(row1_5, width=42, height=28, font=("", 12, "bold"), justify="center")
-        self._sp_speed.pack(side="left", padx=(0, 4))
-        self._sp_speed.insert(0, str(self.settings.get("submit_max", 5)))
 
         # Row 2: Thư mục người mẫu & Thư mục lưu
         row2 = ctk.CTkFrame(cfg, fg_color="transparent"); row2.pack(fill="x", padx=12, pady=(4, 10))
@@ -4116,10 +4136,9 @@ class App(ctk.CTk):
             if not p["img"]:
                 messagebox.showwarning("Thiếu ảnh SP", f"Sản phẩm '{p['name']}' chưa có ảnh."); return
 
-        # Lấy tài khoản sẵn sàng (loại trừ tài khoản donor)
-        accs = [a for a in self.accounts if a.get("enabled", True) and a.get("cookie") and a.get("status") == "ok" and a.get("role") != "donor"]
-        if not accs:
-            messagebox.showerror("Lỗi", "Không có tài khoản nào sẵn sàng.\nHãy thêm và check tài khoản ở tab Tài khoản."); return
+        enabled_accs = [a for a in self.accounts if a.get("enabled", True) and a.get("role") != "donor"]
+        if not enabled_accs:
+            messagebox.showerror("Lỗi", "Không có tài khoản nào được chọn.\nHãy tích chọn ở tab Tài khoản."); return
 
         self._shopee_running = True
         self._shopee_stop_flag = False
@@ -4159,25 +4178,22 @@ class App(ctk.CTk):
         _sp_cached_ai_prompt = self._sp_ai_prompt.get()
         _sp_cached_gemini_keys = [l.strip() for l in self.txt_gemini.get("1.0", "end").splitlines() if l.strip()]
         _sp_cached_groq_keys = [l.strip() for l in self.txt_groq_keys.get("1.0", "end").splitlines() if l.strip()]
-        try:
-            _sp_cached_wpa = max(1, int(self._sp_workers.get().strip()))
-        except Exception:
-            try:
-                _sp_cached_wpa = max(1, int(self.spn_workers.get().strip()))
-            except Exception:
-                _sp_cached_wpa = WORKERS_PER_ACCOUNT
-        try:
-            _sp_cached_submit_max = max(1, float(self._sp_speed.get().strip()))
-        except Exception:
-            try:
-                _sp_cached_submit_max = max(1, float(self.spn_speed.get().strip()))
-            except Exception:
-                _sp_cached_submit_max = SUBMIT_MAX
+        _sp_cached_wpa = 5
+        _sp_cached_submit_max = SUBMIT_MAX
         # Gắn mô tả giọng nói cố định vào engine (ưu tiên nhập tay, nếu trống → dùng preset theo ngôn ngữ)
         manual_voice = self.ent_voice_desc.get().strip()
         E.VOICE_DESC = manual_voice if manual_voice else E.get_voice_for_lang(lang_code)
         
         def work():
+            self._sp_log_msg("🔍 Kiểm tra trạng thái tài khoản & khôi phục cookie...")
+            self._ensure_checked_accs_alive()
+            accs = [a for a in self.accounts if a.get("enabled", True) and a.get("cookie") and str(a.get("status", "")).strip().lower() == "ok" and a.get("role") != "donor"]
+            if not accs:
+                self._sp_log_msg("❌ Không có tài khoản nào sẵn sàng sau khi check.")
+                self.after(0, lambda: self._sp_btn_start.configure(state="normal"))
+                self.after(0, lambda: self._sp_btn_stop.configure(state="disabled"))
+                self._shopee_running = False
+                return
             import base64 as b64mod
             results = []
             total = len(products)
@@ -4301,7 +4317,8 @@ class App(ctk.CTk):
             self._sp_eta_products = products
 
             # ── Shared Job Queue ──
-            upload_sem = threading.Semaphore(1)   # CHỈ 1 upload tại 1 thời điểm (giống AutoVeo3) → tránh burst 429
+            n_upload_threads = max(3, len(accs) * 3)
+            upload_sem = threading.Semaphore(n_upload_threads)   # số luồng upload = số TK × 3 (9 luồng cho 3 TK)
             jobq = queue.Queue()
             for idx, prod in enumerate(products):
                 prod["_idx"] = idx
@@ -4444,7 +4461,8 @@ class App(ctk.CTk):
                                     if ev: ev.set()
                                 return "retry_soft"
                             time.sleep(random.uniform(2, 5))  # stagger ngoài semaphore → tránh giữ lock
-                            upload_sem.acquire()  # CHỜ đến lượt (chỉ 1 upload tại 1 thời điểm)
+                            st.wait_upload_spacing(10.0)
+                            upload_sem.acquire()  # CHỜ đến lượt
                             self._sp_log_msg("  📤 Upload ảnh người mẫu...")
                             try:
                                 mid = E.upload_image(bearer, project, model_img, proxy=st.proxy)
@@ -4747,10 +4765,16 @@ class App(ctk.CTk):
                                 st.on_submit_ok()  # AIMD +
                                 vid_ok = True; break
                             elif v_status == "throttle":
-                                st.on_throttle()  # AIMD -
-                                if st.should_log_throttle():
-                                    self._sp_log_msg(f"    ⏳ {st.email[:16]}: 429 — tự giảm tốc (còn {int(st.submit_limit)} luồng)")
-                                time.sleep(THROTTLE_SLEEP + random.uniform(0, 1.0))
+                                st.on_throttle()
+                                if self.proxy_pool and self.proxy_pool.has_proxies():
+                                    new_px, old_px = self.proxy_pool.rotate(st.email)
+                                    if new_px:
+                                        st.proxy = self.proxy_pool.get_dict(st.email)
+                                        st.clear_rest()
+                                        self._sp_log_msg(f"    🔄 {st.email[:16]}: Submit 429 → Tự động xoay Proxy mới (xóa bỏ chờ resting)...")
+                                if st.rest_remaining() > 0 and st.should_log_throttle():
+                                    self._sp_log_msg(f"    ⏳ {st.email[:16]}: 429 — nghỉ {st.rest_remaining():.0f}s")
+                                    time.sleep(min(3.0, st.rest_remaining()))
                             elif v_status == "quota_hard":
                                 st.rest(QUOTA_HARD_REST, "quota")
                                 self._sp_log_msg(f"    ⛔ {st.email[:16]} HẾT QUOTA → cách ly, đổi tài khoản")
@@ -5148,7 +5172,7 @@ class App(ctk.CTk):
                                                  font=("", 11), checkbox_width=18, checkbox_height=18)
         self._sv_chk_ghep_anh.pack(side="left", padx=(0, 12))
 
-        self._sv_use_laundering = ctk.BooleanVar(value=self.settings.get("sv_use_laundering", True))
+        self._sv_use_laundering = ctk.BooleanVar(value=self.settings.get("sv_use_laundering", False))
         ctk.CTkCheckBox(row2, text="🧼 Rửa ảnh (Bypass 429)", variable=self._sv_use_laundering,
                         font=("", 11), checkbox_width=18, checkbox_height=18).pack(side="left", padx=(0, 12))
 
@@ -5248,16 +5272,7 @@ class App(ctk.CTk):
                                            height=42, width=100, state="disabled")
         self._sv_btn_stop.pack(side="left", padx=(0, 4))
 
-        # ── Cài đặt Tạo + Tốc độ cho Server Video ──
-        ctk.CTkLabel(btn_row, text="⚡ Tạo:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(8, 2))
-        self._sv_spn_workers = ctk.CTkEntry(btn_row, width=45, height=30, font=("", 12, "bold"), justify="center")
-        self._sv_spn_workers.pack(side="left", padx=(0, 2))
-        self._sv_spn_workers.insert(0, str(self.settings.get("sv_workers_per_account", 5)))
 
-        ctk.CTkLabel(btn_row, text="Tốc độ:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(8, 2))
-        self._sv_spn_speed = ctk.CTkEntry(btn_row, width=45, height=30, font=("", 12, "bold"), justify="center")
-        self._sv_spn_speed.pack(side="left", padx=(0, 2))
-        self._sv_spn_speed.insert(0, str(self.settings.get("sv_submit_max", 5)))
 
         self._sv_btn_open = ctk.CTkButton(btn_row, text="📂 Mở thư mục",
                                            command=lambda: os.startfile(self._sv_outdir.get().strip()) if os.path.isdir(self._sv_outdir.get().strip()) else None,
@@ -6118,9 +6133,9 @@ class App(ctk.CTk):
         if not out_dir:
             messagebox.showwarning("Thiếu", "Hãy chọn thư mục lưu video."); return
 
-        accs = [a for a in self.accounts if a.get("enabled", True) and a.get("cookie") and a.get("status") == "ok" and a.get("role") != "donor"]
-        if not accs:
-            messagebox.showerror("Lỗi", "Không có tài khoản nào sẵn sàng.\nHãy thêm và check tài khoản ở tab Tài khoản."); return
+        enabled_accs = [a for a in self.accounts if a.get("enabled", True) and a.get("role") != "donor"]
+        if not enabled_accs:
+            messagebox.showerror("Lỗi", "Không có tài khoản nào được chọn.\nHãy tích chọn ở tab Tài khoản."); return
 
         self._sv_running = True
         self._sv_stop_flag = False
@@ -6146,8 +6161,8 @@ class App(ctk.CTk):
         client_id = self._sv_client_entry.get().strip()
         ai_mode = self._sv_ai_prompt.get()  # "Gemini" | "Groq" | "Template (mặc định)" | "📺 TVC Template"
 
-        _sv_cached_wpa = max(1, int(self._sv_spn_workers.get().strip() or "5"))
-        _sv_cached_submit_max = max(1, int(self._sv_spn_speed.get().strip() or "5"))
+        _sv_cached_wpa = 5
+        _sv_cached_submit_max = SUBMIT_MAX
 
         self.settings["sv_remove_wm"] = remove_wm
         self.settings["sv_del_img"] = del_img
@@ -6173,6 +6188,16 @@ class App(ctk.CTk):
         E.VOICE_DESC = manual_voice if manual_voice else E.get_voice_for_lang(lang_code)
 
         def work():
+            self._sv_log_msg("🔍 Kiểm tra trạng thái tài khoản & khôi phục cookie...")
+            self._ensure_checked_accs_alive()
+            accs = [a for a in self.accounts if a.get("enabled", True) and a.get("cookie") and str(a.get("status", "")).strip().lower() == "ok" and a.get("role") != "donor"]
+            if not accs:
+                self._sv_log_msg("❌ Không có tài khoản nào sẵn sàng sau khi check.")
+                self.after(0, lambda: self._sv_btn_start.configure(state="normal"))
+                self.after(0, lambda: self._sv_btn_stop.configure(state="disabled"))
+                self.after(0, lambda: self._sv_btn_claim.configure(state="normal"))
+                self._sv_running = False
+                return
             import base64 as b64mod
             total = len(products)
             # Dùng thư mục tạm cục bộ để render (tránh lag/treo khi ghi vào Google Drive ảo)
@@ -6245,24 +6270,23 @@ class App(ctk.CTk):
             total_workers = len(states) * wpa
             self._sv_log_msg(f"🚀 {len(states)} TK × {wpa} luồng = {total_workers} luồng. Bắt đầu {total} SP.")
 
-            # Job queue: chia đều SP cho từng TK (round-robin)
-            per_acc_queues = {i: queue.Queue() for i in range(len(states))}
+            # Shared Job Queue: 1 Hàng Đợi Chung cho tất cả TK (Mô hình veo3top tối ưu bứt tốc)
+            jobq = queue.Queue()
             for idx, prod in enumerate(products):
                 prod["_idx"] = idx
                 prod["_cycles"] = 0
-                acc_idx = idx % len(states)
-                per_acc_queues[acc_idx].put(prod)
-            # Log phân bổ
-            for ai, st in enumerate(states):
-                self._sv_log_msg(f"  📋 {st.email[:20]}: {per_acc_queues[ai].qsize()} SP")
+                jobq.put(prod)
+            self._sv_log_msg(f"  📋 Hàng đợi chung: {jobq.qsize()} SP — tất cả {len(states)} TK tự động nạp chung")
             done_flag = [False]
             progress_count = [0]
             results_lock = threading.Lock()
             success_count = [0]
             error_count = [0]
-            upload_sem = threading.Semaphore(4)
-            # Tự động tối ưu số luồng ghép video (FFmpeg) đồng thời dựa trên số nhân CPU của máy khách
-            merge_sem = threading.Semaphore(max(2, os.cpu_count() // 8))
+            n_upload_threads = max(3, len(states) * 3)
+            upload_sem = threading.Semaphore(n_upload_threads)  # Tổng luồng upload = Số TK đang chạy x 3 (9 luồng cho 3 TK)
+            self._sv_log_msg(f"📤 Khởi tạo {n_upload_threads} luồng upload song song (Số TK đang chạy: {len(states)} × 3)")
+            # Tự động tối ưu số luồng ghép video (FFmpeg) đồng thời dựa trên số nhân CPU của máy khách (14 luồng cho 56 nhân)
+            merge_sem = threading.Semaphore(max(4, os.cpu_count() // 4))
 
             # 2h inactivity timeout checker
             def _inactivity_checker():
@@ -6409,6 +6433,7 @@ class App(ctk.CTk):
                     n_segments = len(prompts)
 
                 # --- Upload ảnh SP ---
+                st.wait_upload_spacing(10.0)  # Giãn cách 10s giữa các lần upload của CÙNG 1 tài khoản
                 with upload_sem:
                     if self._sv_stop_flag: return "retry_soft"
                     self._sv_log_msg(f"  📤 Upload ảnh SP...")
@@ -6484,10 +6509,16 @@ class App(ctk.CTk):
                             return "retry_soft"
                         if v_status == "throttle":
                             st.on_throttle()
-                            if st.should_log_throttle():
-                                self._sv_log_msg(f"    ⏳ {st.email[:16]}: 429 — tự giảm tốc")
-                            time.sleep(THROTTLE_SLEEP + random.uniform(0, 1.0))
-                            return "retry_soft"
+                            if self.proxy_pool and self.proxy_pool.has_proxies():
+                                new_px, old_px = self.proxy_pool.rotate(st.email)
+                                if new_px:
+                                    st.proxy = self.proxy_pool.get_dict(st.email)
+                                    st.clear_rest()
+                                    self._sv_log_msg(f"    🔄 {st.email[:16]}: Submit 429 → Tự động xoay Proxy mới (xóa bỏ chờ resting)...")
+                            if st.rest_remaining() > 0:
+                                if st.should_log_throttle():
+                                    self._sv_log_msg(f"    ⏳ {st.email[:16]}: 429 — nghỉ {st.rest_remaining():.0f}s")
+                                return "retry_soft"
                         if v_status == "quota_hard":
                             st.rest(QUOTA_HARD_REST, "quota")
                             self._sv_log_msg(f"    ⛔ {st.email[:16]} HẾT QUOTA → cách ly")
@@ -6691,13 +6722,12 @@ class App(ctk.CTk):
                         except:
                             pass
 
-            # Spawn workers — mỗi TK có queue riêng, mỗi TK chạy wpa worker
+            # Spawn workers — 1 Hàng đợi chung, tất cả TK pull song song
             with ThreadPoolExecutor(max_workers=total_workers) as executor:
                 futures = []
-                for acc_idx, st in enumerate(states):
-                    q = per_acc_queues[acc_idx]
+                for st in states:
                     for _ in range(wpa):
-                        futures.append(executor.submit(worker, st, q))
+                        futures.append(executor.submit(worker, st, jobq))
                 for fut in futures:
                     fut.result()
 
@@ -6829,8 +6859,8 @@ class App(ctk.CTk):
                 # Giọng nói cố định
                 "voice_desc": self.ent_voice_desc.get().strip(),
                 # Tạo + Tốc độ settings
-                "workers_per_account": int(self.spn_workers.get().strip() or 5),
-                "submit_max": int(self.spn_speed.get().strip() or 5),
+                "workers_per_account": 5,
+                "submit_max": 5,
                 # Telegram settings
                 "tg_token": self.ent_tg_token.get().strip(),
                 "tg_chatid": self.ent_tg_chatid.get().strip(),
@@ -6871,8 +6901,8 @@ class App(ctk.CTk):
                     "sv_ghep_anh": self._sv_ghep_anh.get(),
                     "sv_use_laundering": self._sv_use_laundering.get(),
                     "sv_ai_prompt": self._sv_ai_prompt.get(),
-                    "sv_workers_per_account": int(self._sv_spn_workers.get().strip() or "5"),
-                    "sv_submit_max": int(self._sv_spn_speed.get().strip() or "5"),
+                    "sv_workers_per_account": 5,
+                    "sv_submit_max": 5,
                     "sv_naming": self._sv_naming.get(),
                     "sv_out_dir": self._sv_outdir.get().strip(),
                     "sv_claim_limit": self._sv_claim_limit.get().strip(),
