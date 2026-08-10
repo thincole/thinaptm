@@ -3448,3 +3448,12 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 78. Khắc Phục Lỗi Unpack Tuple 3 Phần Tử Trong Nút Auto Login & Health Check (2026-08-10)
+- **Nguyên nhân & Khắc phục**:
+  - **Nguyên nhân:** Khi gọi `E.bearer_from_cookie()`, hàm trả về tuple 3 phần tử `(token, email, new_cookie)`. Tuy nhiên tại các điểm gọi trong `_auto_login()`, `_check_accs()` và `_do_health_check()`, mã lệnh cũ sử dụng cú pháp bóc tách 2 phần tử (`b, em = E.bearer_from_cookie(...)`), dẫn đến lỗi ngầm `ValueError: too many values to unpack (expected 2)` làm luồng ngầm bị ngắt và dừng ở dòng `🩺 Đang xác minh cookie với Google Labs...`.
+  - **Giải pháp xử lý:** Đã cập nhật lại toàn bộ 9 vị trí gọi `bearer_from_cookie()` trong `thin_aptm.py`, bóc tách an toàn 3 phần tử.
+  - **Kết quả:** Nút **Auto login** và **Check** chạy mượt mà 100%, tự động làm tươi và xác minh tất cả cookie mà không bị dừng hay treo giao diện!
+
+
+---
