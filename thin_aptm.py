@@ -1557,9 +1557,11 @@ class App(ctk.CTk):
         self.opt_aspect.set(self.settings.get("aspect", "Dọc 9:16 (TikTok)"))
         
         ctk.CTkLabel(rs, text="Upload/TK:").pack(side="left")
-        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["1", "2", "3", "4", "5", "6", "8", "10"], width=60)
+        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["4", "5", "6", "7", "8"], width=60)
         self.opt_upload_threads_per_acc.pack(side="left", padx=(4, 12))
-        self.opt_upload_threads_per_acc.set(self.settings.get("gen_upload_threads_per_acc", "3"))
+        saved_gen_up = self.settings.get("gen_upload_threads_per_acc", "4")
+        if saved_gen_up in ("1", "2", "3"): saved_gen_up = "4"
+        self.opt_upload_threads_per_acc.set(saved_gen_up)
 
         ctk.CTkLabel(rs, text="Đặt tên:").pack(side="left")
         self.opt_naming = ctk.CTkOptionMenu(rs, values=["Đặt tên theo ảnh", "13 ký tự đầu prompt", "Số thứ tự (001...)", "40 ký tự đầu chủ đề"], width=150)
@@ -2853,7 +2855,7 @@ class App(ctk.CTk):
             todo = [j for j in self.jobs if j["status"] in ("chờ", "lỗi")]
             if not todo: messagebox.showinfo("Trống", "Không có job chờ."); return
         upload_per_acc = int(self.opt_upload_threads_per_acc.get())
-        wpa = upload_per_acc + 2
+        wpa = max(4, min(8, upload_per_acc))
         self._user_submit_max = float(wpa)
         # Chốt danh sách key Gemini cho phiên chạy (mỗi dòng 1 key) + reset key hỏng
         self._gemini_active = [l.strip() for l in self.txt_gemini.get("1.0", "end").splitlines() if l.strip()]
@@ -3694,9 +3696,11 @@ class App(ctk.CTk):
         sp_up_box = ctk.CTkFrame(self._sp_btn_row, fg_color=CARD, corner_radius=8, height=42)
         sp_up_box.pack(side="left", padx=(6, 0))
         ctk.CTkLabel(sp_up_box, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(10, 4), pady=6)
-        self._sp_upload_threads_per_acc = ctk.CTkOptionMenu(sp_up_box, values=["1", "2", "3", "4", "5", "6", "8", "10"], width=60, height=28)
+        self._sp_upload_threads_per_acc = ctk.CTkOptionMenu(sp_up_box, values=["4", "5", "6", "7", "8"], width=60, height=28)
         self._sp_upload_threads_per_acc.pack(side="left", padx=(0, 8), pady=6)
-        self._sp_upload_threads_per_acc.set(self.settings.get("shopee_upload_threads_per_acc", "3"))
+        saved_sp_up = self.settings.get("shopee_upload_threads_per_acc", "4")
+        if saved_sp_up in ("1", "2", "3"): saved_sp_up = "4"
+        self._sp_upload_threads_per_acc.set(saved_sp_up)
 
         self._shopee_running = False
         self._shopee_stop_flag = False
@@ -4368,7 +4372,7 @@ class App(ctk.CTk):
         _sp_cached_gemini_keys = [l.strip() for l in self.txt_gemini.get("1.0", "end").splitlines() if l.strip()]
         _sp_cached_groq_keys = [l.strip() for l in self.txt_groq_keys.get("1.0", "end").splitlines() if l.strip()]
         upload_per_acc = int(self._sp_upload_threads_per_acc.get())
-        _sp_cached_wpa = upload_per_acc + 2
+        _sp_cached_wpa = max(4, min(8, upload_per_acc))
         _sp_cached_submit_max = float(_sp_cached_wpa)
         # Gắn mô tả giọng nói cố định vào engine (ưu tiên nhập tay, nếu trống → dùng preset theo ngôn ngữ)
         manual_voice = self.ent_voice_desc.get().strip()
@@ -5478,9 +5482,11 @@ class App(ctk.CTk):
         sv_up_box = ctk.CTkFrame(btn_row, fg_color=CARD, corner_radius=8, height=42)
         sv_up_box.pack(side="left", padx=(6, 0))
         ctk.CTkLabel(sv_up_box, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(10, 4), pady=6)
-        self._sv_upload_threads_per_acc = ctk.CTkOptionMenu(sv_up_box, values=["1", "2", "3", "4", "5", "6", "8", "10"], width=60, height=28)
+        self._sv_upload_threads_per_acc = ctk.CTkOptionMenu(sv_up_box, values=["4", "5", "6", "7", "8"], width=60, height=28)
         self._sv_upload_threads_per_acc.pack(side="left", padx=(0, 8), pady=6)
-        self._sv_upload_threads_per_acc.set(self.settings.get("sv_upload_threads_per_acc", "3"))
+        saved_sv_up = self.settings.get("sv_upload_threads_per_acc", "4")
+        if saved_sv_up in ("1", "2", "3"): saved_sv_up = "4"
+        self._sv_upload_threads_per_acc.set(saved_sv_up)
 
         # --- Middle Split Container (Horizontal: 50% / 50%) ---
         middle_split = ctk.CTkFrame(f, fg_color="transparent")
@@ -6402,7 +6408,7 @@ class App(ctk.CTk):
         ai_mode = self._sv_ai_prompt.get()  # "Gemini" | "Groq" | "Template (mặc định)" | "📺 TVC Template"
 
         upload_per_acc = int(self._sv_upload_threads_per_acc.get())
-        _sv_cached_wpa = upload_per_acc + 2
+        _sv_cached_wpa = max(4, min(8, upload_per_acc))
         _sv_cached_submit_max = float(_sv_cached_wpa)
 
         self.settings["sv_remove_wm"] = remove_wm
