@@ -3468,3 +3468,12 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 80. Ép Khung Chỉ Số "⚡ Tạo" (Busy Workers) Trong Khoảng Min = 4 Đến Max = 8 Khi Đang Chạy (2026-08-11)
+- **Cải tiến số luồng tạo video**:
+  - Đã cập nhật thanh chọn `📤 Upload/TK:` ở cả 3 tab (Tạo video, Shopee Video, Server Video) trên giao diện [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py):
+    - Đổi dải tùy chọn thành `["4", "5", "6", "7", "8"]` với mức mặc định tối thiểu là **4**. Tự động nâng các máy đang lưu cấu hình cũ (1, 2, 3) lên **4**.
+    - Ràng buộc công thức khởi tạo worker theo tài khoản `wpa = max(4, min(8, upload_per_acc))` để đảm bảo khi phiên chạy bắt đầu, chỉ số **`⚡ Tạo`** của từng tài khoản luôn được duy trì cố định trong dải **Min = 4** đến **Max = 8**.
+
+
+---
