@@ -6731,10 +6731,16 @@ class App(ctk.CTk):
                     st.proxy_fail_streak = 0  # Upload OK → reset proxy streak
                     self._sv_log_msg(f"  ✅ Media ID: {mid[:20]}...")
 
-                # --- Tạo video từng segment ---
+                # --- Tạo video từng segment (Tự động dùng lại segment đã hoàn thành trong temp) ---
                 clip_paths = []
                 for seg_idx, prompt in enumerate(prompts):
                     if self._sv_stop_flag: return "retry_soft"
+                    clip_path = os.path.join(temp_dir, f"sv_{item_id}_seg{seg_idx}.mp4")
+                    if os.path.exists(clip_path) and os.path.getsize(clip_path) > 100 * 1024:
+                        self._sv_log_msg(f"  ⚡ Segment {seg_idx+1}/{n_segments}: Đã hoàn thành sẵn ({os.path.getsize(clip_path)//1024}KB) → Dùng lại, không tạo lại!")
+                        clip_paths.append(clip_path)
+                        continue
+
                     self._sv_log_msg(f"  🎬 Segment {seg_idx+1}/{n_segments}...")
 
                     # AIMD gating: chờ slot submit
