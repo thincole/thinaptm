@@ -145,13 +145,37 @@ def _http_post(url, headers, data=None, **kwargs):
 
 
 # ---------- AUTH ----------
+def update_cookie_string(old_cookie, set_cookie_headers):
+    """Cập nhật các cookie mới từ Set-Cookie headers vào chuỗi cookie cũ."""
+    if not set_cookie_headers:
+        return old_cookie
+    if isinstance(set_cookie_headers, str):
+        set_cookie_headers = [set_cookie_headers]
+    
+    cookie_dict = {}
+    for part in old_cookie.split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            cookie_dict[k.strip()] = v.strip()
+            
+    for set_cookie in set_cookie_headers:
+        first_part = set_cookie.split(";")[0]
+        if "=" in first_part:
+            k, v = first_part.strip().split("=", 1)
+            cookie_dict[k.strip()] = v.strip()
+            
+    return "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+
+
 def bearer_from_cookie(cookie, timeout=25, proxy=None):
     if not cookie:
-        return None, None
+        return None, None, None
     H = {"Cookie": cookie, "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "application/json"}
     try:
         r = cffi.get("https://labs.google/fx/api/auth/session", headers=H, **_kw(timeout, proxy=proxy))
         if r.status_code == 200:
+            set_cookies = r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") else r.headers.get("set-cookie")
+            new_cookie = update_cookie_string(cookie, set_cookies) if set_cookies else cookie
             j = r.json() or {}
             exp = j.get("expires")
             if exp:
@@ -159,15 +183,15 @@ def bearer_from_cookie(cookie, timeout=25, proxy=None):
                     from datetime import datetime
                     if datetime.fromisoformat(str(exp).replace("Z", "+00:00")).timestamp() < time.time() + 120:
                         _log_err("bearer_from_cookie: Cookie expired or close to expiration.")
-                        return None, None
+                        return None, None, None
                 except Exception as e:
                     _log_err(f"bearer_from_cookie date check exception: {e}")
-            return j.get("access_token"), (j.get("user") or {}).get("email")
+            return j.get("access_token"), (j.get("user") or {}).get("email"), new_cookie
         else:
             _log_err(f"bearer_from_cookie failed status: {r.status_code}, response: {r.text[:200]}")
     except Exception as e:
         _log_err(f"bearer_from_cookie exception: {e}")
-    return None, None
+    return None, None, None
 
 
 def get_project(cookie, proxy=None):

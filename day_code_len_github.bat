@@ -25,27 +25,22 @@ if not exist ".git" (
     echo.
 )
 
-echo [1/3] Dang kiem tra va them cac file vao Git (tuan thu .gitignore)...
+echo [1/3] Dang kiem tra va them cac file vao Git...
 git add .
 echo.
 
-echo [2/3] Nhap ghi chu cho ban cap nhat nay (Commit Message):
-set /p commit_msg="> Noi dung (An Enter de dung mac dinh 'Update thinaptm'): "
-if "%commit_msg%"=="" set commit_msg=Update thinaptm
-
-echo.
-echo [*] Dang tao Commit: "%commit_msg%"...
-git commit -m "%commit_msg%"
+echo [2/3] Dang tao Commit...
+git commit -m "Update ThinAPTM 1.2.0"
 
 echo.
 echo [3/3] Dang day code len GitHub (thincole/thinaptm - main)...
-git push -u origin main
+git push origin main
 
 if errorlevel 1 (
     echo.
     echo ====================================================
     echo [!] DAY CODE THAT BAI!
-    echo Neu GitHub bao loi conflict/rejected (cho kho GitHub da co file san):
+    echo Neu GitHub bao loi conflict:
     echo   -> Mo CMD va chay: git pull origin main --rebase
     echo   -> Sau do chay lai day_code_len_github.bat
     echo ====================================================

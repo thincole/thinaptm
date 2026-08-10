@@ -3,3 +3,7 @@ customtkinter
 DrissionPage
 pyotp
 pillow
+edge-tts
+psutil
+cryptography
+requests

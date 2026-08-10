@@ -55,6 +55,25 @@ SCENE_OPTIONS = ["🎲 Random"] + SCENE_NAMES
 
 DURATION_OPTIONS = ["16s", "24s"]
 
+# ==================== ĐỊNH DẠNG NỘI DUNG (CONTENT FORMATS) ====================
+CONTENT_OPTIONS = ["Review kho hàng", "POV", "UGC", "Unboxing", "Demo công dụng"]
+
+CONTENT_MAP_VI = {
+    "Review kho hàng": "[ĐỊNH DẠNG NỘI DUNG - REVIEW KHO HÀNG: Góc quay vừa/rộng trong tổng kho ngăn nắp với các kệ hàng xếp cao đằng sau. Người mẫu đứng tự tin giữa kho hàng, vừa cầm sản phẩm vừa chỉ tay tự hào giới thiệu số lượng lớn hàng sẵn có.]\n\n",
+    "POV": "[ĐỊNH DẠNG NỘI DUNG - POV GÓC NHÌN THỨ NHẤT: Góc quay từ tầm mắt người xem nhìn xuống bàn. Không hiện mặt người mẫu mà chỉ tập trung cận cảnh đôi tay đang cầm, xoay lật và thao tác trực tiếp trên sản phẩm. Camera chuyển động theo sát thao tác bàn tay.]\n\n",
+    "UGC": "[ĐỊNH DẠNG NỘI DUNG - UGC KHÁCH HÀNG TỰ QUAY: Phong cách máy quay điện thoại cầm tay gia đình tự nhiên, không gian góc phòng ngủ/bàn học ấm áp gần gũi. Người mẫu đưa sản phẩm sát camera với nụ cười thân thiện, mang lại cảm giác đánh giá chân thực như bạn bè chia sẻ với nhau.]\n\n",
+    "Unboxing": "[ĐỊNH DẠNG NỘI DUNG - UNBOXING ĐẬP HỘP: Góc máy từ trên xuống mặt bàn. Đôi tay tỉ mỉ bóc gói hàng kraft, tháo lớp bọc chống sốc và hé lộ sản phẩm cùng phụ kiện nguyên vẹn bên trong. Ánh sáng nét rõ, tập trung vào trải nghiệm đập hộp.]\n\n",
+    "Demo công dụng": "[ĐỊNH DẠNG NỘI DUNG - DEMO CÔNG DỤNG THỰC TẾ: Camera cận cảnh Macro tập trung 100% vào việc thử nghiệm tính năng, độ bền, kết cấu và hiệu quả sử dụng thực tế của sản phẩm. Thao tác dứt khoát, hình ảnh cực kỳ sắc nét.]\n\n",
+}
+
+CONTENT_MAP_EN = {
+    "Review kho hàng": "[CONTENT FORMAT - WAREHOUSE REVIEW: Wide medium shot inside a clean, massive industrial warehouse with neatly organized product shelves stacked high in the background. Presenter stands confidently in the warehouse, holding the product while proudly gesturing toward the bulk inventory.]\n\n",
+    "POV": "[CONTENT FORMAT - POV FIRST PERSON: First-person POV camera angle from reviewer's eye level looking down at desk. Focus strictly on smooth natural hands holding, turning, and operating the product. No face shown. Camera follows hand movements closely.]\n\n",
+    "UGC": "[CONTENT FORMAT - UGC USER GENERATED: Handheld smartphone camera aesthetic, relatable cozy bedroom/desk setting. Presenter holds product close to camera with a warm friendly smile, authentic candid review atmosphere like a friend sharing a recommendation.]\n\n",
+    "Unboxing": "[CONTENT FORMAT - UNBOXING: Top-down desk camera angle. Hands carefully opening kraft cardboard package, unwrapping protective bubble wrap, and revealing the pristine product and accessories inside. Crisp clear lighting focused on the unboxing experience.]\n\n",
+    "Demo công dụng": "[CONTENT FORMAT - FEATURE DEMO: Extreme close-up macro shots focusing 100% on testing the product's features, material durability, texture, and immediate functional performance. Precise movements with sharp focus on immediate results.]\n\n",
+}
+
 
 # ==================== CHỌN KHUNG CẢNH ====================
 
@@ -626,12 +645,15 @@ def build_image_prompt(product_name, scene_en, lang="en"):
     return prompt
 
 
-def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", review_style="Review tự nhiên"):
+def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", review_style="Random", content_style="Review kho hàng"):
     """Sinh list prompt liền mạch dựa trên độ dài video (16s hoặc 24s).
     Tất cả prompt dùng CÙNG khung cảnh + trang phục + ánh sáng
     → đảm bảo đồng bộ visual giữa các đoạn.
     Ngôn ngữ nói được đồng bộ qua {lang_instruction} placeholder.
     """
+    if review_style == "Random" or not review_style:
+        review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên"])
+
     pool = SEGMENT_POOL_VI if lang == "vi" else SEGMENT_POOL_EN
     indices = DURATION_MAP.get(duration_sec, DURATION_MAP[16])
     lang_info = _LANG_MAP.get(lang, _LANG_MAP["en"])
@@ -648,6 +670,10 @@ def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", revi
             country_vi=lang_info["country_vi"],
             dialogue=dialogue
         )
+        target_style = review_style if review_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN) else content_style
+        if target_style and target_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN):
+            content_constraint = (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN)[target_style]
+            prompt = content_constraint + prompt
         if review_style == "Ngồi Review":
             if lang == "vi":
                 sitting_constraint = "[ĐIỀU CHỈNH BỐ CỤC: Người dẫn/reviewer ngồi lịch sự phía sau một chiếc bàn gỗ tối giản trong suốt video. Mọi hành động diễn ra tại bàn này. Không đứng hoặc đi lại. Luôn giữ tư thế ngồi sau bàn. Sản phẩm được đặt trên bàn hoặc được cầm trên tay phía trên mặt bàn.]\n\n"
@@ -950,13 +976,16 @@ SEGMENT_POOL_FALLBACK_VI = [
 ]
 
 
-def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="en", review_style="Review tự nhiên"):
+def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="en", review_style="Random", content_style="Review kho hàng"):
     """Sinh list prompt FALLBACK khi hết quota tạo ảnh.
     Ảnh reference chỉ có sản phẩm → prompt MÔ TẢ MC bằng text.
     Vẫn dùng I2V với ảnh SP làm reference.
     Handoff pose liền mạch giữa các đoạn.
     Kiểu tóc + trang phục random mỗi SP → video luôn mới mẻ.
     """
+    if review_style == "Random" or not review_style:
+        review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên"])
+
     pool = SEGMENT_POOL_FALLBACK_VI if lang == "vi" else SEGMENT_POOL_FALLBACK_EN
     indices = DURATION_MAP.get(duration_sec, DURATION_MAP[16])
     lang_info = _LANG_MAP.get(lang, _LANG_MAP["en"])
@@ -979,6 +1008,10 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
             outfit=outfit,
             dialogue=dialogue
         )
+        target_style = review_style if review_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN) else content_style
+        if target_style and target_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN):
+            content_constraint = (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN)[target_style]
+            prompt = content_constraint + prompt
         if review_style == "Ngồi Review":
             if lang == "vi":
                 sitting_constraint = "[ĐIỀU CHỈNH BỐ CỤC: Người dẫn/reviewer ngồi lịch sự phía sau một chiếc bàn gỗ tối giản trong suốt video. Mọi hành động diễn ra tại bàn này. Không đứng hoặc đi lại. Luôn giữ tư thế ngồi sau bàn. Sản phẩm được đặt trên bàn hoặc được cầm trên tay phía trên mặt bàn.]\n\n"
@@ -1035,13 +1068,13 @@ def concat_videos(clip_paths, output_path, log=None):
                 "ffmpeg", "-y",
                 "-f", "concat", "-safe", "0",
                 "-i", list_file,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-threads", "2",
+                "-c:v", "libx264", "-preset", "superfast", "-crf", "23",
+                "-threads", "1",
                 "-c:a", "aac", "-b:a", "128k",
                 "-movflags", "+faststart",
                 output_path
             ]
-            result = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+            result = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000))
 
         if result.returncode == 0:
             _log(f"✅ Ghép video xong: {os.path.basename(output_path)}")
@@ -1100,15 +1133,15 @@ def remove_veo_watermark(input_path, log=None):
     cmd = [
         "ffmpeg", "-y", "-i", input_path,
         "-vf", f"delogo=x={lx}:y={ly}:w={lw}:h={lh}",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-        "-threads", "2",
+        "-c:v", "libx264", "-preset", "superfast", "-crf", "18",
+        "-threads", "1",
         "-c:a", "copy",
         "-movflags", "+faststart",
         tmp_out
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000))
         if result.returncode == 0 and os.path.isfile(tmp_out) and os.path.getsize(tmp_out) > 1000:
             os.replace(tmp_out, input_path)
             _log(f"🧹 Đã xóa watermark Veo: {os.path.basename(input_path)}")
