@@ -3457,3 +3457,14 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 79. Điều Chỉnh Tốc Độ Min = 4 VÀ Max = 8 Cho Thuật Toán AIMD Rate Limiter (2026-08-10)
+- **Nâng cấp tốc độ**:
+  - Đã cập nhật các hằng số điều khiển cổng submit thích ứng AIMD trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py):
+    - **`SUBMIT_MIN = 4.0`**: Nâng tốc độ sàn tối thiểu từ 2 lên **4** (tài khoản khi bị phạt rate limit 429 vẫn duy trì tối thiểu 4 submit đồng thời).
+    - **`SUBMIT_MAX = 8.0`**: Nâng tốc độ trần tối đa từ 5 lên **8** (tài khoản chạy mượt sẽ tự động tăng dần tốc độ lên tối đa 8 submit đồng thời).
+    - **`SUBMIT_START = 6.0`**: Đặt tốc độ khởi đầu mặc định ở mức **6**.
+    - **`WORKERS_PER_ACCOUNT = 8`**: Mở rộng số worker phân công cho mỗi tài khoản lên **8 workers** để khai thác tối đa băng thông.
+
+
+---

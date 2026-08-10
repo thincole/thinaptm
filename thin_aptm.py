@@ -90,12 +90,12 @@ def _find_brand():
 # 🎯 CHẾ ĐỘ AN TOÀN — giảm worker để tránh Thundering Herd (15 worker dồn upload → 429 ngay).
 #     AutoVeo3 chỉ chạy 1-2 upload cùng lúc — 3 workers + AIMD sẽ tương đương.
 #     3 workers → tối đa 1-2 submit thực tế (1 bận poll), tránh dồn upload gây 429.
-WORKERS_PER_ACCOUNT = 4    # Tối ưu: 4 workers (Tạo max = 4)
+WORKERS_PER_ACCOUNT = 8    # Tối ưu: 8 workers (Tạo max = 8)
 GEN_ATTEMPTS = 60          
 # --- Cổng submit THÍCH ỨNG (AIMD):
-SUBMIT_START = 5.0         
-SUBMIT_MIN = 2.0           
-SUBMIT_MAX = 5.0           # Trần tốc độ lý tưởng (Tốc độ max = 5)
+SUBMIT_START = 6.0         
+SUBMIT_MIN = 4.0           # Tốc độ min = 4
+SUBMIT_MAX = 8.0           # Trần tốc độ lý tưởng (Tốc độ max = 8)
 SUBMIT_UP_AFTER = 5        
 SUBMIT_DOWN = 0.5          # gặp throttle thì nhân giới hạn với số này (giảm nhân — multiplicative decrease)
 BYPASS_QUICK = 0.4         # bypass/token trượt -> thử lại NHANH (giây)
