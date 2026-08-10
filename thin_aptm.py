@@ -1198,7 +1198,9 @@ class App(ctk.CTk):
                         logp(f"❌ [{i}/{len(need_login)}] Lỗi login {email}: {ex}")
                         ck = None
                     if ck:
-                        b, em = E.bearer_from_cookie(ck)
+                        res = E.bearer_from_cookie(ck)
+                        b = res[0] if isinstance(res, tuple) else res
+                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         if em: a["email"] = em
                         if b:
@@ -1220,7 +1222,9 @@ class App(ctk.CTk):
                     logp(f"❌ Lỗi mở Chrome: {ex}")
                     ck = None
                 if ck:
-                    b, em = E.bearer_from_cookie(ck)
+                    res = E.bearer_from_cookie(ck)
+                    b = res[0] if isinstance(res, tuple) else res
+                    em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                     if b:
                         found = next((a for a in self.accounts if a.get("email") == em), None)
                         if found:
@@ -1243,7 +1247,9 @@ class App(ctk.CTk):
         def work():
             def one(a):
                 if a.get("cookie"):
-                    b, em = E.bearer_from_cookie(a["cookie"])
+                    res = E.bearer_from_cookie(a["cookie"])
+                    b = res[0] if isinstance(res, tuple) else res
+                    em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                     a["status"] = "ok" if b else "dead"
                     if em: a["email"] = em
                 return a
@@ -1268,7 +1274,8 @@ class App(ctk.CTk):
                 if not (a.get("enabled", True) or a.get("role") == "donor"):
                     continue
                 if a.get("cookie") and a.get("status") == "ok":
-                    b, _ = E.bearer_from_cookie(a["cookie"])
+                    res = E.bearer_from_cookie(a["cookie"])
+                    b = res[0] if isinstance(res, tuple) else res
                     if not b:
                         a["status"] = "dead"
                         logp(f"🩺 {a.get('email', '?')}: cookie đã hết hạn → cần login lại.")
@@ -1293,7 +1300,9 @@ class App(ctk.CTk):
                     logp(f"🔄 [{i}/{len(todo)}] Thử profile cũ cho {email}...")
                     ck = L.reopen_profile_cookie(profile_dir, log=logp, timeout=90, poll=3)
                     if ck:
-                        b, em = E.bearer_from_cookie(ck)
+                        res = E.bearer_from_cookie(ck)
+                        b = res[0] if isinstance(res, tuple) else res
+                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         if em: a["email"] = em
                         if b:
@@ -1307,7 +1316,9 @@ class App(ctk.CTk):
                     ck = L.login_get_cookie(a["email"], a["password"], a.get("totp", ""),
                                             profile_dir=profile_dir, log=logp)
                     if ck:
-                        b, em = E.bearer_from_cookie(ck)
+                        res = E.bearer_from_cookie(ck)
+                        b = res[0] if isinstance(res, tuple) else res
+                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         if em: a["email"] = em
                     else:
@@ -1380,7 +1391,9 @@ class App(ctk.CTk):
 
             dead_accs = []
             def check_one(a):
-                b, em = E.bearer_from_cookie(a["cookie"])
+                res = E.bearer_from_cookie(a["cookie"])
+                b = res[0] if isinstance(res, tuple) else res
+                em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                 if b:
                     a["status"] = "ok"
                     if em: a["email"] = em
@@ -1420,7 +1433,9 @@ class App(ctk.CTk):
                             timeout=90, poll=3
                         )
                         if ck:
-                            b, em = E.bearer_from_cookie(ck)
+                            res = E.bearer_from_cookie(ck)
+                            b = res[0] if isinstance(res, tuple) else res
+                            em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                             a["cookie"] = ck
                             a["status"] = "ok" if b else "dead"
                             if em: a["email"] = em
@@ -1454,7 +1469,9 @@ class App(ctk.CTk):
                                 log=lambda m: self._log(f"  [Health Check] {m}")
                             )
                             if ck:
-                                b, em = E.bearer_from_cookie(ck)
+                                res = E.bearer_from_cookie(ck)
+                                b = res[0] if isinstance(res, tuple) else res
+                                em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                                 a["cookie"] = ck
                                 a["status"] = "ok" if b else "dead"
                                 if em: a["email"] = em
