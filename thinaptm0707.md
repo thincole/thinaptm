@@ -3477,3 +3477,11 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 81. Cơ Chế Tái Sử Dụng Video Thành Phần (8s Segment Cache) Trong Tab Server Video (2026-08-11)
+- **Giải thích & Nâng cấp**:
+  - **Trong cùng phiên làm việc (Khi đang chạy / thử lại):** Nếu 1 video 16s đã render xong Đoạn 1 (8s thành phần) và lưu vào `temp_render/sv_{item_id}_seg0.mp4`, nhưng Đoạn 2 bị gián đoạn (do xoay proxy/retry), ở lượt chạy tiếp theo phần mềm sẽ **tự động kiểm tra file sẵn có trong `temp_render`**, ghi log `⚡ Segment 1/2: Đã hoàn thành sẵn → Dùng lại, không tạo lại!`, ghép dùng luôn file 8s cũ và **chỉ tạo tiếp Đoạn 2 (8s còn thiếu)** giúp tiết kiệm 50% thời gian và hạn chế tối đa request lên Google.
+  - **Khi tắt phần mềm (Exit / Destroy App):** Tuân thủ nghiêm ngặt **Quy tắc số 8 (`RULE[E:\ThinAptm0707\.agents\AGENTS.md]`)**, phần mềm sẽ tự động dọn dẹp sạch toàn bộ các file tạm trong `temp_render` để giải phóng dung lượng đĩa cho máy tính người dùng.
+
+
+---
