@@ -5444,6 +5444,11 @@ class App(ctk.CTk):
                                               fg_color="#E57373", hover_color="#EF5350", height=32)
         self._sv_btn_release.pack(side="left", padx=(4, 0))
 
+        self._sv_btn_clear_violation = ctk.CTkButton(claim_row, text="🗑 Xóa Vi Phạm CS", width=130,
+                                                     command=self._sv_clear_violation,
+                                                     fg_color="#D32F2F", hover_color="#C62828", height=32, font=("", 11, "bold"))
+        self._sv_btn_clear_violation.pack(side="left", padx=(4, 0))
+
         # Stats row
         stat_row = ctk.CTkFrame(claim_card, fg_color="transparent"); stat_row.pack(fill="x", padx=12, pady=(0, 10))
         self._sv_stat_lbl = ctk.CTkLabel(stat_row, text="📊 Chưa có dữ liệu", font=("", 11), text_color=T2)
@@ -5824,6 +5829,21 @@ class App(ctk.CTk):
             except Exception as e:
                 self._sv_log_msg(f"❌ Lỗi giải phóng: {e}")
         threading.Thread(target=_do, daemon=True).start()
+
+    def _sv_clear_violation(self):
+        """Xóa toàn bộ sản phẩm dính lỗi 'vi phạm cs' khỏi danh sách SP đã nhận Tab Server Video."""
+        before = len(self._sv_products)
+        self._sv_products = [
+            p for p in self._sv_products
+            if str(p.get("_status", "")).strip().lower() not in ("error", "vi_pham_cs", "vi phạm cs")
+        ]
+        cleared = before - len(self._sv_products)
+        self._sv_render_products_list()
+        self._sv_log_msg(f"🗑️ Đã xóa {cleared} sản phẩm vi phạm chính sách khỏi danh sách!")
+        if cleared > 0:
+            messagebox.showinfo("Đã xóa", f"Đã xóa {cleared} sản phẩm vi phạm CS khỏi danh sách!")
+        else:
+            messagebox.showinfo("Thông báo", "Không có sản phẩm nào vi phạm CS trong danh sách hiện tại.")
 
     def _sv_download_image(self, image_url, save_path):
         """Tải ảnh sản phẩm từ Shopee CDN về thư mục tạm."""
