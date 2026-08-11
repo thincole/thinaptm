@@ -3504,3 +3504,11 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 84. Bổ Sung Nút "🗑 Xóa Vi Phạm CS" Chuyên Dụng Trong Tab Tạo Video Từ Server (2026-08-11)
+- **Tính năng mới**:
+  - Đã tích hợp thêm nút **`🗑 Xóa Vi Phạm CS`** (màu đỏ `#D32F2F`) ngay cạnh nút *Giải phóng SP kẹt* trên Tab **Tạo Video từ Server (PostgreSQL)** trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py).
+  - Cho phép người dùng lọc sạch 100% các sản phẩm bị đánh dấu lỗi `vi phạm cs` / `error` ra khỏi danh sách SP đã nhận chỉ với 1 cú nhấp chuột. Tuân thủ nghiêm ngặt **Quy tắc số 3 (`RULE[E:\ThinAptm0707\.agents\AGENTS.md]`)**.
+
+
+---
