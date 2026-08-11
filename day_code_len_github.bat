@@ -25,15 +25,24 @@ if not exist ".git" (
     echo.
 )
 
-echo [1/3] Dang kiem tra va them cac file vao Git...
+echo [1/4] Tu dong tang so Version trong thin_aptm.py...
+python bump_version.py
+if exist "new_version.txt" (
+    set /p NEW_VER=<new_version.txt
+    del new_version.txt >nul 2>&1
+)
+if "%NEW_VER%"=="" set NEW_VER=ThinAPTM Version Cap Nhat
+
+echo.
+echo [2/4] Dang kiem tra va gom cac file vao Git...
 git add .
 echo.
 
-echo [2/3] Dang tao Commit...
-git commit -m "Update ThinAPTM 1.2.0"
+echo [3/4] Dang tao Commit tu dong: "%NEW_VER%"...
+git commit -m "Update %NEW_VER%"
 
 echo.
-echo [3/3] Dang day code len GitHub (thincole/thinaptm - main)...
+echo [4/4] Dang day code len GitHub (thincole/thinaptm - main)...
 git push origin main
 
 if errorlevel 1 (
@@ -47,7 +56,7 @@ if errorlevel 1 (
 ) else (
     echo.
     echo ====================================================
-    echo [=== CHUC MUNG! DAY CODE LEN GITHUB THANH CONG! ===]
+    echo [=== CHUC MUNG! DAY CODE VERSION %NEW_VER% THANH CONG! ===]
     echo ====================================================
 )
 

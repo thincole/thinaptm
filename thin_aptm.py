@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.0"
+APP_VERSION = "ThinAPTM 1.2.2"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -6691,7 +6691,8 @@ class App(ctk.CTk):
                     except Exception as ex:
                         self._sv_log_msg(f"  ❌ Upload lỗi: {ex}")
                         return "retry_soft"
-                    if mid == "proxy_dead":
+                    if mid == "proxy_dead":
+
                         self._sv_handle_proxy_dead(st)
                         return "retry_soft"
                     if mid == "throttle":
