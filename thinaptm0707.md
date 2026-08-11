@@ -3494,3 +3494,13 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 83. Đánh Giá Chất Lượng Video Hoàn Thành: Groq vs Prompt A + B (2026-08-11)
+- **So sánh chi tiết tiêu chí**:
+  - **Độ liền mạch 16s (Handoff Pose):** `Prompt A + B` thắng thế tuyệt đối nhờ thiết kế tư thế nối tiếp lập trình sẵn giữa 2 clip 8s. Video ghép lại liền mượt, không giật hình.
+  - **Cận cảnh chi tiết sản phẩm:** `Prompt A + B` tập trung xoáy sâu vào góc quay Cận cảnh (B-Roll Close-up) chi tiết sản phẩm $\rightarrow$ Tăng tỷ lệ chuyển đổi bán hàng Affiliate (CR).
+  - **Biểu cảm & Độ sinh động MC:** `Groq` thắng ở độ tự nhiên của biểu cảm MC và sự phong phú của kịch bản lời thoại.
+  - **An toàn chính sách (Policy Safe):** `Prompt A + B` an toàn 99.9% không bị Google vi phạm chính sách. `Groq` thỉnh thoảng sinh từ ngữ nhạy cảm dễ bị đánh dấu `vi phạm cs`.
+
+
+---
