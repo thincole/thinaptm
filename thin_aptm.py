@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.2"
+APP_VERSION = "ThinAPTM 1.2.3"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -7388,6 +7388,11 @@ class App(ctk.CTk):
 
     def _apply_app_update(self, changed_files=None):
         """Tải và ghi đè bản cập nhật mới nhất từ GitHub."""
+        try:
+            self.btn_do_update.configure(text="⏳ Đang tải...", state="disabled")
+        except Exception:
+            pass
+
         def _do_download():
             try:
                 import urllib.request
@@ -7401,7 +7406,7 @@ class App(ctk.CTk):
                             repo_url + f + f"?t={os.urandom(4).hex()}",
                             headers={"Cache-Control": "no-cache", "User-Agent": "thinaptm-app-updater"}
                         )
-                        data = urllib.request.urlopen(req, timeout=8).read()
+                        data = urllib.request.urlopen(req, timeout=12).read()
                         if data and len(data) >= 30:
                             local_path = os.path.join(HERE, f)
                             with open(local_path, "wb") as fp:
@@ -7414,6 +7419,8 @@ class App(ctk.CTk):
                 self.after(0, self._show_up_to_date_badge)
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror("Lỗi Cập Nhật", f"Không thể tải bản cập nhật: {e}"))
+
+        threading.Thread(target=_do_download, daemon=True).start()
         
     def _schedule_periodic_cleanup(self):
         """Lên lịch tự động quét dọn tiến trình rác mỗi 30 phút ngầm."""
