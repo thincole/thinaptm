@@ -1,1 +1,0 @@
-  - CMD va chay: git pull origin main --rebase

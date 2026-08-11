@@ -1,12 +1,24 @@
+# Private & Configs
 accounts.json
 settings.json
-_profiles/
-temp_render/
-__pycache__/
-*.mp4
-*.rar
-*.zip
-*.7z
+
+# Logs & Runtime
+*.log
 log.txt
 debug_api.txt
 lines_output.txt
+__pycache__/
+_profiles/
+temp_render/
+
+# Media & Archives
+*.rar
+*.zip
+*.mp4
+*.exe
+
+# Temp files
+Mo
+Sau
+new_version.txt
+shopee.txt
