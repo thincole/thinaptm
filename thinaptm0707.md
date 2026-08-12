@@ -3512,3 +3512,11 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 85. Tự Động Nhận Diện & Loại Bỏ Key Groq Bị Khóa Organization / Bad Request 400 (2026-08-12)
+- **Cải tiến xử lý lỗi**:
+  - Đã cập nhật bộ lọc lỗi trong hàm `_run_groq()` của [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py): Khi Groq API phản hồi lỗi HTTP 400 `Organization has been restricted` hoặc 403 `Model blocked at organization level`, phần mềm sẽ **lập tức bỏ qua Key đó và nhảy sang Key Groq tiếp theo** (thay vì thử lại 3 model trên cùng 1 Key đã chết).
+  - Giúp luồng sinh Prompt chạy mượt mà, không bị trễ thời gian chờ và tự động fallback về Prompt A + B nếu toàn bộ danh sách Key Groq bị khóa.
+
+
+---
