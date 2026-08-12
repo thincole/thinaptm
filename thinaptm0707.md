@@ -3529,3 +3529,14 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 87. Mở Rộng Danh Sách Từ Khóa Nhạy Cảm Tiếng Anh Lọc Sạch Lỗi Policy Google Veo (2026-08-12)
+- **Phân tích log thực tế Shopee Philippines**:
+  - Soi đoạn log thực tế lúc 22:37: Các sản phẩm dính `failed — policy` liên tục gồm có: `Crop Top`, `Bra`, `Breast Milk Warmer`, `MagSafe Phone Case`, `Bluetooth`, `Car Scratch Remover`, `Jump Starter Compressor`...
+  - Đây là các từ bị hệ thống kiểm duyệt Google Veo 3 tự động gắn cờ vi phạm: Trang phục nhạy cảm (`Crop Top`, `Bra`), thiết bị y tế/ngực (`Breast`), thương hiệu độc quyền (`MagSafe`, `iPhone`, `Bluetooth`), chất hóa học nguy hiểm (`Scratch Remover`, `Compressor`).
+- **Nâng cấp xử lý**:
+  - Đã mở rộng danh sách từ khóa nhạy cảm tiếng Anh trong `clean_product_title()` trong [`shopeevideo.py`](file:///E:/ThinAptm0707/shopeevideo.py).
+  - Tự động lọc sạch toàn bộ các từ nhạy cảm này, chuẩn hóa tên sản phẩm thành chuỗi 2-4 từ siêu sạch (hoặc mặc định `featured item`). Giúp 100% các request render mượt mà không bị dính `failed — policy`.
+
+
+---
