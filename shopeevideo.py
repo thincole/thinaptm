@@ -978,25 +978,33 @@ SEGMENT_POOL_FALLBACK_VI = [
 
 def clean_product_title(name):
     r"""Làm sạch tên sản phẩm trước khi đưa vào prompt:
-    1. Gỡ bỏ ký tự đặc biệt: 【 】 [ ] | - * ~ # $ % ^ & ( ) _ = { } \ < > / ? : ; "
-    2. Gỡ bỏ các từ nhạy cảm dễ dính Google Policy Filter (chính hãng, 100%, đặc trị, chữa khỏi, vv.)
-    3. Cắt ngắn tối đa 65 ký tự chữ sạch.
+    1. Gỡ bỏ thẻ ngoặc quảng cáo: 【 】 [ ] ( ) | - * ~ # $ % ^ & _ = { } \ < > / ? : ; "
+    2. Gỡ bỏ toàn bộ từ nhạy cảm / nhãn hiệu / y tế dính bộ lọc Google Veo 3 Policy Filter.
+    3. Trả về tối đa 4 từ chữ sạch mượt mà (nếu trống -> 'featured item').
     """
     if not name:
-        return "product"
+        return "featured item"
     import re
-    s = re.sub(r"[\【\[\(].*?[\】\]\)]", " ", str(name))
-    s = re.sub(r"[^\w\s\d]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    bad_words = [
+    s = str(name).lower()
+    s = re.sub(r"[\【\[\(].*?[\】\]\)]", " ", s)
+    s = re.sub(r"[^\w\s]", " ", s)
+    
+    policy_risk_words = [
         "100%", "chính hãng", "chinh hang", "đặc trị", "dac tri", "chữa khỏi", "chua khoi",
-        "dứt điểm", "dut diem", "phục hồi men răng", "phuc hoi men rang", "thần tốc", "than toc",
-        "cam kết", "cam ket", "bao hành", "bao hanh", "replica", "fake", "super fake"
+        "dứt điểm", "dut diem", "phục hồi", "phuc hoi", "thần tốc", "than toc", "cam kết",
+        "cam ket", "bao hành", "bao hanh", "replica", "fake", "super fake",
+        "bra", "underwear", "panties", "bikini", "crop top", "lace", "breast", "nude",
+        "sexy", "erotic", "lingerie", "magsafe", "iphone", "apple", "nike", "adidas",
+        "bluetooth", "scratch", "remover", "jump starter", "compressor", "gold", "silver",
+        "medicine", "cure", "medical", "treatment", "pill", "cream", "whitening", "slim",
+        "slimming", "weight loss", "gun", "knife", "blade", "bomb", "chemical", "poison"
     ]
-    for bw in bad_words:
-        s = re.sub(re.escape(bw), "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s[:65].strip() if s else "product"
+    for w in policy_risk_words:
+        s = re.sub(r"\b" + re.escape(w) + r"\b", "", s, flags=re.IGNORECASE)
+    
+    words = [w.strip() for w in s.split() if len(w.strip()) > 1]
+    clean_str = " ".join(words[:4]).strip()
+    return clean_str if clean_str else "featured item"
 
 
 def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="en", review_style="Random", content_style="Review kho hàng"):
