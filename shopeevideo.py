@@ -976,6 +976,29 @@ SEGMENT_POOL_FALLBACK_VI = [
 ]
 
 
+def clean_product_title(name):
+    r"""Làm sạch tên sản phẩm trước khi đưa vào prompt:
+    1. Gỡ bỏ ký tự đặc biệt: 【 】 [ ] | - * ~ # $ % ^ & ( ) _ = { } \ < > / ? : ; "
+    2. Gỡ bỏ các từ nhạy cảm dễ dính Google Policy Filter (chính hãng, 100%, đặc trị, chữa khỏi, vv.)
+    3. Cắt ngắn tối đa 65 ký tự chữ sạch.
+    """
+    if not name:
+        return "product"
+    import re
+    s = re.sub(r"[\【\[\(].*?[\】\]\)]", " ", str(name))
+    s = re.sub(r"[^\w\s\d]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    bad_words = [
+        "100%", "chính hãng", "chinh hang", "đặc trị", "dac tri", "chữa khỏi", "chua khoi",
+        "dứt điểm", "dut diem", "phục hồi men răng", "phuc hoi men rang", "thần tốc", "than toc",
+        "cam kết", "cam ket", "bao hành", "bao hanh", "replica", "fake", "super fake"
+    ]
+    for bw in bad_words:
+        s = re.sub(re.escape(bw), "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:65].strip() if s else "product"
+
+
 def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="en", review_style="Random", content_style="Review kho hàng"):
     """Sinh list prompt FALLBACK khi hết quota tạo ảnh.
     Ảnh reference chỉ có sản phẩm → prompt MÔ TẢ MC bằng text.
@@ -983,6 +1006,7 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
     Handoff pose liền mạch giữa các đoạn.
     Kiểu tóc + trang phục random mỗi SP → video luôn mới mẻ.
     """
+    product_name_clean = clean_product_title(product_name)
     if review_style == "Random" or not review_style:
         review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên"])
 
@@ -997,9 +1021,9 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
     
     prompts = []
     for i, idx in enumerate(indices):
-        dialogue = generate_tts_script(product_name, i, n_segments, lang=lang)
+        dialogue = generate_tts_script(product_name_clean, i, n_segments, lang=lang)
         prompt = pool[idx].format(
-            name=product_name,
+            name=product_name_clean,
             scene=scene_en,
             lang_instruction=lang_info["instruction"],
             country_en=lang_info["country_en"],
