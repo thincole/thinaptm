@@ -6364,10 +6364,10 @@ class App(ctk.CTk):
                         if len(prompts) >= n_segments:
                             return prompts[:n_segments]
                     except Exception as e:
-                        err_str = str(e)
-                        if "401" in err_str or "invalid" in err_str.lower():
-                            self._sv_log_msg(f"  ⚠ Groq key {key[:10]}... không hợp lệ hoặc hỏng!")
-                            break  # Bỏ qua key này, chuyển sang key khác
+                        err_str = str(e).lower()
+                        if any(tok in err_str for tok in ("400", "401", "403", "restricted", "blocked", "invalid", "forbidden")):
+                            self._sv_log_msg(f"  ⚠ Groq key {key[:12]}... bị khóa/lỗi ({e}) → Chuyển key tiếp theo.")
+                            break  # Bỏ qua key hỏng/bị khóa này, chuyển ngay sang key khác
                         continue
             return None
 
