@@ -3540,3 +3540,13 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 88. Khắc Phục Triệt Để Cơ Chế Cập Nhật Tự Động Trong update.py & UPDATE.bat (2026-08-13)
+- **Phát hiện nguyên nhân cốt lõi**:
+  - Khi người dùng chạy `UPDATE.bat`, file `update.py` trước đây bị hàm rỗng (`pass`), khiến quá trình cập nhật không tải file mới từ GitHub về đĩa. Do đó phần mềm vẫn chạy bản code cũ V1.2.2 trong RAM memory.
+- **Sửa chữa**:
+  - Đã cập nhật lại [`update.py`](file:///E:/ThinAptm0707/update.py): Tự động ưu tiên chạy `git pull origin main`, nếu không có Git sẽ tự tải 14 file code mượt mà từ GitHub raw về đĩa.
+  - Khi mở lại phần mềm, bản code mới V1.2.3 sẽ tự động được nạp, áp dụng ngay lập tức hàm `clean_product_title()` và xử lý lỗi 404 policy.
+
+
+---
