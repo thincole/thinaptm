@@ -1,5 +1,7 @@
 """Tự cập nhật bản mới nhất từ GitHub (Quản lý trực tiếp từ thẻ thông báo trên giao diện Thìn Aptm)."""
 import os
+import urllib.request
+import subprocess
 
 FILES = [
     "thin_aptm.py", 
@@ -15,15 +17,35 @@ FILES = [
     "UPDATE.bat",
     "requirements.txt", 
     "CHAY.bat", 
-    "SETUP.bat",
-    "logo.ico",
-    "logo.png"
+    "SETUP.bat"
 ]
 
+BASE_URL = "https://raw.githubusercontent.com/thincole/thinaptm/main/"
+
 def main():
-    # Không hiện popup cảnh báo khi vào ứng dụng.
-    # Việc kiểm tra và cập nhật được quản lý trực tiếp tại Thẻ Cập Nhật (góc dưới bên trái Sidebar).
-    pass
+    print("[*] Dang dong bo code moi nhat tu GitHub...")
+    try:
+        res = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True, timeout=15)
+        if res.returncode == 0:
+            print("[OK] Da dong bo code thanh cong bang Git!")
+            print(res.stdout)
+            return
+    except Exception:
+        pass
+
+    success = 0
+    for f in FILES:
+        try:
+            url = BASE_URL + f
+            data = urllib.request.urlopen(url, timeout=10).read()
+            with open(f, "wb") as local_f:
+                local_f.write(data)
+            print(f"  [OK] Da cap nhat: {f}")
+            success += 1
+        except Exception as e:
+            print(f"  [!] Loi tai {f}: {e}")
+    
+    print(f"\n[=== CAP NHAT HOAN TAT ===] Da cap nhat {success}/{len(FILES)} file!")
 
 if __name__ == "__main__":
     main()
