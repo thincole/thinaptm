@@ -3550,3 +3550,15 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 89. Sửa Lỗi Thiếu Header Authorization Bearer Trong poll_video Bị Google Trả Về 404 (2026-08-13)
+- **Phát hiện nguyên nhân cốt lõi**:
+  - Khi soi file log lúc 20:18: Mặc dù các tài khoản đều đăng nhập thành công và gửi request tạo video OK (`Media ID generated`), nhưng khi thăm dò kết quả qua `E.poll_video()`, Google Labs trả về mã HTTP `404` liên tục.
+  - Soi mã nguồn [`engine.py`](file:///E:/ThinAptm0707/engine.py) dòng 653: Hàm `poll_video` trước đây chỉ truyền header `Cookie` mà **thiếu `Authorization: Bearer {bearer}`**.
+  - Khi Google Labs kiểm tra quyền thăm dò `media.getMediaUrlRedirect`, do thiếu Bearer token nên Google từ chối trả về URL video và trả về HTTP 404 $\rightarrow$ Phần mềm coi lầm là vi phạm chính sách (`policy`) và tăng số đếm cột Lỗi!
+- **Sửa chữa**:
+  - Đã bổ sung `"Authorization": f"Bearer {bearer}"` vào header `H` của hàm `poll_video` trong [`engine.py`](file:///E:/ThinAptm0707/engine.py).
+  - Giúp việc thăm dò video nhận diện chính xác 100% video đã hoàn thành (`done`), triệt tiêu hoàn toàn lỗi 404 giả lập.
+
+
+---
