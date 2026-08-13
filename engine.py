@@ -650,7 +650,13 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=3.5, timeout
     media_id = ops[0]
     credits = None
     
-    H = {"Cookie": cookie if cookie else "", "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "*/*"}
+    H = {
+        "Authorization": f"Bearer {bearer}" if bearer else "",
+        "Cookie": cookie if cookie else "",
+        "User-Agent": UA_CH,
+        "Referer": "https://labs.google/",
+        "Accept": "*/*"
+    }
     proxy_fail_count = 0  # Đếm lỗi proxy DNS liên tiếp
     
     for attempt in range(max_attempts):
