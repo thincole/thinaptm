@@ -2,7 +2,6 @@
 Thìn Aptm — Tạo VIDEO Google Flow (android_bypass). GUI 3 tab: Tài khoản / Tạo video / Hàng đợi.
 Chạy: SETUP.bat (cài đủ) rồi CHAY.bat.
 """
-# test update
 import os, sys, json, time, threading, traceback, queue, random, collections, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,7 +22,6 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.4"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -91,12 +89,12 @@ def _find_brand():
 # 🎯 CHẾ ĐỘ AN TOÀN — giảm worker để tránh Thundering Herd (15 worker dồn upload → 429 ngay).
 #     AutoVeo3 chỉ chạy 1-2 upload cùng lúc — 3 workers + AIMD sẽ tương đương.
 #     3 workers → tối đa 1-2 submit thực tế (1 bận poll), tránh dồn upload gây 429.
-WORKERS_PER_ACCOUNT = 8    # Tối ưu: 8 workers (Tạo max = 8)
+WORKERS_PER_ACCOUNT = 4    # Tối ưu: 4 workers (Tạo max = 4)
 GEN_ATTEMPTS = 60          
 # --- Cổng submit THÍCH ỨNG (AIMD):
-SUBMIT_START = 6.0         
-SUBMIT_MIN = 4.0           # Tốc độ min = 4
-SUBMIT_MAX = 8.0           # Trần tốc độ lý tưởng (Tốc độ max = 8)
+SUBMIT_START = 5.0         
+SUBMIT_MIN = 2.0           
+SUBMIT_MAX = 5.0           # Trần tốc độ lý tưởng (Tốc độ max = 5)
 SUBMIT_UP_AFTER = 5        
 SUBMIT_DOWN = 0.5          # gặp throttle thì nhân giới hạn với số này (giảm nhân — multiplicative decrease)
 BYPASS_QUICK = 0.4         # bypass/token trượt -> thử lại NHANH (giây)
@@ -396,74 +394,12 @@ class AccountState:
         self.resume_at = 0.0
         self.rest_reason = ""
 
-    def auto_recover_cookie(self):
-        """Khi cookie bị chết, tự động gọi DrissionPage reopen_profile_cookie / login_get_cookie để lấy cookie mới 100%."""
-        if L is None:
-            return None
-        email = self.email or self.acc.get("email") or self.acc.get("id")
-        if not email or email == "?":
-            return None
-            
-        profile_dir = os.path.join(HERE, "_profiles", str(email).replace("@", "_"))
-        fresh_ck = None
-        
-        # 1. Thử mở lại Chrome profile cũ (rất nhanh, 3-5 giây, không cần gõ pass)
-        if os.path.exists(profile_dir):
-            try:
-                fresh_ck = L.reopen_profile_cookie(profile_dir, timeout=30, poll=2)
-            except Exception:
-                fresh_ck = None
-                
-        # 2. Nếu profile cũ không thành công, thử dùng password/2FA nếu có trong acc
-        if not fresh_ck and self.acc.get("password"):
-            try:
-                fresh_ck = L.login_get_cookie(
-                    self.acc["email"], self.acc["password"], self.acc.get("totp", ""),
-                    profile_dir=profile_dir
-                )
-            except Exception:
-                fresh_ck = None
-                
-        if fresh_ck:
-            res = E.bearer_from_cookie(fresh_ck, proxy=self.proxy)
-            b = res[0] if isinstance(res, tuple) else None
-            if b:
-                self.cookie = fresh_ck
-                self.acc["cookie"] = fresh_ck
-                self.acc["status"] = "ok"
-                self.reset_circuit_breaker()
-                self.clear_rest()
-                try:
-                    all_accs = load_accs()
-                    for target in all_accs:
-                        if (target.get("email") or target.get("id")) == email:
-                            target["cookie"] = fresh_ck
-                            target["status"] = "ok"
-                            break
-                    save_accs(all_accs)
-                except Exception:
-                    pass
-                return b
-        return None
-
     def ensure_auth(self, force=False):
         """Bảo đảm bearer còn hạn (refresh TỪ COOKIE, không mở trình duyệt). Trả True nếu có bearer+project."""
         with self.lock:
             if not force and self.bearer and (time.time() - self.ts < BEARER_TTL):
                 return True
-            res = E.bearer_from_cookie(self.cookie, proxy=self.proxy)
-            if isinstance(res, tuple) and len(res) == 3:
-                b, em, new_cookie = res
-                if new_cookie and new_cookie != self.cookie:
-                    self.cookie = new_cookie
-                    self.acc["cookie"] = new_cookie
-            else:
-                b, em = res[0], res[1] if isinstance(res, tuple) else (None, None)
-            
-            if not b:
-                # Cookie hết hạn -> Tự động khôi phục cookie mới ngầm qua Chrome Profile / Auto Login
-                b = self.auto_recover_cookie()
-                
+            b, em = E.bearer_from_cookie(self.cookie, proxy=self.proxy)
             if not b:
                 return False
             self.bearer = b
@@ -500,7 +436,7 @@ class App(ctk.CTk):
             pass
 
         brand, _lp = _find_brand()
-        self.title(f"{brand} ({APP_VERSION}) — Tạo Video Google Flow")
+        self.title(f"{brand} — Tạo Video Google Flow")
 
         # ── Đặt Icon ứng dụng cho Cửa sổ & Taskbar (dùng logo.ico / logo.png) ──
         _ico_file = os.path.join(HERE, "logo.ico")
@@ -591,7 +527,7 @@ class App(ctk.CTk):
         side = ctk.CTkFrame(self, width=210, corner_radius=0, fg_color="#ffffff"); side.pack(side="left", fill="y")
         side.pack_propagate(False)
         ctk.CTkLabel(side, text=brand, font=("", 20, "bold"), text_color=AC).pack(pady=(22, 2), padx=18, anchor="w")
-        ctk.CTkLabel(side, text=f"Tạo video Google Flow  •  {APP_VERSION}", font=("", 10), text_color=T2).pack(padx=18, anchor="w", pady=(0, 8))
+        ctk.CTkLabel(side, text="Tạo video Google Flow", font=("", 11), text_color=T2).pack(padx=18, anchor="w", pady=(0, 8))
         if _lp:
             try:
                 from PIL import Image
@@ -610,30 +546,6 @@ class App(ctk.CTk):
             b.pack(fill="x", padx=12, pady=3); self.nav[key] = b
         self.lbl_qcount = ctk.CTkLabel(side, text="", font=("", 12, "bold"), text_color=GR); self.lbl_qcount.pack(pady=8)
 
-        # ----- VERSION FOOTER -----
-        ctk.CTkLabel(side, text=APP_VERSION, font=("Consolas", 10, "bold"), text_color="#9AA0A6").pack(side="bottom", pady=(0, 6))
-
-        # ----- UPDATE BADGE FRAME (Góc dưới cùng bên trái Sidebar - Luôn hiển thị) -----
-        self.update_card = ctk.CTkFrame(side, fg_color="#E8F5E9", corner_radius=10, border_color="#81C784", border_width=1)
-        self.update_card.pack(side="bottom", fill="x", padx=10, pady=8)
-
-        self.lbl_update_title = ctk.CTkLabel(self.update_card, text="✅ ĐÃ Ở BẢN MỚI NHẤT", font=("", 11, "bold"), text_color="#2E7D32")
-        self.lbl_update_title.pack(pady=(8, 2), padx=6)
-        self.lbl_update_sub = ctk.CTkLabel(self.update_card, text=f"Phiên bản: {APP_VERSION}", font=("", 10), text_color="#388E3C")
-        self.lbl_update_sub.pack(pady=(0, 6), padx=6)
-
-        self.btn_do_update = ctk.CTkButton(
-            self.update_card,
-            text="🔄 Kiểm tra lại",
-            fg_color="#4CAF50",
-            hover_color="#388E3C",
-            text_color="#ffffff",
-            height=28,
-            font=("", 11, "bold"),
-            command=self._start_update_checker
-        )
-        self.btn_do_update.pack(fill="x", padx=8, pady=(0, 8))
-
         # ----- CONTENT -----
         self.content = ctk.CTkFrame(self, fg_color=BG); self.content.pack(side="left", fill="both", expand=True)
         self.frames = {}
@@ -645,8 +557,6 @@ class App(ctk.CTk):
         self._start_telegram_polling()
         # Khởi động cơ chế tự động dọn dẹp định kỳ mỗi 30 phút ngầm (cũng tự dọn lần đầu ngay khi mở)
         self._schedule_periodic_cleanup()
-        # Khởi động kiểm tra bản cập nhật mới trên GitHub ngay khi vừa vào ứng dụng
-        self.after(500, self._start_update_checker)
 
     def _show(self, key):
         for f in self.frames.values(): f.pack_forget()
@@ -834,15 +744,7 @@ class App(ctk.CTk):
 
         # Auto-load HomeProxy on startup if enabled
         if self._auto_homeproxy.get() and self._homeproxy_token.get().strip():
-            hp_tok = self._homeproxy_token.get().strip()
-            self.after(1000, lambda: threading.Thread(target=self._fetch_homeproxy, args=(hp_tok,), daemon=True).start())
-
-    def _safe_after(self, ms, func):
-        """Gọi self.after an toàn từ background thread không bao giờ ném Exception."""
-        try:
-            self.after(ms, func)
-        except Exception:
-            pass
+            threading.Thread(target=self._fetch_homeproxy, daemon=True).start()
 
     def _on_disable_proxy_changed(self):
         """Callback khi người dùng tick chọn Không dùng Proxy."""
@@ -868,42 +770,35 @@ class App(ctk.CTk):
     def _test_warp_proxy(self):
         """Test WARP proxy: kết nối qua SOCKS5 và hiển thị IP."""
         self.lbl_warp_ip.configure(text="⏳ đang test...", text_color="#FFA726")
-        port_s = self._warp_port.get().strip()
-        def _do_test(p_str=port_s):
-            port = int(p_str or 40000)
+        def _do_test():
+            port = int(self._warp_port.get().strip() or 40000)
             proxy = {"http": f"socks5://127.0.0.1:{port}", "https": f"socks5://127.0.0.1:{port}"}
             try:
                 import curl_cffi.requests as cffi
                 r = cffi.get("https://api.ipify.org?format=json", proxies=proxy, timeout=10)
                 ip = r.json().get("ip", "?")
-                self._safe_after(0, lambda: self.lbl_warp_ip.configure(text=f"✅ IP: {ip}", text_color="#43A047"))
+                self.after(0, lambda: self.lbl_warp_ip.configure(text=f"✅ IP: {ip}", text_color="#43A047"))
             except Exception as e:
                 err = str(e)[:40]
-                self._safe_after(0, lambda: self.lbl_warp_ip.configure(text=f"❌ {err}", text_color="#E53935"))
+                self.after(0, lambda: self.lbl_warp_ip.configure(text=f"❌ {err}", text_color="#E53935"))
         threading.Thread(target=_do_test, daemon=True).start()
 
     def _fetch_homeproxy_manual(self):
-        """Nút bấm thủ công: Tải proxy từ HomeProxy API."""
-        tok = self._homeproxy_token.get().strip()
-        threading.Thread(target=self._fetch_homeproxy, args=(tok,), daemon=True).start()
+        """N\u00fat b\u1ea5m th\u1ee7 c\u00f4ng: T\u1ea3i proxy t\u1eeb HomeProxy API."""
+        threading.Thread(target=self._fetch_homeproxy, daemon=True).start()
 
-    def _fetch_homeproxy(self, token=None):
-        """Gọi HomeProxy API để lấy danh sách proxy đang chạy (Thread-safe)."""
-        if token is None:
-            try:
-                token = self._homeproxy_token.get().strip()
-            except Exception:
-                token = self.settings.get("homeproxy_token", "").strip()
-        if token and token.lower().startswith("bearer "):
-            token = token[7:].strip()
-            self._safe_after(0, lambda t=token: self._homeproxy_token.set(t))
-            
+    def _fetch_homeproxy(self):
+        """Gọi HomeProxy API để lấy danh sách proxy đang chạy."""
+        token = self._homeproxy_token.get().strip()
         if not token:
-            self._safe_after(0, lambda: self.lbl_hp_status.configure(text="❌ Chưa nhập token", text_color="#E57373"))
-            self._safe_after(0, lambda: messagebox.showwarning("Lỗi HomeProxy", "Chưa nhập API Token cho HomeProxy. Vui lòng nhập token tại mục Proxy Pool."))
+            self.after(0, lambda: self.lbl_hp_status.configure(text="❌ Chưa nhập token", text_color="#E57373"))
+            self.after(0, lambda: messagebox.showwarning("Lỗi HomeProxy", "Chưa nhập API Token cho HomeProxy. Vui lòng nhập token tại mục Proxy Pool."))
             return
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+            self._homeproxy_token.set(token)
             
-        self._safe_after(0, lambda: self.lbl_hp_status.configure(text="⏳ Đang tải...", text_color="#FFB74D"))
+        self.after(0, lambda: self.lbl_hp_status.configure(text="⏳ Đang tải...", text_color="#FFB74D"))
         self._log("[HomeProxy] Đang tải proxy từ HomeProxy...")
         import requests as _rq
         import base64 as _b64
@@ -1199,9 +1094,7 @@ class App(ctk.CTk):
                         logp(f"❌ [{i}/{len(need_login)}] Lỗi login {email}: {ex}")
                         ck = None
                     if ck:
-                        res = E.bearer_from_cookie(ck)
-                        b = res[0] if isinstance(res, tuple) else res
-                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                        b, em = E.bearer_from_cookie(ck)
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         if em: a["email"] = em
                         if b:
@@ -1223,9 +1116,7 @@ class App(ctk.CTk):
                     logp(f"❌ Lỗi mở Chrome: {ex}")
                     ck = None
                 if ck:
-                    res = E.bearer_from_cookie(ck)
-                    b = res[0] if isinstance(res, tuple) else res
-                    em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                    b, em = E.bearer_from_cookie(ck)
                     if b:
                         found = next((a for a in self.accounts if a.get("email") == em), None)
                         if found:
@@ -1248,9 +1139,7 @@ class App(ctk.CTk):
         def work():
             def one(a):
                 if a.get("cookie"):
-                    res = E.bearer_from_cookie(a["cookie"])
-                    b = res[0] if isinstance(res, tuple) else res
-                    em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                    b, em = E.bearer_from_cookie(a["cookie"])
                     a["status"] = "ok" if b else "dead"
                     if em: a["email"] = em
                 return a
@@ -1275,8 +1164,7 @@ class App(ctk.CTk):
                 if not (a.get("enabled", True) or a.get("role") == "donor"):
                     continue
                 if a.get("cookie") and a.get("status") == "ok":
-                    res = E.bearer_from_cookie(a["cookie"])
-                    b = res[0] if isinstance(res, tuple) else res
+                    b, _ = E.bearer_from_cookie(a["cookie"])
                     if not b:
                         a["status"] = "dead"
                         logp(f"🩺 {a.get('email', '?')}: cookie đã hết hạn → cần login lại.")
@@ -1301,9 +1189,7 @@ class App(ctk.CTk):
                     logp(f"🔄 [{i}/{len(todo)}] Thử profile cũ cho {email}...")
                     ck = L.reopen_profile_cookie(profile_dir, log=logp, timeout=90, poll=3)
                     if ck:
-                        res = E.bearer_from_cookie(ck)
-                        b = res[0] if isinstance(res, tuple) else res
-                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                        b, em = E.bearer_from_cookie(ck)
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         if em: a["email"] = em
                         if b:
@@ -1317,9 +1203,7 @@ class App(ctk.CTk):
                     ck = L.login_get_cookie(a["email"], a["password"], a.get("totp", ""),
                                             profile_dir=profile_dir, log=logp)
                     if ck:
-                        res = E.bearer_from_cookie(ck)
-                        b = res[0] if isinstance(res, tuple) else res
-                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                        b, em = E.bearer_from_cookie(ck)
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         if em: a["email"] = em
                     else:
@@ -1392,9 +1276,7 @@ class App(ctk.CTk):
 
             dead_accs = []
             def check_one(a):
-                res = E.bearer_from_cookie(a["cookie"])
-                b = res[0] if isinstance(res, tuple) else res
-                em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                b, em = E.bearer_from_cookie(a["cookie"])
                 if b:
                     a["status"] = "ok"
                     if em: a["email"] = em
@@ -1434,9 +1316,7 @@ class App(ctk.CTk):
                             timeout=90, poll=3
                         )
                         if ck:
-                            res = E.bearer_from_cookie(ck)
-                            b = res[0] if isinstance(res, tuple) else res
-                            em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                            b, em = E.bearer_from_cookie(ck)
                             a["cookie"] = ck
                             a["status"] = "ok" if b else "dead"
                             if em: a["email"] = em
@@ -1470,9 +1350,7 @@ class App(ctk.CTk):
                                 log=lambda m: self._log(f"  [Health Check] {m}")
                             )
                             if ck:
-                                res = E.bearer_from_cookie(ck)
-                                b = res[0] if isinstance(res, tuple) else res
-                                em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                                b, em = E.bearer_from_cookie(ck)
                                 a["cookie"] = ck
                                 a["status"] = "ok" if b else "dead"
                                 if em: a["email"] = em
@@ -1557,13 +1435,6 @@ class App(ctk.CTk):
         self.opt_aspect.pack(side="left", padx=(4, 12))
         self.opt_aspect.set(self.settings.get("aspect", "Dọc 9:16 (TikTok)"))
         
-        ctk.CTkLabel(rs, text="Upload/TK:").pack(side="left")
-        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["4", "5", "6", "7", "8"], width=60)
-        self.opt_upload_threads_per_acc.pack(side="left", padx=(4, 12))
-        saved_gen_up = self.settings.get("gen_upload_threads_per_acc", "4")
-        if saved_gen_up in ("1", "2", "3"): saved_gen_up = "4"
-        self.opt_upload_threads_per_acc.set(saved_gen_up)
-
         ctk.CTkLabel(rs, text="Đặt tên:").pack(side="left")
         self.opt_naming = ctk.CTkOptionMenu(rs, values=["Đặt tên theo ảnh", "13 ký tự đầu prompt", "Số thứ tự (001...)", "40 ký tự đầu chủ đề"], width=150)
         self.opt_naming.pack(side="left", padx=(4, 12))
@@ -2068,6 +1939,11 @@ class App(ctk.CTk):
         ctk.CTkButton(bar, text="🗑 Xóa xong", command=self._clear_done, fg_color="#9aa0a6", height=38, width=100).pack(side="left", padx=4)
         ctk.CTkButton(bar, text="🗑 Xóa Vi Phạm CS", command=self._clear_violation, fg_color="#E57373", hover_color="#EF5350", height=38, width=130).pack(side="left", padx=4)
 
+        ctk.CTkLabel(bar, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(12, 2))
+        self.spn_upload_threads = ctk.CTkEntry(bar, width=42, height=30, font=("", 12, "bold"), justify="center")
+        self.spn_upload_threads.pack(side="left", padx=(0, 4))
+        self.spn_upload_threads.insert(0, str(self.settings.get("upload_threads_per_acc", 3)))
+
         self.use_laundering = ctk.BooleanVar(value=self.settings.get("use_laundering", False))
         self.chk_laundering = ctk.CTkCheckBox(bar, text="Rửa ảnh (Bypass 429)", variable=self.use_laundering, font=("", 11), checkbox_width=18, checkbox_height=18)
         self.chk_laundering.pack(side="left", padx=(16, 4))
@@ -2277,37 +2153,35 @@ class App(ctk.CTk):
         return (f"⚡ {rate_min:.1f} video/phút   ·   còn {remaining} video   ·   "
                 f"dự kiến xong sau {dur}  (≈ {time.strftime('%H:%M', fin)}  {time.strftime('%d/%m', fin)})")
 
-    def _toggle_acc_enabled(self, email):
-        """Đảo trạng thái dừng/chạy của tài khoản khi người dùng click nút Dừng/Chạy trên bảng Pool."""
-        acc = next((a for a in self.accounts if a.get("email") == email), None)
-        if not acc:
-            return
-        new_val = not acc.get("enabled", True)
-        acc["enabled"] = new_val
-        acc_name = str(email).split("@")[0][:22]
-        if new_val:
-            self._log(f"▶ Đã tiếp tục tài khoản [{acc_name}] (đã bật lại 'Dùng' trong tab Tài khoản)")
-            if hasattr(self, "proxy_pool") and self.proxy_pool and not self.proxy_pool.get_str(email):
-                self.proxy_pool.get_proxy(email)
-        else:
+    def _stop_single_account(self, email):
+        """Dừng 1 tài khoản cụ thể — hủy tích chọn trong tab 'Tài khoản' và cho tài khoản đó dừng tạo video."""
+        target_acc = None
+        email_clean = (email or "").strip().lower()
+        for a in self.accounts:
+            a_em = (a.get("email") or a.get("id") or "").strip().lower()
+            if a_em == email_clean or a_em.startswith(email_clean) or email_clean.startswith(a_em):
+                target_acc = a
+                break
+
+        if target_acc:
+            target_acc["enabled"] = False
+            acc_name = target_acc.get("email") or target_acc.get("id") or email
             self._log(f"⏹ Đã dừng tài khoản [{acc_name}] (đã bỏ chọn 'Dùng' trong tab Tài khoản)")
-            if hasattr(self, "proxy_pool") and self.proxy_pool:
-                self.proxy_pool.release_proxy(email)
 
-        # Cập nhật checkbox ở Tab Tài khoản nếu UI đang vẽ
-        if hasattr(self, "_acc_rows") and email in self._acc_rows:
-            try:
-                chk_var = self._acc_rows[email].get("var")
-                if chk_var:
-                    chk_var.set(new_val)
-            except Exception:
-                pass
-        save_accs(self.accounts)
+        # Nếu tài khoản đang nằm trong pool đang chạy, cho tạm nghỉ vô thời hạn để ngắt luồng
+        all_states = (getattr(self, "_sv_pool_states", None) or []) + (getattr(self, "_sp_pool_states", None) or []) + (getattr(self, "_pool_states", None) or [])
+        for st in all_states:
+            st_email = (st.email or "").strip().lower()
+            if st_email == email_clean or st_email.startswith(email_clean) or email_clean.startswith(st_email):
+                st.rest(86400 * 365, "user_stopped")
+                if getattr(self, "proxy_pool", None):
+                    try: self.proxy_pool.release(st.email)
+                    except: pass
 
-        # Cập nhật lại UI bảng Pool ngay lập tức
-        self.after(0, self._update_pool)
-        self.after(0, self._sp_update_pool)
-        self.after(0, self._sv_update_pool)
+        # Cập nhật lại UI bảng Tài khoản nếu đã khởi tạo
+        if hasattr(self, "_refresh_acc"):
+            try: self.after(0, self._refresh_acc)
+            except: pass
 
     def _update_pool(self):
         """Panel POOL VIDEO (cập nhật mỗi 2s): 4 ô tổng quan + bảng tài khoản. Tốc độ TỰ ĐỘNG (AIMD)."""
@@ -2334,24 +2208,22 @@ class App(ctk.CTk):
                     ctk.CTkLabel(self.pool_rows_frame, text="Chưa chạy — bấm ▶ Bắt đầu.",
                                  font=("", 11), text_color=T2).pack(anchor="w", pady=6)
                 else:
-                    cols = [("Tài khoản", 150), ("✅ Xong", 65), ("❌ Lỗi", 55),
-                            ("⚡ Tạo", 55), ("🚀 Tốc độ", 75), ("Trạng thái", 120), ("Hành động", 70)]
+                    cols = [("Tài khoản", 140), ("✅ Xong", 50), ("❌ Lỗi", 50),
+                            ("⚡ Tạo", 45), ("🚀 Tốc độ", 60), ("Trạng thái", 100), ("Hành động", 70)]
                     hdr = ctk.CTkFrame(self.pool_rows_frame, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 2))
                     for txt, w in cols:
                         ctk.CTkLabel(hdr, text=txt, font=("", 10, "bold"), text_color=T2, width=w, anchor="w").pack(side="left", padx=(2, 0))
                     for i, s in enumerate(states):
                         row = ctk.CTkFrame(self.pool_rows_frame, fg_color=("#f6f8fc" if i % 2 else CARD), corner_radius=6)
                         row.pack(fill="x", pady=1)
-                        ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=150, anchor="w").pack(side="left", padx=(2, 0))
-                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=65, anchor="w"); wl.pack(side="left", padx=(2, 0))
-                        fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=55, anchor="w"); fl.pack(side="left", padx=(2, 0))
-                        bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=55, anchor="w"); bl.pack(side="left", padx=(2, 0))
-                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=75, anchor="w"); rl.pack(side="left", padx=(2, 0))
-                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=120, anchor="w"); sl.pack(side="left", padx=(2, 0))
-                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=62, height=24, font=("", 11, "bold"),
-                                           command=lambda e=s.email: self._toggle_acc_enabled(e))
-                        ab.pack(side="left", padx=(4, 0))
-                        self._pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "a": ab}
+                        ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=140, anchor="w").pack(side="left", padx=(2, 0))
+                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=50, anchor="w"); wl.pack(side="left", padx=(2, 0))
+                        fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=50, anchor="w"); fl.pack(side="left", padx=(2, 0))
+                        bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=45, anchor="w"); bl.pack(side="left", padx=(2, 0))
+                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=60, anchor="w"); rl.pack(side="left", padx=(2, 0))
+                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=100, anchor="w"); sl.pack(side="left", padx=(2, 0))
+                        ctk.CTkButton(row, text="⏹ Dừng", width=55, height=24, fg_color="#E57373", hover_color="#EF5350", font=("", 10, "bold"), command=lambda em=s.email: self._stop_single_account(em)).pack(side="left", padx=(4, 0))
+                        self._pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl}
 
             # Cập nhật giá trị từng tài khoản
             for s in states:
@@ -2362,20 +2234,16 @@ class App(ctk.CTk):
                 r["f"].configure(text=str(s.fails))
                 r["b"].configure(text=str(s.busy))
                 r["r"].configure(text=str(int(s.submit_limit)))
-                is_enabled = s.acc.get("enabled", True)
-                if not is_enabled:
-                    r["s"].configure(text="⏹ đã dừng", text_color=T2)
-                    r["a"].configure(text="▶ Chạy", fg_color="#26A69A", hover_color="#00897B")
-                else:
-                    r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
-                    rem = s.rest_remaining()
-                    if rem > 0:
-                        if s.rest_reason == "quota":
-                            r["s"].configure(text=f"⛔ cách ly {int(rem//60)}p", text_color=RD)
-                        else:
-                            r["s"].configure(text=f"😴 nghỉ {int(rem)}s", text_color="#F9A825")
+                rem = s.rest_remaining()
+                if rem > 0:
+                    if s.rest_reason == "quota":
+                        r["s"].configure(text=f"⛔ cách ly {int(rem//60)}p", text_color=RD)
+                    elif s.rest_reason == "user_stopped":
+                        r["s"].configure(text="⏹ Đã dừng", text_color=RD)
                     else:
-                        r["s"].configure(text="🟢 đang chạy", text_color=GR)
+                        r["s"].configure(text=f"😴 nghỉ {int(rem)}s", text_color="#F9A825")
+                else:
+                    r["s"].configure(text="🟢 đang chạy", text_color=GR)
         except Exception:
             pass
         finally:
@@ -2855,9 +2723,12 @@ class App(ctk.CTk):
         else:
             todo = [j for j in self.jobs if j["status"] in ("chờ", "lỗi")]
             if not todo: messagebox.showinfo("Trống", "Không có job chờ."); return
-        upload_per_acc = int(self.opt_upload_threads_per_acc.get())
-        wpa = max(4, min(8, upload_per_acc))
-        self._user_submit_max = float(wpa)
+        try:
+            up_threads = max(1, int(self.spn_upload_threads.get().strip()))
+        except Exception:
+            up_threads = 3
+        wpa = up_threads * 2
+        self._user_submit_max = float(up_threads * 2)
         # Chốt danh sách key Gemini cho phiên chạy (mỗi dòng 1 key) + reset key hỏng
         self._gemini_active = [l.strip() for l in self.txt_gemini.get("1.0", "end").splitlines() if l.strip()]
         self._gemini_bad = set()
@@ -2928,7 +2799,7 @@ class App(ctk.CTk):
                     st.project = new_proj
                     self._log(f"  🗑️→📁 {st.email[:20]}: reset project → {new_proj[:12]}...")
 
-                # Thử auth — nếu thất bại và còn proxy khác → tự chuyển proxy, thử lại
+                # Thử auth — nếu thất bại và còn proxy khác — tự chuyển proxy, thử lại
                 auth_ok = st.ensure_auth(force=True)
                 if not auth_ok and self.proxy_pool.has_proxies():
                     _max_proxy_tries = len(self.proxy_pool._alive)  # tối đa số proxy còn sống
@@ -2992,8 +2863,12 @@ class App(ctk.CTk):
             self._run_done0 = sum(1 for j in todo if j["status"] == "xong")
             self._done_timestamps = collections.deque()   # ghi timestamp mỗi video xong → tính tốc độ trượt 10 phút
 
-            n_upload_threads = max(3, len(accs) * 3)
-            upload_sem = threading.Semaphore(n_upload_threads)   # số luồng upload = số TK × 3 (9 luồng cho 3 TK)
+            try:
+                user_up_threads = max(1, int(self.spn_upload_threads.get().strip()))
+            except Exception:
+                user_up_threads = 3
+            n_upload_threads = max(1, len(accs) * user_up_threads)
+            upload_sem = threading.Semaphore(n_upload_threads)   # số luồng upload = số TK × số luồng/TK do người dùng gán
             jobq = queue.Queue()
             for j in todo:
                 j["_cycles"] = 0
@@ -3214,8 +3089,6 @@ class App(ctk.CTk):
 
             def worker(st):
                 while not self._stop:
-                    if not st.acc.get("enabled", True):
-                        time.sleep(1); continue
                     w = st.rest_remaining()
                     if w > 0:
                         time.sleep(min(w, 3)); continue        # account đang nghỉ -> không pull job
@@ -3513,6 +3386,11 @@ class App(ctk.CTk):
         ctk.CTkCheckBox(row1, text="⏭ Bỏ qua SP đã có ảnh", variable=self._sp_skip_img,
                         font=("", 11), checkbox_width=18, checkbox_height=18).pack(side="left", padx=(12, 0))
 
+        ctk.CTkLabel(row1, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(12, 2))
+        self._sp_upload_threads = ctk.CTkEntry(row1, width=42, height=28, font=("", 12, "bold"), justify="center")
+        self._sp_upload_threads.pack(side="left", padx=(0, 4))
+        self._sp_upload_threads.insert(0, str(self.settings.get("shopee_upload_threads_per_acc", 3)))
+
         # Row 1.5: Review Style Config
         row1_5 = ctk.CTkFrame(cfg, fg_color="transparent"); row1_5.pack(fill="x", padx=12, pady=(4, 0))
         ctk.CTkLabel(row1_5, text="Kiểu Review:", font=("", 12)).pack(side="left")
@@ -3525,13 +3403,11 @@ class App(ctk.CTk):
         ctk.CTkLabel(row1_5, text="AI Prompt:", font=("", 12)).pack(side="left")
         self._sp_ai_prompt = ctk.CTkOptionMenu(
             row1_5,
-            values=["Gemini", "Groq", "Prompt A + B"],
+            values=["Gemini", "Groq", "Template (mặc định)"],
             width=150
         )
         self._sp_ai_prompt.pack(side="left", padx=(4, 6))
-        saved_sp_ai = self.settings.get("shopee_ai_prompt", "Prompt A + B")
-        if saved_sp_ai == "Template (mặc định)": saved_sp_ai = "Prompt A + B"
-        self._sp_ai_prompt.set(saved_sp_ai)
+        self._sp_ai_prompt.set(self.settings.get("shopee_ai_prompt", "Template (mặc định)"))
 
         ctk.CTkButton(
             row1_5,
@@ -3692,16 +3568,6 @@ class App(ctk.CTk):
                                           fg_color="#5C6BC0", hover_color="#3949AB",
                                           height=42, width=120)
         self._sp_btn_open.pack(side="left")
-
-        # Ô Cài đặt Số luồng Upload/TK ở cuối hàng nút bấm
-        sp_up_box = ctk.CTkFrame(self._sp_btn_row, fg_color=CARD, corner_radius=8, height=42)
-        sp_up_box.pack(side="left", padx=(6, 0))
-        ctk.CTkLabel(sp_up_box, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(10, 4), pady=6)
-        self._sp_upload_threads_per_acc = ctk.CTkOptionMenu(sp_up_box, values=["4", "5", "6", "7", "8"], width=60, height=28)
-        self._sp_upload_threads_per_acc.pack(side="left", padx=(0, 8), pady=6)
-        saved_sp_up = self.settings.get("shopee_upload_threads_per_acc", "4")
-        if saved_sp_up in ("1", "2", "3"): saved_sp_up = "4"
-        self._sp_upload_threads_per_acc.set(saved_sp_up)
 
         self._shopee_running = False
         self._shopee_stop_flag = False
@@ -4193,8 +4059,8 @@ class App(ctk.CTk):
                 for w in self._sp_pool_rows_frame.winfo_children(): w.destroy()
                 self._sp_pool_rows = {}
                 if states:
-                    cols = [("Tài khoản", 140), ("✅ Xong", 55), ("❌ Lỗi", 50),
-                            ("⚡ Tạo", 45), ("🚀 Tốc độ", 60), ("Trạng thái", 110), ("🌐 Proxy", 160), ("Hành động", 70)]
+                    cols = [("Tài khoản", 140), ("✅ Xong", 50), ("❌ Lỗi", 50),
+                            ("⚡ Tạo", 45), ("🚀 Tốc độ", 60), ("Trạng thái", 100), ("🌐 Proxy", 150), ("Hành động", 70)]
                     hdr = ctk.CTkFrame(self._sp_pool_rows_frame, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 2))
                     for txt, w in cols:
                         ctk.CTkLabel(hdr, text=txt, font=("", 10, "bold"), text_color=T2, width=w, anchor="w").pack(side="left", padx=(2, 0))
@@ -4202,16 +4068,14 @@ class App(ctk.CTk):
                         row = ctk.CTkFrame(self._sp_pool_rows_frame, fg_color=("#f6f8fc" if i % 2 else CARD), corner_radius=6)
                         row.pack(fill="x", pady=1)
                         ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=140, anchor="w").pack(side="left", padx=(2, 0))
-                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=55, anchor="w"); wl.pack(side="left", padx=(2, 0))
+                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=50, anchor="w"); wl.pack(side="left", padx=(2, 0))
                         fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=50, anchor="w"); fl.pack(side="left", padx=(2, 0))
                         bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=45, anchor="w"); bl.pack(side="left", padx=(2, 0))
                         rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=60, anchor="w"); rl.pack(side="left", padx=(2, 0))
-                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=110, anchor="w"); sl.pack(side="left", padx=(2, 0))
-                        pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=160, anchor="w"); pl.pack(side="left", padx=(2, 0))
-                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=62, height=24, font=("", 11, "bold"),
-                                           command=lambda e=s.email: self._toggle_acc_enabled(e))
-                        ab.pack(side="left", padx=(4, 0))
-                        self._sp_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab}
+                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=100, anchor="w"); sl.pack(side="left", padx=(2, 0))
+                        pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=150, anchor="w"); pl.pack(side="left", padx=(2, 0))
+                        ctk.CTkButton(row, text="⏹ Dừng", width=55, height=24, fg_color="#E57373", hover_color="#EF5350", font=("", 10, "bold"), command=lambda em=s.email: self._stop_single_account(em)).pack(side="left", padx=(4, 0))
+                        self._sp_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl}
             for s in states:
                 r = self._sp_pool_rows.get(s.email)
                 if not r: continue
@@ -4228,20 +4092,14 @@ class App(ctk.CTk):
                     r["p"].configure(text=px_display, text_color=AC)
                 else:
                     r["p"].configure(text="IP trực tiếp", text_color=T2)
-                is_enabled = s.acc.get("enabled", True)
-                if not is_enabled:
-                    r["s"].configure(text="⏹ đã dừng", text_color=T2)
-                    r["a"].configure(text="▶ Chạy", fg_color="#26A69A", hover_color="#00897B")
-                else:
-                    r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
-                    rem = s.rest_remaining()
-                    if rem > 0:
-                        if s.rest_reason == "quota":
-                            r["s"].configure(text=f"⛔ cách ly {int(rem//60)}p", text_color=RD)
-                        else:
-                            r["s"].configure(text=f"😴 nghỉ {int(rem)}s", text_color="#F9A825")
+                rem = s.rest_remaining()
+                if rem > 0:
+                    if s.rest_reason == "quota":
+                        r["s"].configure(text=f"⛔ cách ly {int(rem//60)}p", text_color=RD)
                     else:
-                        r["s"].configure(text="🟢 đang chạy", text_color=GR)
+                        r["s"].configure(text=f"😴 nghỉ {int(rem)}s", text_color="#F9A825")
+                else:
+                    r["s"].configure(text="🟢 đang chạy", text_color=GR)
         except Exception:
             pass
         finally:
@@ -4372,9 +4230,12 @@ class App(ctk.CTk):
         _sp_cached_ai_prompt = self._sp_ai_prompt.get()
         _sp_cached_gemini_keys = [l.strip() for l in self.txt_gemini.get("1.0", "end").splitlines() if l.strip()]
         _sp_cached_groq_keys = [l.strip() for l in self.txt_groq_keys.get("1.0", "end").splitlines() if l.strip()]
-        upload_per_acc = int(self._sp_upload_threads_per_acc.get())
-        _sp_cached_wpa = max(4, min(8, upload_per_acc))
-        _sp_cached_submit_max = float(_sp_cached_wpa)
+        try:
+            up_threads = max(1, int(self._sp_upload_threads.get().strip()))
+        except Exception:
+            up_threads = 3
+        _sp_cached_wpa = up_threads * 2
+        _sp_cached_submit_max = float(up_threads * 2)
         # Gắn mô tả giọng nói cố định vào engine (ưu tiên nhập tay, nếu trống → dùng preset theo ngôn ngữ)
         manual_voice = self.ent_voice_desc.get().strip()
         E.VOICE_DESC = manual_voice if manual_voice else E.get_voice_for_lang(lang_code)
@@ -4512,8 +4373,12 @@ class App(ctk.CTk):
             self._sp_eta_products = products
 
             # ── Shared Job Queue ──
-            n_upload_threads = max(3, len(accs) * 3)
-            upload_sem = threading.Semaphore(n_upload_threads)   # số luồng upload = số TK × 3 (9 luồng cho 3 TK)
+            try:
+                user_up_threads = max(1, int(self._sp_upload_threads.get().strip()))
+            except Exception:
+                user_up_threads = 3
+            n_upload_threads = max(1, len(accs) * user_up_threads)
+            upload_sem = threading.Semaphore(n_upload_threads)   # số luồng upload = số TK × số luồng/TK do người dùng gán
             jobq = queue.Queue()
             for idx, prod in enumerate(products):
                 prod["_idx"] = idx
@@ -5062,8 +4927,6 @@ class App(ctk.CTk):
 
             def worker(st):
                 while not self._shopee_stop_flag:
-                    if not st.acc.get("enabled", True):
-                        time.sleep(1); continue
                     w = st.rest_remaining()
                     if w > 0:
                         time.sleep(min(w, 3)); continue
@@ -5375,12 +5238,10 @@ class App(ctk.CTk):
 
         # AI sinh prompt
         ctk.CTkLabel(row2, text="AI Prompt:", font=("", 12)).pack(side="left", padx=(8, 2))
-        self._sv_ai_prompt = ctk.CTkOptionMenu(row2, values=["Gemini", "Groq", "Prompt A + B"], width=160)
+        self._sv_ai_prompt = ctk.CTkOptionMenu(row2, values=["Gemini", "Groq", "Template (mặc định)"], width=160)
         self._sv_ai_prompt.pack(side="left", padx=(2, 12))
-        saved_sv_ai = self.settings.get("sv_ai_prompt", "Prompt A + B")
-        if saved_sv_ai == "Template (mặc định)": saved_sv_ai = "Prompt A + B"
-        self._sv_ai_prompt.set(saved_sv_ai)
-        self._sv_ai_saved_value = saved_sv_ai  # lưu giá trị trước khi khóa
+        self._sv_ai_prompt.set(self.settings.get("sv_ai_prompt", "Template (mặc định)"))
+        self._sv_ai_saved_value = self.settings.get("sv_ai_prompt", "Template (mặc định)")  # lưu giá trị trước khi khóa
 
         # Áp dụng trạng thái khóa/mở theo duration đã lưu
         self._sv_on_duration_change()
@@ -5444,11 +5305,6 @@ class App(ctk.CTk):
                                               fg_color="#E57373", hover_color="#EF5350", height=32)
         self._sv_btn_release.pack(side="left", padx=(4, 0))
 
-        self._sv_btn_clear_violation = ctk.CTkButton(claim_row, text="🗑 Xóa Vi Phạm CS", width=130,
-                                                     command=self._sv_clear_violation,
-                                                     fg_color="#D32F2F", hover_color="#C62828", height=32, font=("", 11, "bold"))
-        self._sv_btn_clear_violation.pack(side="left", padx=(4, 0))
-
         # Stats row
         stat_row = ctk.CTkFrame(claim_card, fg_color="transparent"); stat_row.pack(fill="x", padx=12, pady=(0, 10))
         self._sv_stat_lbl = ctk.CTkLabel(stat_row, text="📊 Chưa có dữ liệu", font=("", 11), text_color=T2)
@@ -5478,21 +5334,14 @@ class App(ctk.CTk):
 
 
 
-        self._sv_btn_open = ctk.CTkButton(btn_row, text="📂 Mở thư mục",
+        ctk.CTkButton(btn_row, text="📂 Mở thư mục",
                                            command=lambda: os.startfile(self._sv_outdir.get().strip()) if os.path.isdir(self._sv_outdir.get().strip()) else None,
-                                           fg_color="#5C6BC0", hover_color="#3949AB",
-                                           height=42, width=120)
-        self._sv_btn_open.pack(side="left", padx=(4, 0))
+                                           fg_color="#5f6368", height=42, width=110).pack(side="left")
 
-        # Ô Cài đặt Số luồng Upload/TK ở cuối hàng nút bấm
-        sv_up_box = ctk.CTkFrame(btn_row, fg_color=CARD, corner_radius=8, height=42)
-        sv_up_box.pack(side="left", padx=(6, 0))
-        ctk.CTkLabel(sv_up_box, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(10, 4), pady=6)
-        self._sv_upload_threads_per_acc = ctk.CTkOptionMenu(sv_up_box, values=["4", "5", "6", "7", "8"], width=60, height=28)
-        self._sv_upload_threads_per_acc.pack(side="left", padx=(0, 8), pady=6)
-        saved_sv_up = self.settings.get("sv_upload_threads_per_acc", "4")
-        if saved_sv_up in ("1", "2", "3"): saved_sv_up = "4"
-        self._sv_upload_threads_per_acc.set(saved_sv_up)
+        ctk.CTkLabel(btn_row, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(12, 2))
+        self._sv_spn_upload_threads = ctk.CTkEntry(btn_row, width=42, height=32, font=("", 12, "bold"), justify="center")
+        self._sv_spn_upload_threads.pack(side="left", padx=(0, 4))
+        self._sv_spn_upload_threads.insert(0, str(self.settings.get("sv_upload_threads_per_acc", 3)))
 
         # --- Middle Split Container (Horizontal: 50% / 50%) ---
         middle_split = ctk.CTkFrame(f, fg_color="transparent")
@@ -5559,8 +5408,8 @@ class App(ctk.CTk):
                 for w in self._sv_pool_rows_frame.winfo_children(): w.destroy()
                 self._sv_pool_rows = {}
                 if states:
-                    cols = [("Tài khoản", 140), ("✅ Xong", 55), ("❌ Lỗi", 50),
-                            ("⚡ Tạo", 45), ("🚀 Tốc độ", 60), ("Trạng thái", 110), ("🌐 Proxy", 160), ("Hành động", 70)]
+                    cols = [("Tài khoản", 140), ("✅ Xong", 50), ("❌ Lỗi", 50),
+                            ("⚡ Tạo", 45), ("🚀 Tốc độ", 60), ("Trạng thái", 100), ("🌐 Proxy", 150), ("Hành động", 70)]
                     hdr = ctk.CTkFrame(self._sv_pool_rows_frame, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 2))
                     for txt, w in cols:
                         ctk.CTkLabel(hdr, text=txt, font=("", 10, "bold"), text_color=T2, width=w, anchor="w").pack(side="left", padx=(2, 0))
@@ -5568,16 +5417,14 @@ class App(ctk.CTk):
                         row = ctk.CTkFrame(self._sv_pool_rows_frame, fg_color=("#f6f8fc" if i % 2 else CARD), corner_radius=6)
                         row.pack(fill="x", pady=1)
                         ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=140, anchor="w").pack(side="left", padx=(2, 0))
-                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=55, anchor="w"); wl.pack(side="left", padx=(2, 0))
+                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=50, anchor="w"); wl.pack(side="left", padx=(2, 0))
                         fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=50, anchor="w"); fl.pack(side="left", padx=(2, 0))
                         bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=45, anchor="w"); bl.pack(side="left", padx=(2, 0))
                         rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=60, anchor="w"); rl.pack(side="left", padx=(2, 0))
-                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=110, anchor="w"); sl.pack(side="left", padx=(2, 0))
-                        pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=160, anchor="w"); pl.pack(side="left", padx=(2, 0))
-                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=62, height=24, font=("", 11, "bold"),
-                                           command=lambda e=s.email: self._toggle_acc_enabled(e))
-                        ab.pack(side="left", padx=(4, 0))
-                        self._sv_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab}
+                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=100, anchor="w"); sl.pack(side="left", padx=(2, 0))
+                        pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=150, anchor="w"); pl.pack(side="left", padx=(2, 0))
+                        ctk.CTkButton(row, text="⏹ Dừng", width=55, height=24, fg_color="#E57373", hover_color="#EF5350", font=("", 10, "bold"), command=lambda em=s.email: self._stop_single_account(em)).pack(side="left", padx=(4, 0))
+                        self._sv_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl}
             for s in states:
                 r = self._sv_pool_rows.get(s.email)
                 if not r: continue
@@ -5592,20 +5439,14 @@ class App(ctk.CTk):
                     r["p"].configure(text=px_display, text_color=AC)
                 else:
                     r["p"].configure(text="IP trực tiếp", text_color=T2)
-                is_enabled = s.acc.get("enabled", True)
-                if not is_enabled:
-                    r["s"].configure(text="⏹ đã dừng", text_color=T2)
-                    r["a"].configure(text="▶ Chạy", fg_color="#26A69A", hover_color="#00897B")
-                else:
-                    r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
-                    rem = s.rest_remaining()
-                    if rem > 0:
-                        if s.rest_reason == "quota":
-                            r["s"].configure(text=f"⛔ cách ly {int(rem//60)}p", text_color=RD)
-                        else:
-                            r["s"].configure(text=f"😴 nghỉ {int(rem)}s", text_color="#F9A825")
+                rem = s.rest_remaining()
+                if rem > 0:
+                    if s.rest_reason == "quota":
+                        r["s"].configure(text=f"⛔ cách ly {int(rem//60)}p", text_color=RD)
                     else:
-                        r["s"].configure(text="🟢 đang chạy", text_color=GR)
+                        r["s"].configure(text=f"😴 nghỉ {int(rem)}s", text_color="#F9A825")
+                else:
+                    r["s"].configure(text="🟢 đang chạy", text_color=GR)
         except Exception:
             pass
         finally:
@@ -5829,21 +5670,6 @@ class App(ctk.CTk):
             except Exception as e:
                 self._sv_log_msg(f"❌ Lỗi giải phóng: {e}")
         threading.Thread(target=_do, daemon=True).start()
-
-    def _sv_clear_violation(self):
-        """Xóa toàn bộ sản phẩm dính lỗi 'vi phạm cs' khỏi danh sách SP đã nhận Tab Server Video."""
-        before = len(self._sv_products)
-        self._sv_products = [
-            p for p in self._sv_products
-            if str(p.get("_status", "")).strip().lower() not in ("error", "vi_pham_cs", "vi phạm cs")
-        ]
-        cleared = before - len(self._sv_products)
-        self._sv_render_products_list()
-        self._sv_log_msg(f"🗑️ Đã xóa {cleared} sản phẩm vi phạm chính sách khỏi danh sách!")
-        if cleared > 0:
-            messagebox.showinfo("Đã xóa", f"Đã xóa {cleared} sản phẩm vi phạm CS khỏi danh sách!")
-        else:
-            messagebox.showinfo("Thông báo", "Không có sản phẩm nào vi phạm CS trong danh sách hiện tại.")
 
     def _sv_download_image(self, image_url, save_path):
         """Tải ảnh sản phẩm từ Shopee CDN về thư mục tạm."""
@@ -6222,7 +6048,7 @@ class App(ctk.CTk):
         else:
             # Mở khóa dropdown AI Prompt
             self._sv_ai_prompt.configure(
-                values=["Gemini", "Groq", "Prompt A + B"],
+                values=["Gemini", "Groq", "Template (mặc định)"],
                 state="normal",
                 fg_color=ctk.ThemeManager.theme["CTkOptionMenu"]["fg_color"],
                 text_color=ctk.ThemeManager.theme["CTkOptionMenu"]["text_color"]
@@ -6333,42 +6159,36 @@ class App(ctk.CTk):
                     continue
             return None
 
-        # Định nghĩa hàm gọi Groq helper (Thử nhiều model: llama-3.1-8b-instant -> llama-3.3-70b-versatile -> mixtral-8x7b-32768)
+        # Định nghĩa hàm gọi Groq helper
         def _run_groq(keys):
             import random as _rnd
             keys_copy = list(keys)
             _rnd.shuffle(keys_copy)
-            groq_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"]
             for key in keys_copy:
-                for model in groq_models:
-                    try:
-                        url = "https://api.groq.com/openai/v1/chat/completions"
-                        payload = json.dumps({
-                            "model": model,
-                            "messages": [
-                                {"role": "system", "content": "You generate Google Veo 3 video prompts for Shopee product reviews."},
-                                {"role": "user", "content": system_prompt}
-                            ],
-                            "temperature": 0.9,
-                            "max_tokens": 2000
-                        }).encode("utf-8")
-                        req = urllib.request.Request(url, data=payload, headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {key}",
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                        })
-                        with urllib.request.urlopen(req, timeout=15) as resp:
-                            data = json.loads(resp.read().decode("utf-8"))
-                        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                        prompts = [p.strip() for p in text.strip().split("\n") if p.strip() and len(p.strip()) > 20]
-                        if len(prompts) >= n_segments:
-                            return prompts[:n_segments]
-                    except Exception as e:
-                        err_str = str(e).lower()
-                        if any(tok in err_str for tok in ("400", "401", "403", "restricted", "blocked", "invalid", "forbidden")):
-                            self._sv_log_msg(f"  ⚠ Groq key {key[:12]}... bị khóa/lỗi ({e}) → Chuyển key tiếp theo.")
-                            break  # Bỏ qua key hỏng/bị khóa này, chuyển ngay sang key khác
-                        continue
+                try:
+                    url = "https://api.groq.com/openai/v1/chat/completions"
+                    payload = json.dumps({
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": [
+                            {"role": "system", "content": "You generate Google Veo 3 video prompts for Shopee product reviews."},
+                            {"role": "user", "content": system_prompt}
+                        ],
+                        "temperature": 0.9,
+                        "max_tokens": 2000
+                    }).encode("utf-8")
+                    req = urllib.request.Request(url, data=payload, headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {key}"
+                    })
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    prompts = [p.strip() for p in text.strip().split("\n") if p.strip() and len(p.strip()) > 20]
+                    if len(prompts) >= n_segments:
+                        return prompts[:n_segments]
+                except Exception as e:
+                    self._sv_log_msg(f"  ⚠ Groq key {key[:10]}... lỗi: {str(e)[:50]}")
+                    continue
             return None
 
         # Thực hiện gọi và tự động fallback
@@ -6428,9 +6248,12 @@ class App(ctk.CTk):
         client_id = self._sv_client_entry.get().strip()
         ai_mode = self._sv_ai_prompt.get()  # "Gemini" | "Groq" | "Template (mặc định)" | "📺 TVC Template"
 
-        upload_per_acc = int(self._sv_upload_threads_per_acc.get())
-        _sv_cached_wpa = max(4, min(8, upload_per_acc))
-        _sv_cached_submit_max = float(_sv_cached_wpa)
+        try:
+            up_threads = max(1, int(self._sv_spn_upload_threads.get().strip()))
+        except Exception:
+            up_threads = 3
+        _sv_cached_wpa = up_threads * 2
+        _sv_cached_submit_max = float(up_threads * 2)
 
         self.settings["sv_remove_wm"] = remove_wm
         self.settings["sv_del_img"] = del_img
@@ -6441,6 +6264,7 @@ class App(ctk.CTk):
         self.settings["sv_ai_prompt"] = ai_mode
         self.settings["sv_workers_per_account"] = _sv_cached_wpa
         self.settings["sv_submit_max"] = _sv_cached_submit_max
+        self.settings["sv_upload_threads_per_acc"] = int(self._sv_spn_upload_threads.get().strip() or "3")
 
         # Lấy keys từ tab Tài khoản (dùng chung)
         sv_gemini_keys = [k.strip() for k in self.txt_gemini.get("1.0", "end").splitlines() if k.strip()]
@@ -6550,10 +6374,13 @@ class App(ctk.CTk):
             results_lock = threading.Lock()
             success_count = [0]
             error_count = [0]
-            upload_per_acc = int(self._sv_upload_threads_per_acc.get())
-            n_upload_threads = max(1, len(states) * upload_per_acc)
-            upload_sem = threading.Semaphore(n_upload_threads)
-            self._sv_log_msg(f"📤 Khởi tạo {n_upload_threads} luồng upload song song ({len(states)} TK × {upload_per_acc} luồng/TK)")
+            try:
+                user_up_threads = max(1, int(self._sv_spn_upload_threads.get().strip()))
+            except Exception:
+                user_up_threads = 3
+            n_upload_threads = max(1, len(states) * user_up_threads)
+            upload_sem = threading.Semaphore(n_upload_threads)  # Tổng luồng upload = Số TK đang chạy x số luồng/TK
+            self._sv_log_msg(f"📤 Khởi tạo {n_upload_threads} luồng upload song song (Số TK đang chạy: {len(states)} × {user_up_threads})")
             # Tự động tối ưu số luồng ghép video (FFmpeg) đồng thời dựa trên số nhân CPU của máy khách (14 luồng cho 56 nhân)
             merge_sem = threading.Semaphore(max(4, os.cpu_count() // 4))
 
@@ -6693,12 +6520,12 @@ class App(ctk.CTk):
                         prompts = prompts[:n_segments_needed]
                         self._sv_log_msg(f"  🤖 AI sinh {len(prompts)} prompt ({ai_mode}, cảnh: {scene_name})")
                     else:
-                        # Fallback về Prompt A + B nếu AI thất bại hoặc chọn Prompt A + B
+                        # Fallback về template nếu AI thất bại hoặc chọn Template
                         prompts = SV.build_video_prompts_fallback(product_name, scene_en, duration_sec, lang=lang_code, review_style=review_style)
-                        if ai_mode not in ("Prompt A + B", "Template (mặc định)"):
-                            self._sv_log_msg(f"  ⚠ AI thất bại → dùng Prompt A + B fallback")
+                        if ai_mode != "Template (mặc định)":
+                            self._sv_log_msg(f"  ⚠ AI thất bại → dùng Template fallback")
                         else:
-                            self._sv_log_msg(f"  📝 Prompt A + B sinh {len(prompts)} prompt (cảnh: {scene_name})")
+                            self._sv_log_msg(f"  📝 Template sinh {len(prompts)} prompt (cảnh: {scene_name})")
                     n_segments = len(prompts)
 
                 # --- Upload ảnh SP ---
@@ -6712,7 +6539,6 @@ class App(ctk.CTk):
                         self._sv_log_msg(f"  ❌ Upload lỗi: {ex}")
                         return "retry_soft"
                     if mid == "proxy_dead":
-
                         self._sv_handle_proxy_dead(st)
                         return "retry_soft"
                     if mid == "throttle":
@@ -6753,16 +6579,10 @@ class App(ctk.CTk):
                     st.proxy_fail_streak = 0  # Upload OK → reset proxy streak
                     self._sv_log_msg(f"  ✅ Media ID: {mid[:20]}...")
 
-                # --- Tạo video từng segment (Tự động dùng lại segment đã hoàn thành trong temp) ---
+                # --- Tạo video từng segment ---
                 clip_paths = []
                 for seg_idx, prompt in enumerate(prompts):
                     if self._sv_stop_flag: return "retry_soft"
-                    clip_path = os.path.join(temp_dir, f"sv_{item_id}_seg{seg_idx}.mp4")
-                    if os.path.exists(clip_path) and os.path.getsize(clip_path) > 100 * 1024:
-                        self._sv_log_msg(f"  ⚡ Segment {seg_idx+1}/{n_segments}: Đã hoàn thành sẵn ({os.path.getsize(clip_path)//1024}KB) → Dùng lại, không tạo lại!")
-                        clip_paths.append(clip_path)
-                        continue
-
                     self._sv_log_msg(f"  🎬 Segment {seg_idx+1}/{n_segments}...")
 
                     # AIMD gating: chờ slot submit
@@ -6937,8 +6757,6 @@ class App(ctk.CTk):
             # --- Worker thread ---
             def worker(st, jobq):
                 while not done_flag[0] and not self._sv_stop_flag:
-                    if not st.acc.get("enabled", True):
-                        time.sleep(1); continue
                     w = st.rest_remaining()
                     if w > 0:
                         time.sleep(min(w, 2))
@@ -7113,7 +6931,6 @@ class App(ctk.CTk):
                 "gen_mode": self.gen_mode.get(),
                 "ref_dir": self.ent_ref.get(),
                 "aspect": self.opt_aspect.get(),
-                "gen_upload_threads_per_acc": self.opt_upload_threads_per_acc.get(),
                 "naming": self.opt_naming.get(),
                 "out_dir": self.ent_out.get(),
                 "gemini_keys": [l.strip() for l in self.txt_gemini.get("1.0", "end").splitlines() if l.strip()],
@@ -7137,16 +6954,17 @@ class App(ctk.CTk):
                 "remove_veo_wm": self.remove_veo_wm.get(),
                 # Giọng nói cố định
                 "voice_desc": self.ent_voice_desc.get().strip(),
-                # Tạo + Tốc độ settings
-                "workers_per_account": 5,
-                "submit_max": 5,
+                # Tạo + Tốc độ settings (tự động = 2 * Upload/TK)
+                "workers_per_account": int(self.spn_upload_threads.get().strip() or "3") * 2,
+                "submit_max": int(self.spn_upload_threads.get().strip() or "3") * 2,
+                "upload_threads_per_acc": int(self.spn_upload_threads.get().strip() or "3"),
+                "shopee_upload_threads_per_acc": int(self._sp_upload_threads.get().strip() or "3"),
                 # Telegram settings
                 "tg_token": self.ent_tg_token.get().strip(),
                 "tg_chatid": self.ent_tg_chatid.get().strip(),
                 "tg_enabled": self.tg_enabled.get(),
                 # Shopee settings
                 "shopee_aspect": self._sp_aspect.get(),
-                "shopee_upload_threads_per_acc": self._sp_upload_threads_per_acc.get(),
                 "shopee_scene": self._sp_scene.get(),
                 "shopee_duration": self._sp_duration.get(),
                 "shopee_model_dir": self._sp_model_dir.get(),
@@ -7172,7 +6990,6 @@ class App(ctk.CTk):
                     "sv_api_key": self._sv_apikey.get().strip(),
                     "sv_client_id": self._sv_client_entry.get().strip(),
                     "sv_aspect": self._sv_aspect.get(),
-                    "sv_upload_threads_per_acc": self._sv_upload_threads_per_acc.get(),
                     "sv_scene": self._sv_scene.get(),
                     "sv_duration": self._sv_duration.get(),
                     "sv_lang": self._sv_lang.get(),
@@ -7182,8 +6999,8 @@ class App(ctk.CTk):
                     "sv_ghep_anh": self._sv_ghep_anh.get(),
                     "sv_use_laundering": self._sv_use_laundering.get(),
                     "sv_ai_prompt": self._sv_ai_prompt.get(),
-                    "sv_workers_per_account": 5,
-                    "sv_submit_max": 5,
+                    "sv_workers_per_account": int(self._sv_spn_upload_threads.get().strip() or "3") * 2,
+                    "sv_submit_max": int(self._sv_spn_upload_threads.get().strip() or "3") * 2,
                     "sv_naming": self._sv_naming.get(),
                     "sv_out_dir": self._sv_outdir.get().strip(),
                     "sv_claim_limit": self._sv_claim_limit.get().strip(),
@@ -7218,8 +7035,7 @@ class App(ctk.CTk):
                     pass
 
     def _clean_orphaned_chrome(self, sync=False):
-        """Quét và tắt ngầm các tiến trình Chrome/Chromedriver tự động hóa bị kẹt của Thìn Aptm.
-        Tuyệt đối KHÔNG đụng tới Chrome cá nhân của người dùng hay GemLogin app!"""
+        """Quét và tắt ngầm các tiến trình Chrome/Chromedriver tự động hóa/DrissionPage bị kẹt của Thìn Aptm (Tuyệt đối KHÔNG tắt GemLogin app)."""
         def _do_sweep():
             import psutil, os
             current_pid = os.getpid()
@@ -7236,28 +7052,35 @@ class App(ctk.CTk):
                     pid = p['pid']
                     ppid = p['ppid']
                     cmd = " ".join(p['cmdline']).lower() if p['cmdline'] else ""
-                    
-                    # 1. Chromedriver kẹt (không còn parent python)
+                    # 1. Chromedriver kẹt
                     if name == 'chromedriver.exe':
                         if ppid not in pids_active:
                             try: psutil.Process(pid).kill()
                             except: pass
-                    # 2. CHỈ diệt Chrome tự động hóa do DrissionPage / ThinAptm mở ra (có chứa 'drissionpage', '_profiles' + 'remote-debugging-port')
-                    # KHÔNG BAO GIỜ diệt Chrome bình thường của người dùng!
+                    # 2. Chrome tự động hóa / DrissionPage (Tuyệt đối KHÔNG đụng tới GemLogin app)
                     elif name == 'chrome.exe':
-                        if 'gemlogin' in cmd:
+                        # Nếu là DrissionPage -> diệt ngay lập tức
+                        if 'drissionpage' in cmd:
+                            try: psutil.Process(pid).kill()
+                            except: pass
+                            continue
+
+                        if 'gemlogin' in cmd and 'drissionpage' not in cmd:
                             continue
                         try:
                             exe_path = psutil.Process(pid).exe().lower()
-                            if 'gemlogin' in exe_path:
+                            if 'gemlogin' in exe_path and 'drissionpage' not in cmd:
                                 continue
                         except Exception:
                             pass
+                        is_helper = '--type=' in cmd
+                        is_automated = '--headless' in cmd or '--remote-debugging-port' in cmd or 'automation' in cmd or '_profiles' in cmd
+                        parent_dead = ppid not in pids_active
+                        parent_proc = [x for x in all_procs if x['pid'] == ppid]
+                        parent_name = parent_proc[0]['name'].lower() if parent_proc else ''
                         
-                        # Bắt buộc CHỈ diệt nếu command line chứa thông số nhận diện tự động hóa riêng của app
-                        is_automated_thinaptm = ('drissionpage' in cmd) or ('_profiles' in cmd and 'remote-debugging-port' in cmd)
-                        if is_automated_thinaptm:
-                            if ppid not in pids_active or ppid == current_pid:
+                        if is_automated or is_helper:
+                            if parent_dead or parent_name not in ['python.exe', 'pythonw.exe']:
                                 try: psutil.Process(pid).kill()
                                 except: pass
             except Exception:
@@ -7327,125 +7150,12 @@ class App(ctk.CTk):
         import threading
         threading.Thread(target=_do_sweep, daemon=True).start()
 
-    def _start_update_checker(self):
-        """Khởi chạy thread kiểm tra bản cập nhật từ GitHub."""
-        try:
-            self.btn_do_update.configure(text="⏳ Đang kiểm tra...", state="disabled")
-        except Exception:
-            pass
-
-        def _check():
-            try:
-                import urllib.request, re
-                import update as updater
-                repo_url = "https://raw.githubusercontent.com/thincole/thinaptm/main/"
-                has_update = False
-                changed_files = []
-                remote_ver = None
-                check_files = getattr(updater, "FILES", ["thin_aptm.py", "engine.py", "login.py", "auto_voice_sub.py", "ghep_video.py", "prompt_templates.py", "recaptcha_farm.py", "update.py"])
-                for f in check_files:
-                    try:
-                        req = urllib.request.Request(
-                            repo_url + f + f"?t={os.urandom(4).hex()}",
-                            headers={"Cache-Control": "no-cache", "User-Agent": "thinaptm-app-checker"}
-                        )
-                        remote_data = urllib.request.urlopen(req, timeout=5).read()
-                        if not remote_data or len(remote_data) < 30:
-                            continue
-                        if f == "thin_aptm.py":
-                            m = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', remote_data.decode("utf-8", errors="ignore"))
-                            if m: remote_ver = m.group(1)
-                        local_path = os.path.join(HERE, f)
-                        local_data = open(local_path, "rb").read() if os.path.exists(local_path) else b""
-                        if remote_data != local_data:
-                            has_update = True
-                            changed_files.append(f)
-                    except Exception:
-                        pass
-                if has_update:
-                    display_ver = remote_ver if remote_ver else "Bản mới"
-                    self._log(f"🔔 CẢNH BÁO CẬP NHẬT: Có bản mới ({display_ver}) trên GitHub ({len(changed_files)} file thay đổi)!")
-                    self.after(0, lambda: self._show_update_badge(changed_files, display_ver))
-                else:
-                    self.after(0, self._show_up_to_date_badge)
-            except Exception as e:
-                print(f"Lỗi kiểm tra update: {e}")
-                self.after(0, self._show_up_to_date_badge)
-        
-        threading.Thread(target=_check, daemon=True).start()
-
-    def _show_update_badge(self, changed_files, remote_ver="Bản mới"):
-        """Chuyển thẻ sang trạng thái màu cam khi có bản cập nhật mới trên GitHub."""
-        try:
-            self.update_card.configure(fg_color="#FFF3E0", border_color="#FFB74D")
-            self.lbl_update_title.configure(text="🔔 CÓ BẢN CẬP NHẬT MỚI!", text_color="#E65100")
-            self.lbl_update_sub.configure(text=f"Phiên bản mới: {remote_ver}\n({len(changed_files)} file thay đổi)", text_color="#F57C00")
-            self.btn_do_update.configure(
-                text="⚡ Cập nhật ngay",
-                fg_color="#FF9800",
-                hover_color="#F57C00",
-                state="normal",
-                command=self._apply_app_update
-            )
-        except Exception:
-            pass
-
-    def _show_up_to_date_badge(self):
-        """Giữ thẻ ở trạng thái màu xanh nhẹ thông báo đã ở bản mới nhất."""
-        try:
-            self.update_card.configure(fg_color="#E8F5E9", border_color="#81C784")
-            self.lbl_update_title.configure(text="✅ ĐÃ Ở BẢN MỚI NHẤT", text_color="#2E7D32")
-            self.lbl_update_sub.configure(text=f"Phiên bản: {APP_VERSION}", text_color="#388E3C")
-            self.btn_do_update.configure(
-                text="🔄 Kiểm tra lại",
-                fg_color="#4CAF50",
-                hover_color="#388E3C",
-                state="normal",
-                command=self._start_update_checker
-            )
-        except Exception:
-            pass
-
-    def _apply_app_update(self, changed_files=None):
-        """Tải và ghi đè bản cập nhật mới nhất từ GitHub."""
-        try:
-            self.btn_do_update.configure(text="⏳ Đang tải...", state="disabled")
-        except Exception:
-            pass
-
-        def _do_download():
-            try:
-                import urllib.request
-                import update as updater
-                repo_url = "https://raw.githubusercontent.com/thincole/thinaptm/main/"
-                files_to_update = getattr(updater, "FILES", ["thin_aptm.py", "engine.py", "login.py", "auto_voice_sub.py", "ghep_video.py", "prompt_templates.py", "recaptcha_farm.py", "update.py"])
-                updated_count = 0
-                for f in files_to_update:
-                    try:
-                        req = urllib.request.Request(
-                            repo_url + f + f"?t={os.urandom(4).hex()}",
-                            headers={"Cache-Control": "no-cache", "User-Agent": "thinaptm-app-updater"}
-                        )
-                        data = urllib.request.urlopen(req, timeout=12).read()
-                        if data and len(data) >= 30:
-                            local_path = os.path.join(HERE, f)
-                            with open(local_path, "wb") as fp:
-                                fp.write(data)
-                            updated_count += 1
-                    except Exception as ex:
-                        print(f"Lỗi tải {f}: {ex}")
-                
-                self.after(0, lambda: messagebox.showinfo("Cập Nhật Thành Công", f"🎉 Đã tải thành công {updated_count} file từ GitHub!\n\nVui lòng đóng phần mềm và mở lại (chạy CHAY.bat) để áp dụng bản mới nhất."))
-                self.after(0, self._show_up_to_date_badge)
-            except Exception as e:
-                self.after(0, lambda: messagebox.showerror("Lỗi Cập Nhật", f"Không thể tải bản cập nhật: {e}"))
-
-        threading.Thread(target=_do_download, daemon=True).start()
-        
     def _schedule_periodic_cleanup(self):
         """Lên lịch tự động quét dọn tiến trình rác mỗi 30 phút ngầm."""
         self._clean_orphaned_chrome()
         self.after(1800000, self._schedule_periodic_cleanup)
+
+
 
 
 if __name__ == "__main__":

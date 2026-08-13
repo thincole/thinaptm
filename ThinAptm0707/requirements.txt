@@ -1,0 +1,9 @@
+curl_cffi
+customtkinter
+DrissionPage
+pyotp
+pillow
+edge-tts
+psutil
+cryptography
+requests

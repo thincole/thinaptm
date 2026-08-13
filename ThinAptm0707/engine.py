@@ -145,37 +145,13 @@ def _http_post(url, headers, data=None, **kwargs):
 
 
 # ---------- AUTH ----------
-def update_cookie_string(old_cookie, set_cookie_headers):
-    """Cập nhật các cookie mới từ Set-Cookie headers vào chuỗi cookie cũ."""
-    if not set_cookie_headers:
-        return old_cookie
-    if isinstance(set_cookie_headers, str):
-        set_cookie_headers = [set_cookie_headers]
-    
-    cookie_dict = {}
-    for part in old_cookie.split(";"):
-        if "=" in part:
-            k, v = part.strip().split("=", 1)
-            cookie_dict[k.strip()] = v.strip()
-            
-    for set_cookie in set_cookie_headers:
-        first_part = set_cookie.split(";")[0]
-        if "=" in first_part:
-            k, v = first_part.strip().split("=", 1)
-            cookie_dict[k.strip()] = v.strip()
-            
-    return "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
-
-
 def bearer_from_cookie(cookie, timeout=25, proxy=None):
     if not cookie:
-        return None, None, None
+        return None, None
     H = {"Cookie": cookie, "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "application/json"}
     try:
         r = cffi.get("https://labs.google/fx/api/auth/session", headers=H, **_kw(timeout, proxy=proxy))
         if r.status_code == 200:
-            set_cookies = r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") else r.headers.get("set-cookie")
-            new_cookie = update_cookie_string(cookie, set_cookies) if set_cookies else cookie
             j = r.json() or {}
             exp = j.get("expires")
             if exp:
@@ -183,15 +159,15 @@ def bearer_from_cookie(cookie, timeout=25, proxy=None):
                     from datetime import datetime
                     if datetime.fromisoformat(str(exp).replace("Z", "+00:00")).timestamp() < time.time() + 120:
                         _log_err("bearer_from_cookie: Cookie expired or close to expiration.")
-                        return None, None, None
+                        return None, None
                 except Exception as e:
                     _log_err(f"bearer_from_cookie date check exception: {e}")
-            return j.get("access_token"), (j.get("user") or {}).get("email"), new_cookie
+            return j.get("access_token"), (j.get("user") or {}).get("email")
         else:
             _log_err(f"bearer_from_cookie failed status: {r.status_code}, response: {r.text[:200]}")
     except Exception as e:
         _log_err(f"bearer_from_cookie exception: {e}")
-    return None, None, None
+    return None, None
 
 
 def get_project(cookie, proxy=None):
@@ -527,10 +503,7 @@ def get_recaptcha_context():
 def _vpayload(prompt, project, seed, aspect, model, ref_media_id=None):
     # Ghép mô tả giọng nói cố định vào cuối prompt (nếu có)
     final_prompt = f"{prompt}. {VOICE_DESC}" if VOICE_DESC else prompt
-    aspect_enum = VID_ASPECTS.get(aspect, aspect)
-    if not str(aspect_enum).startswith("VIDEO_ASPECT_RATIO_"):
-        aspect_enum = "VIDEO_ASPECT_RATIO_PORTRAIT"
-    req = {"aspectRatio": aspect_enum, "seed": seed, "textInput": {"structuredPrompt": {"parts": [{"text": final_prompt}]}},
+    req = {"aspectRatio": aspect, "seed": seed, "textInput": {"structuredPrompt": {"parts": [{"text": final_prompt}]}},
            "videoModelKey": model, "metadata": {}}
     if ref_media_id:
         req["referenceImages"] = [{"imageUsageType": "IMAGE_USAGE_TYPE_ASSET", "mediaId": ref_media_id}]
@@ -619,11 +592,6 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
             for m in j.get("media", []):
                 if m.get("name"):
                     ops.append(m["name"])
-        if not ops:
-            for wf in j.get("workflows", []):
-                pm_id = (wf.get("metadata") or {}).get("primaryMediaId") or wf.get("name")
-                if pm_id:
-                    ops.append(pm_id)
         if ops:
             with open('debug_api.txt', 'a', encoding='utf-8') as dbg_f:
                 dbg_f.write(f"submit_video succeeded, ops: {ops}\n")
@@ -658,13 +626,7 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=3.5, timeout
     media_id = ops[0]
     credits = None
     
-    H = {
-        "Authorization": f"Bearer {bearer}" if bearer else "",
-        "Cookie": cookie if cookie else "",
-        "User-Agent": UA_CH,
-        "Referer": "https://labs.google/",
-        "Accept": "*/*"
-    }
+    H = {"Cookie": cookie if cookie else "", "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "*/*"}
     proxy_fail_count = 0  # Đếm lỗi proxy DNS liên tiếp
     
     for attempt in range(max_attempts):
@@ -692,16 +654,21 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=3.5, timeout
             # Video đã render thành công và sẵn sàng để tải!
             return "done", media_id, credits
             
-        if r.status_code in [404, 500]:
-            # Video đang trong quá trình render trên máy chủ Google (trả 404/500 trong 10-30s đầu cho tới khi ready)
+        if r.status_code == 404:
+            # Video thất bại (do vi phạm chính sách hoặc lỗi render)
+            _log_err(f"poll_video render failed or policy violation (404)")
+            return "failed", "policy", credits
+            
+        if r.status_code == 500:
+            # Video vẫn đang được render
             pass
         else:
             _log_err(f"poll_video check unexpected status {r.status_code}, response: {r.text[:200]}")
             
         time.sleep(interval)
         
-    _log_err(f"poll_video timeout or render failed after {max_attempts} attempts.")
-    return "failed", "policy", credits
+    _log_err(f"poll_video timeout after {max_attempts} attempts.")
+    return "timeout", None, credits
 
 # ---------- GEMINI: viết lại prompt vi phạm chính sách ----------
 GEMINI_MODEL = "gemini-flash-latest"   # đã kiểm: gemini-2.0-flash hay 429, 1.5 đã 404; latest chạy ổn

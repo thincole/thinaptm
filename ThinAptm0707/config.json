@@ -1,0 +1,14 @@
+{
+  "slow_factor": 1.05,
+  "image_dur": 3.5,
+  "total_dur": 12.0,
+  "motion_effect": "Zoom In (Thu phóng vào)",
+  "image_position": "Outro (Cuối video)",
+  "image_text": "",
+  "text_effect": "Random (Ngẫu nhiên)",
+  "text_position": "Dưới cùng (Bottom)",
+  "text_size": "60",
+  "text_color": "Trắng (White)",
+  "encoder": "CPU (libx264)",
+  "cpu_preset": "superfast"
+}
