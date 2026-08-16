@@ -28,6 +28,20 @@ TOKEN_TTL = 100
 FARM_INTERVAL = 8
 
 
+def get_chrome_path():
+    """Lấy đường dẫn Google Chrome chuẩn trên Windows."""
+    candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 class RecaptchaFarm:
     """Trại Token reCAPTCHA — farm token tươi bằng headless Chrome.
     
@@ -121,6 +135,9 @@ class RecaptchaFarm:
 
         try:
             co = ChromiumOptions()
+            chrome_path = get_chrome_path()
+            if chrome_path:
+                co.set_browser_path(chrome_path)
             co.set_argument("--disable-extensions")
             co.set_argument("--mute-audio")
             co.set_argument("--no-first-run")

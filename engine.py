@@ -705,7 +705,7 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=3.5, timeout
 
 # ---------- GEMINI: viết lại prompt vi phạm chính sách ----------
 GEMINI_MODEL = "gemini-flash-latest"   # đã kiểm: gemini-2.0-flash hay 429, 1.5 đã 404; latest chạy ổn
-GEMINI_BEARER_MODEL = "gemini-2.0-flash"  # model dùng cho AI viết prompt qua bearer token
+GEMINI_BEARER_MODEL = "gemini-3.7-flash"  # model dùng cho AI viết prompt qua bearer token (3.5-flash hay bị quota)
 
 def rewrite_prompt(api_key, prompt, timeout=30, model=None):
     """Nhờ Gemini viết lại prompt bị lọc nội dung -> bản AN TOÀN (giữ ý, tránh vi phạm).

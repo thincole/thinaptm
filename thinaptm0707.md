@@ -3562,3 +3562,87 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 90. Siết Chặt Quy Tắc Ràng Buộc Prompt Loại Bỏ Hoàn Toàn Lỗi Chữ Ngoằn Ngoèo / Phông Chữ Rác Của AI (2026-08-14)
+- **Phát hiện nguyên nhân**:
+  - Khi render video bằng model AI (Google Veo 3 / Imagen), AI thường có xu hướng tự động vẽ thêm các ký tự văn bản giả lập (gibberish font, chữ ngoằn ngoèo, số linh tinh, chữ tượng hình lạ) lên khung hình video nếu prompt thiếu quy tắc cấm đoán nghiêm ngặt.
+- **Nâng cấp rào chắn Prompt trong `shopeevideo.py`**:
+  - Đã bổ sung các lệnh ràng buộc `Negative Constraints` ở cấp độ cao nhất trong [`shopeevideo.py`](file:///E:/ThinAptm0707/shopeevideo.py):
+    - `ABSOLUTELY NO text, NO letters, NO numbers, NO subtitles, NO captions, NO titles, NO watermarks, NO logo overlays, NO HUD, NO UI graphics...`
+    - `ABSOLUTELY NO gibberish, floating symbols, distorted text fonts, alien characters, or random numbers anywhere in the video frame.`
+    - `Keep the entire video screen 100% clean, clear, crisp, ultra-hd, and photorealistic without any text artifacts or screen graphics.`
+  - Đảm bảo tất cả các video sinh ra bởi phần mềm từ nay trở đi đều có **khung hình sạch 100% (clean screen)**, tuyệt đối không bị dính chữ số linh tinh hay lỗi phông chữ rác!
+
+
+---
+
+## 91. Khóa Cố Định Nhận Dạng Người Mẫu (MC) & Trang Phục Đồng Bộ 100% Giữa Các Segment Video 16s/24s (2026-08-14)
+- **Phát hiện nguyên nhân**:
+  - Khi tạo video 16s (2 clip 8s) hoặc 24s (3 clip 8s), trước đây ở cả chế độ AI (Gemini/Groq) lẫn chế độ `Prompt A + B`, biến trang phục `{outfit}` bị thiếu trong mẫu câu Prompt của `_CONT_EN`.
+  - Khi Google Veo 3 render từng segment 8s, do không nhận được mô tả cố định trang phục, AI sẽ tự động sinh ngẫu nhiên người mẫu khác hoặc trang phục khác giữa các đoạn (Segment 1 người áo xanh, Segment 2 người áo đỏ...).
+- **Sửa chữa & Khóa cứng nhận dạng**:
+  - Trong [`shopeevideo.py`](file:///E:/ThinAptm0707/shopeevideo.py): Đã bổ sung biến `{outfit}` và quy tắc `CRITICAL IDENTITY & OUTFIT LOCK` trực tiếp vào `_CONT_EN`. Ép Google Veo 3 dùng đúng 1 người mẫu, 1 kiểu tóc, 1 trang phục xuyên suốt mọi segment.
+  - Trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py): Cập nhật Rule 7 trong `_sv_ai_gen_prompts` bắt buộc AI Gemini/Groq phải lặp lại chính xác 100% mô tả đặc điểm gương mặt, kiểu tóc và màu sắc trang phục giữa cả 3 segment.
+
+
+---
+
+## 92. Kỹ Thuật "Pose Handoff": Ép Đồng Bộ Hành Động Giữa Các Video Thành Phần (Segment 1 → 2 → 3) (2026-08-14)
+- **Cơ chế hoạt động**:
+  - Khi ghép nhiều clip 8s lại thành video 16s/24s, nếu điểm kết thúc của Clip 1 và điểm bắt đầu của Clip 2 không ăn khớp nhau về tư thế, video khi ghép sẽ bị giật/nhảy hành động.
+  - Đã cập nhật quy tắc **STRICT ACTION CONTINUITY & POSE HANDOFF** trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py):
+    - `ENDING POSE` của Segment 1: Bắt buộc MC kết thúc ở một tư thế tĩnh cụ thể (ví dụ: cầm sản phẩm bằng 2 tay ngang ngực).
+    - `STARTING POSE` của Segment 2: Bắt buộc MC xuất phát từ ĐÚNG TƯ THẾ TĨNH ĐÓ trước khi chuyển sang hành động tiếp theo.
+    - `ENDING POSE` của Segment 2 $\rightarrow$ `STARTING POSE` của Segment 3: Tương tự, giơ sản phẩm lên sát mặt $\rightarrow$ tiếp tục giơ sản phẩm ở tư thế đó trong Segment 3.
+  - Giúp video 24s sau khi ghép lại đạt độ **liền mạch 100% như 1 cú bấm máy quay (Single-Take Video)**!
+
+
+---
+
+## 93. Ngăn Chặn Vòng Lặp Tự Động Bật/Tắt Cửa Sổ Trình Duyệt Chrome Khi Cookie Tài Khoản Đã Hết Hạn Phụ (2026-08-16)
+- **Phát hiện nguyên nhân**:
+  - Trong quá trình chạy nền, tiến trình Health Check liên tục phát hiện 1 tài khoản (`phucphuongdinh40@gmail.com`) bị chết cookie dài hạn trên Google Labs.
+  - Do chưa có bộ nhớ đếm số lần tự động bật Chrome (`self._hc_attempted_accs`), Health Check mỗi 1-2 phút lại tự động bật trình duyệt Chrome lên để cố lấy lại cookie ngầm. Khi cookie vẫn bị Google Labs từ chối, Chrome tự đóng và lặp lại liên tục $\rightarrow$ Gây ra hiện tượng cửa sổ Chrome trắng tự bật lên rồi tắt đi liên tục trên màn hình người dùng.
+- **Sửa chữa**:
+  - Đã bổ sung tập hợp `self._hc_attempted_accs` trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py).
+  - Giới hạn tự động bật Chrome ngầm tối đa **1 lần** cho mỗi tài khoản bị chết cookie trong suốt phiên làm việc.
+  - Từ lần 2 trở đi, hệ thống ghi log thông báo yêu cầu người dùng đăng nhập thủ công và **TUYỆT ĐỐI KHÔNG tự động nhảy cửa sổ Chrome ra màn hình nữa**, giúp màn hình máy tính của người dùng hoàn toàn yên tĩnh và không bị làm phiền.
+
+
+---
+
+## 94. Nâng Cấp Xác Minh Tính Hợp Lệ Của Cookie Khi Lấy & Tự Động Đăng Nhập Trong login.py (2026-08-16)
+- **Phát hiện nguyên nhân gốc rễ**:
+  - Khi mở Chrome profile (`reopen_profile_cookie` hoặc `login_get_cookie`), trước đây code chỉ kiểm tra chuỗi `if ck and "next-auth.session-token" in ck:`.
+  - Trong profile Chrome cũ luôn tồn tại sẵn một cookie `next-auth.session-token` đã hết hạn từ trước. Do đó, code ngay lập tức nhầm tưởng rằng "đã đăng nhập thành công" và trả về cookie rác/hết hạn này, đóng trình duyệt trước khi Google Labs kịp cấp phiên mới.
+  - Khi đem cookie này đi gọi API Google Labs thì bị lỗi `bearer_from_cookie: Cookie expired or close to expiration`, dẫn đến tài khoản liên tục bị báo lỗi.
+- **Sửa chữa**:
+  - Bổ sung hàm `_is_cookie_valid(cookie)` trong [`login.py`](file:///E:/ThinAptm0707/login.py): Gọi trực tiếp `E.bearer_from_cookie(cookie)` để kiểm tra tính hợp lệ và thời hạn thực tế của Bearer token trước khi chấp nhận cookie.
+  - Cập nhật cả 3 chế độ: `manual_login`, `login_get_cookie`, và `reopen_profile_cookie` chỉ chấp nhận và đóng Chrome khi cookie **thực sự sống 100% và cấp được Token**.
+  - Tối ưu hóa xử lý giải mã Windows DPAPI trong `check_and_convert_gemlogin_profile`, tránh văng lỗi ngoại lệ khi profile chuyển từ máy khác sang.
+
+
+---
+
+## 95. Mở Rộng Dải Tùy Chọn Số Luồng Upload/TK (1 Đến 8) Trên Toàn Bộ Giao Diện (2026-08-16)
+- **Yêu cầu & Tối ưu hóa**:
+  - Trước đây menu chọn số luồng upload ảnh (`Upload/TK`) bị giới hạn chỉ từ `[4, 5, 6, 7, 8]`.
+  - Khi chạy nhiều tài khoản cùng lúc (ví dụ 4-5 TK), mức tối thiểu 4 luồng/TK có thể tạo ra 16-20 luồng upload đồng thời, dễ làm dính giới hạn tức thời 429 của Google lúc vừa bấm chạy.
+- **Sửa chữa**:
+  - Đã cập nhật menu lựa chọn `Upload/TK` thành đầy đủ dải giá trị `[1, 2, 3, 4, 5, 6, 7, 8]` trên cả 3 tab: **Tab Gen thường**, **Tab Shopee Local**, và **Tab Server DB** trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py).
+  - Cho phép người dùng linh hoạt hạ xuống 1, 2, hoặc 3 luồng/TK khi chạy nhiều tài khoản để hệ thống hoạt động êm ái, ổn định và không bao giờ bị dính cooldown 429.
+
+
+---
+
+## 96. Cập Nhật Model AI Gemini Ưu Tiên `gemini-3.5-flash` Khôi Phục Hoạt Động Cho Toàn Bộ API Key (2026-08-16)
+- **Phát hiện nguyên nhân**:
+  - Khi kiểm tra danh sách 11 API Key Gemini trong `settings.json`, phát hiện Google vừa đóng/khai tử các model cũ (`gemini-2.0-flash`, `gemini-2.5-flash`), dẫn đến việc gọi API trả về mã lỗi `HTTP 404 (Model no longer available)`.
+  - Một số model preview như `gemini-3.7-flash` thì bị dính rate limit `HTTP 429` của gói Free Tier.
+- **Sửa chữa**:
+  - Đã chạy kiểm tra thực nghiệm và xác nhận model **`gemini-3.5-flash`** đang hoạt động cực nhanh, ổn định và **thành công 100%** trên toàn bộ các key `AQ.Ab8RN...`.
+  - Cập nhật danh sách ưu tiên `_MODELS = ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-flash-latest"]` trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py).
+  - Giúp toàn bộ các API Key Gemini trong hệ thống hoạt động lại trơn tru và sinh kịch bản prompt mượt mà ngay lập tức!
+
+
+---

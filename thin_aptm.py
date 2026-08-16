@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.4"
+APP_VERSION = "ThinAPTM 1.2.5"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -137,7 +137,7 @@ class ProxyPool:
     def load(self, proxy_lines):
         """Load danh sách proxy từ list string (mỗi phần tử 1 proxy)."""
         with self._lock:
-            self._all = [p.strip() for p in proxy_lines if p.strip()]
+            self._all = [p.strip() for p in proxy_lines if p.strip() and not p.strip().startswith("0.0.0.")]
             # Giữ lại assigned cũ nếu proxy vẫn trong danh sách mới
             new_set = set(self._all)
             old_assigned = dict(self._assigned)
@@ -561,6 +561,7 @@ class App(ctk.CTk):
         self._health_check_interval = self.settings.get("health_check_interval", 30)  # phút
         self._health_check_timer = None
         self._health_checking = False  # đang chạy health check
+        self._hc_attempted_accs = set()  # Các tài khoản đã thử bật Chrome auto health check 1 lần
         # Telegram report
         self._tg_token_saved = self.settings.get("tg_token", "")
         self._tg_chatid_saved = self.settings.get("tg_chatid", "")
@@ -1422,10 +1423,17 @@ class App(ctk.CTk):
                 for i, a in enumerate(dead_accs, 1):
                     email = a.get("email") or a.get("id") or "?"
                     profile_dir = os.path.join(HERE, "_profiles", email.replace("@", "_"))
+                    if not hasattr(self, "_hc_attempted_accs"):
+                        self._hc_attempted_accs = set()
+                    if email in self._hc_attempted_accs:
+                        self._log(f"  [{i}/{len(dead_accs)}] {email}: Đã thử khôi phục 1 lần → Bỏ qua tự bật Chrome ngầm (Vui lòng nhấp 'Mở trình duyệt' trong tab Tài khoản để đăng nhập thủ công).")
+                        still_dead.append(a)
+                        continue
                     if not os.path.exists(profile_dir):
                         self._log(f"  [{i}/{len(dead_accs)}] {email}: chưa có profile → bỏ qua pha 1.")
                         still_dead.append(a)
                         continue
+                    self._hc_attempted_accs.add(email)
                     self._log(f"  [{i}/{len(dead_accs)}] {email}: đang mở profile cũ...")
                     try:
                         ck = L.reopen_profile_cookie(
@@ -1558,10 +1566,9 @@ class App(ctk.CTk):
         self.opt_aspect.set(self.settings.get("aspect", "Dọc 9:16 (TikTok)"))
         
         ctk.CTkLabel(rs, text="Upload/TK:").pack(side="left")
-        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["4", "5", "6", "7", "8"], width=60)
+        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["1", "2", "3", "4", "5", "6", "7", "8"], width=60)
         self.opt_upload_threads_per_acc.pack(side="left", padx=(4, 12))
         saved_gen_up = self.settings.get("gen_upload_threads_per_acc", "4")
-        if saved_gen_up in ("1", "2", "3"): saved_gen_up = "4"
         self.opt_upload_threads_per_acc.set(saved_gen_up)
 
         ctk.CTkLabel(rs, text="Đặt tên:").pack(side="left")
@@ -3517,8 +3524,8 @@ class App(ctk.CTk):
         row1_5 = ctk.CTkFrame(cfg, fg_color="transparent"); row1_5.pack(fill="x", padx=12, pady=(4, 0))
         ctk.CTkLabel(row1_5, text="Kiểu Review:", font=("", 12)).pack(side="left")
         self._sp_review_style = ctk.StringVar(value=self.settings.get("shopee_review_style", "Review tự nhiên"))
-        style_opts = ["Review tự nhiên", "Ngồi Review"]
-        self._sp_style_menu = ctk.CTkOptionMenu(row1_5, values=style_opts, variable=self._sp_review_style, width=150)
+        style_opts = ["Review tự nhiên", "Ngồi Review", "POV (Góc nhìn thứ nhất)", "Unboxing", "UGC Authentic", "Demo Công Dụng", "So Sánh/Đánh Giá"]
+        self._sp_style_menu = ctk.CTkOptionMenu(row1_5, values=style_opts, variable=self._sp_review_style, width=200)
         self._sp_style_menu.pack(side="left", padx=(4, 12))
 
         # AI Prompt
@@ -3697,10 +3704,9 @@ class App(ctk.CTk):
         sp_up_box = ctk.CTkFrame(self._sp_btn_row, fg_color=CARD, corner_radius=8, height=42)
         sp_up_box.pack(side="left", padx=(6, 0))
         ctk.CTkLabel(sp_up_box, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(10, 4), pady=6)
-        self._sp_upload_threads_per_acc = ctk.CTkOptionMenu(sp_up_box, values=["4", "5", "6", "7", "8"], width=60, height=28)
+        self._sp_upload_threads_per_acc = ctk.CTkOptionMenu(sp_up_box, values=["1", "2", "3", "4", "5", "6", "7", "8"], width=60, height=28)
         self._sp_upload_threads_per_acc.pack(side="left", padx=(0, 8), pady=6)
         saved_sp_up = self.settings.get("shopee_upload_threads_per_acc", "4")
-        if saved_sp_up in ("1", "2", "3"): saved_sp_up = "4"
         self._sp_upload_threads_per_acc.set(saved_sp_up)
 
         self._shopee_running = False
@@ -5352,8 +5358,8 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(row2, text="Kiểu Review:", font=("", 12)).pack(side="left")
         self._sv_review_style = ctk.StringVar(value=self.settings.get("sv_review_style", "Review tự nhiên"))
-        self._sv_style_menu = ctk.CTkOptionMenu(row2, values=["Review tự nhiên", "Ngồi Review"],
-                                                  variable=self._sv_review_style, width=150)
+        self._sv_style_menu = ctk.CTkOptionMenu(row2, values=["Review tự nhiên", "Ngồi Review", "POV (Góc nhìn thứ nhất)", "Unboxing", "UGC Authentic", "Demo Công Dụng", "So Sánh/Đánh Giá"],
+                                                  variable=self._sv_review_style, width=200)
         self._sv_style_menu.pack(side="left", padx=(4, 12))
 
         self._sv_remove_wm = ctk.BooleanVar(value=self.settings.get("sv_remove_wm", True))
@@ -5381,6 +5387,17 @@ class App(ctk.CTk):
         if saved_sv_ai == "Template (mặc định)": saved_sv_ai = "Prompt A + B"
         self._sv_ai_prompt.set(saved_sv_ai)
         self._sv_ai_saved_value = saved_sv_ai  # lưu giá trị trước khi khóa
+
+        ctk.CTkButton(
+            row2,
+            text="🧪 Test prompt",
+            command=self._sv_test_prompt,
+            fg_color="#5C6BC0",
+            hover_color="#3949AB",
+            height=28,
+            width=100,
+            font=("", 11)
+        ).pack(side="left", padx=(0, 12))
 
         # Áp dụng trạng thái khóa/mở theo duration đã lưu
         self._sv_on_duration_change()
@@ -5488,10 +5505,9 @@ class App(ctk.CTk):
         sv_up_box = ctk.CTkFrame(btn_row, fg_color=CARD, corner_radius=8, height=42)
         sv_up_box.pack(side="left", padx=(6, 0))
         ctk.CTkLabel(sv_up_box, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(10, 4), pady=6)
-        self._sv_upload_threads_per_acc = ctk.CTkOptionMenu(sv_up_box, values=["4", "5", "6", "7", "8"], width=60, height=28)
+        self._sv_upload_threads_per_acc = ctk.CTkOptionMenu(sv_up_box, values=["1", "2", "3", "4", "5", "6", "7", "8"], width=60, height=28)
         self._sv_upload_threads_per_acc.pack(side="left", padx=(0, 8), pady=6)
         saved_sv_up = self.settings.get("sv_upload_threads_per_acc", "4")
-        if saved_sv_up in ("1", "2", "3"): saved_sv_up = "4"
         self._sv_upload_threads_per_acc.set(saved_sv_up)
 
         # --- Middle Split Container (Horizontal: 50% / 50%) ---
@@ -6234,6 +6250,107 @@ class App(ctk.CTk):
                 self._sv_ghep_anh.set(False)
                 self._sv_chk_ghep_anh.configure(state="disabled")
 
+    def _sv_test_prompt(self):
+        """Test prompt cho tab Server — nhập tên SP để xem prompt sinh ra."""
+        try:
+            # Hỏi tên sản phẩm
+            dlg_input = ctk.CTkInputDialog(
+                text="Nhập tên sản phẩm muốn test prompt:",
+                title="🧪 Test Prompt — Server"
+            )
+            prod_name = dlg_input.get_input()
+            if not prod_name or not prod_name.strip():
+                return
+            prod_name = prod_name.strip()
+
+            ai_mode = self._sv_ai_prompt.get()
+            duration_sec = SV.parse_duration(self._sv_duration.get()) if SV else 16
+            n_segments = len(SV.DURATION_MAP.get(duration_sec, [0, 1])) if SV else 2
+            scene_choice = self._sv_scene.get()
+            lang_val = self._sv_lang.get()
+            lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("ph" if "Philippines" in lang_val else "en"))
+            review_style = self._sv_review_style.get()
+
+            if SV:
+                scene_name, scene_en = SV.pick_scene(scene_choice, lang=lang_code)
+            else:
+                scene_name, scene_en = scene_choice, "clean minimalist desk"
+
+            gemini_keys = [l.strip() for l in self.txt_gemini.get("1.0", "end").splitlines() if l.strip()]
+            groq_keys = [l.strip() for l in self.txt_groq_keys.get("1.0", "end").splitlines() if l.strip()]
+
+            if ai_mode == "Gemini" and not gemini_keys:
+                messagebox.showwarning("Thiếu Key Gemini", "Vui lòng nạp API Key Gemini ở phần cài đặt API Key.")
+                return
+            if ai_mode == "Groq" and not groq_keys:
+                messagebox.showwarning("Thiếu Key Groq", "Vui lòng nạp API Key Groq ở phần cài đặt API Key.")
+                return
+
+            # Mở dialog hiển thị prompt
+            dlg = ctk.CTkToplevel(self)
+            dlg.title(f"🧪 Test Prompt (Server): {prod_name[:35]}")
+            dlg.geometry("720x540")
+            dlg.attributes("-topmost", True)
+            dlg.after(100, lambda: dlg.attributes("-topmost", False))
+            dlg.focus_force()
+
+            ctk.CTkLabel(dlg, text=f"📦 Sản phẩm: {prod_name}", font=("", 13, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
+            ctk.CTkLabel(dlg, text=f"🤖 AI: {ai_mode}  |  ⏱ {duration_sec}s ({n_segments} đoạn)  |  🏖 {scene_name}  |  🎬 {review_style}", font=("", 11)).pack(anchor="w", padx=16, pady=(0, 8))
+
+            txt = ctk.CTkTextbox(dlg, font=("Consolas", 10), wrap="word")
+            txt.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+            txt.insert("1.0", f"⏳ Đang tạo prompt ({ai_mode}), vui lòng chờ...\n")
+
+            def _generate():
+                prompts = None
+                mode_str = ai_mode
+                if ai_mode == "Gemini":
+                    prompts = self._sv_ai_gen_prompts(
+                        prod_name, scene_en, n_segments, duration_sec, lang_code,
+                        review_style, mode="gemini", gemini_keys=gemini_keys
+                    )
+                elif ai_mode == "Groq":
+                    prompts = self._sv_ai_gen_prompts(
+                        prod_name, scene_en, n_segments, duration_sec, lang_code,
+                        review_style, mode="groq", groq_keys=groq_keys
+                    )
+
+                if not prompts and SV:
+                    prompts = SV.build_video_prompts(
+                        prod_name, scene_en, duration_sec=duration_sec,
+                        lang=lang_code, review_style=review_style
+                    )
+                    if ai_mode in ("Gemini", "Groq"):
+                        mode_str += " (Lỗi AI → Dùng Template Mặc Định)"
+
+                def _show_ui():
+                    try:
+                        txt.delete("1.0", "end")
+                        if not prompts:
+                            txt.insert("1.0", "❌ Không sinh được prompt.")
+                            return
+                        header = (
+                            f"=== TEST PROMPT (SERVER) ===\n"
+                            f"Sản phẩm: {prod_name}\n"
+                            f"Engine: {mode_str}\n"
+                            f"Kiểu Review: {review_style}\n"
+                            f"Khung cảnh: {scene_name}\n"
+                            f"Segments: {len(prompts)}\n"
+                            + "=" * 60 + "\n\n"
+                        )
+                        body = ""
+                        for idx, pr in enumerate(prompts, 1):
+                            body += f"--- SEGMENT {idx} ---\n{pr}\n\n"
+                        txt.insert("1.0", header + body)
+                    except Exception:
+                        pass
+
+                self.after(0, _show_ui)
+
+            threading.Thread(target=_generate, daemon=True).start()
+        except Exception as err:
+            messagebox.showerror("Lỗi Test Prompt", f"Xảy ra lỗi: {err}")
+
     def _sv_ai_gen_prompts(self, product_name, scene_en, n_segments,
                             duration_sec, lang_code, review_style,
                             mode="gemini", gemini_keys=None, groq_keys=None):
@@ -6242,19 +6359,95 @@ class App(ctk.CTk):
         lang_map = {"vi": "Vietnamese", "en": "Filipino", "id": "Indonesian"}
         lang_name = lang_map.get(lang_code, "English")
 
-        # Mô tả phong cách review
-        if review_style == "Ngồi Review":
-            style_desc = (
-                "SEATED DESK REVIEW style: The presenter sits behind a clean minimalist wooden desk "
-                "throughout the ENTIRE video. She NEVER stands up or walks. All product interactions "
-                "happen on the desk or held above it. Camera is at desk-level, frontal or slightly angled."
-            )
-        else:
-            style_desc = (
+        # Mô tả phong cách review — 7 kiểu chuyên dụng cho video affiliate
+        _REVIEW_STYLE_DESCS = {
+            "Review tự nhiên": (
                 "NATURAL STANDING REVIEW style: The presenter stands naturally, picks up the product, "
                 "walks around the scene, holds items up to camera. Free movement, energetic and authentic. "
-                "Casual handheld camera feel with smooth tracking."
-            )
+                "Casual handheld camera feel with smooth tracking. "
+                "CAMERA: Medium shot, handheld with subtle natural shake, 35mm lens feel. "
+                "LIGHTING: Natural window light from the side, mixed with warm indoor ambient light, soft shadows. "
+                "ENVIRONMENT: Clean but lived-in room, slightly visible background details for authenticity. "
+                "ANTI-AI: Include slight camera drift, natural micro-expressions, smartphone camera quality feel."
+            ),
+            "Ngồi Review": (
+                "SEATED DESK REVIEW style: The presenter sits behind a clean minimalist wooden desk "
+                "throughout the ENTIRE video. She NEVER stands up or walks. All product interactions "
+                "happen on the desk or held above it. Camera is at desk-level, frontal or slightly angled. "
+                "CAMERA: Static or slow push-in, eye-level, 50mm lens feel. "
+                "LIGHTING: Soft LED panel or ring light from front, warm tone, even illumination. "
+                "ENVIRONMENT: Clean desk surface, minimalist background, soft bokeh. "
+                "ANTI-AI: Natural hand gestures, occasional glance away from camera, realistic skin texture."
+            ),
+            "POV (Góc nhìn thứ nhất)": (
+                "POV FIRST-PERSON style: Camera IS the viewer's eyes. We NEVER see the presenter's face. "
+                "Only hands and arms visible interacting with the product. The viewer feels like THEY are "
+                "the one holding, opening, and using the product themselves. "
+                "CAMERA: First-person POV, over-the-shoulder or looking-down angle, handheld with natural shake. "
+                "LIGHTING: Natural mixed indoor light, overhead kitchen/room light, uncontrolled ambient. "
+                "ENVIRONMENT: Real desk/table/counter surface, slight clutter (pen, coffee mug, receipts) for authenticity. "
+                "ANTI-AI: Slight lens flare from room lamp, visible fingerprints/dust on product, "
+                "natural hand movement speed (not too smooth), iPhone camera compression feel. "
+                "CRITICAL: NO face visible. Only hands and forearms. Product is the HERO."
+            ),
+            "Unboxing": (
+                "UNBOXING style: Focus on the satisfying experience of opening packaging and revealing "
+                "the product for the first time. Slow, deliberate hand movements. Build anticipation. "
+                "CAMERA: Top-down flat lay angle for opening, then switch to close-up for product reveal. "
+                "Handheld with subtle movement. "
+                "LIGHTING: Warm overhead light, soft shadows on packaging textures, cozy atmosphere. "
+                "ENVIRONMENT: Clean wooden desk or floor surface, minimal props (scissors, knife nearby). "
+                "ANTI-AI: Include satisfying paper rustling and packaging sounds, tactile textures visible, "
+                "slight pause of genuine excitement when product is revealed, natural finger movements "
+                "(not perfectly smooth). ASMR-adjacent aesthetic — crisp sounds, deliberate slow pacing. "
+                "CRITICAL: Show FULL unboxing journey — sealed box → cutting tape → lifting lid → reveal."
+            ),
+            "UGC Authentic": (
+                "UGC AUTHENTIC style: Raw, unpolished, genuine — like a real customer sharing with friends. "
+                "NOT a professional review. This should feel like someone filming with their phone in their "
+                "bedroom, genuinely excited about a product they just received. "
+                "CAMERA: iPhone selfie front-camera angle, slightly off-center framing, visible camera shake, "
+                "occasional focus hunting, vlog-style close talking distance. "
+                "LIGHTING: Messy mixed lighting — bedroom lamp + phone screen glow + window light, "
+                "NOT studio lighting, slightly warm/yellow indoor tone. "
+                "ENVIRONMENT: Slightly messy bedroom or living room, pillows/blankets visible, "
+                "personal items in background, lived-in and imperfect. "
+                "ANTI-AI: Include casual speech cadence (slight pauses, 'um'), genuine excitement not "
+                "performative, natural skin texture with no filter, hair slightly imperfect, "
+                "camera tilts/adjusts mid-shot. Shot on smartphone quality — slight grain, natural compression. "
+                "CRITICAL: Must feel like a REAL person's phone video, NOT a commercial."
+            ),
+            "Demo Công Dụng": (
+                "PRODUCT DEMONSTRATION style: Focus entirely on showing HOW the product works. "
+                "Step-by-step functional demonstration with clear visibility of features and results. "
+                "CAMERA: Alternating between close-up macro shots (product details, buttons, textures) "
+                "and medium shots (hands demonstrating usage). Steady, controlled movement. "
+                "LIGHTING: Bright, even, clinical-style lighting for maximum product visibility. "
+                "Natural daylight or bright LED, no dramatic shadows — clarity is priority. "
+                "ENVIRONMENT: Clean test surface — white/light desk, neutral background, "
+                "comparison items nearby if relevant (ruler for scale, water for waterproof test). "
+                "ANTI-AI: Show REAL interaction physics — weight of product visible in hand grip, "
+                "realistic material textures, functional result visible (cream absorbed, device screen lit up, "
+                "sound produced). Include before/after moments where relevant. "
+                "CRITICAL: Product FUNCTIONALITY is the hero — every shot must demonstrate a specific feature."
+            ),
+            "So Sánh/Đánh Giá": (
+                "COMPARISON REVIEW style: Side-by-side honest evaluation. The presenter compares "
+                "the product against expectations, price point, or similar alternatives. "
+                "Analytical, trustworthy, 'brutally honest' tone. "
+                "CAMERA: Medium shot with both products visible, alternating close-ups on each, "
+                "split-frame composition when comparing features. Steady tripod feel. "
+                "LIGHTING: Consistent even lighting on both products — no favoritism in presentation. "
+                "Bright, neutral-tone daylight or LED panel. "
+                "ENVIRONMENT: Clean comparison surface, both products clearly labeled/visible, "
+                "perhaps a notepad or checklist visible for systematic review. "
+                "ANTI-AI: Show genuine contemplation (touching chin, slight frown while thinking), "
+                "honest facial reactions (impressed nod OR disappointed head shake), "
+                "realistic material/texture differences visible between products. "
+                "CRITICAL: Must show BOTH positive and negative aspects — not purely promotional."
+            ),
+        }
+        style_desc = _REVIEW_STYLE_DESCS.get(review_style, _REVIEW_STYLE_DESCS["Review tự nhiên"])
 
         # Mô tả kịch bản theo số segment
         if n_segments == 2:
@@ -6297,9 +6490,13 @@ class App(ctk.CTk):
             f"3. The presenter is a beautiful young Asian woman (~22-28 years old) with natural makeup.\n"
             f"4. She must SPEAK about the product \"{product_name}\" — describing its features, quality, price.\n"
             f"5. The product \"{product_name}\" is the HERO — it must be prominently visible in every segment.\n"
-            f"6. Mention the EXACT product name \"{product_name}\" in each prompt so Veo 3 shows the right item.\n"
-            f"7. Maintain VISUAL CONTINUITY: same outfit, same hair, same background across all segments.\n"
-            f"8. Make it feel like a real TikTok/Shopee Live review — authentic, not scripted.\n\n"
+            f"7. CRITICAL PRESENTER & OUTFIT LOCK: Define ONE fixed presenter anchor (exact face features, exact hairstyle, exact clothing outfit style and top color) and REPEAT THAT EXACT CHARACTER AND OUTFIT DESCRIPTION VERBATIM in all {n_segments} prompts. DO NOT change her identity, face, hair, or clothing across segments.\n"
+            f"8. STRICT ACTION CONTINUITY & POSE HANDOFF: Segment 1 MUST end with a specific static ending pose (e.g. holding product at chest level with both hands). Segment 2 MUST explicitly start with THAT EXACT ENDING POSE as its initial starting position before moving. Likewise, Segment 2 MUST end with a distinct pose (e.g. holding product up near face with right hand) and Segment 3 MUST start from THAT EXACT POSE. This guarantees seamless 100% video flow continuity when concatenated.\n"
+            f"9. Make it feel like a real TikTok/Shopee Live review — authentic, not scripted.\n"
+            f"10. BODY INTEGRITY (CRITICAL): Each prompt MUST include this negative constraint at the end: "
+            f"'The presenter has exactly TWO normal human hands with five fingers each, exactly TWO arms, exactly TWO legs. "
+            f"Do NOT generate extra hands, extra arms, extra fingers, extra limbs, or any body deformation. "
+            f"No morphing, no melting, no distortion of human anatomy. Hands must look natural and realistic.'\n\n"
             f"═══ OUTPUT FORMAT ═══\n"
             f"Output EXACTLY {n_segments} lines. One prompt per line.\n"
             f"No numbering (1. 2. 3.), no bullet points, no markdown, no explanations.\n"
@@ -6311,26 +6508,36 @@ class App(ctk.CTk):
             import random as _rnd
             keys_copy = list(keys)
             _rnd.shuffle(keys_copy)
+            # Thứ tự model ưu tiên: gemini-3.5-flash (tốc độ cao & quota dồi dào) → gemini-3.7-flash → gemini-3.6-flash → gemini-flash-latest
+            _MODELS = ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-flash-latest"]
             for key in keys_copy:
-                try:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
-                    payload = json.dumps({
-                        "contents": [{"parts": [{"text": system_prompt}]}],
-                        "generationConfig": {"temperature": 0.9}
-                    }).encode("utf-8")
-                    req = urllib.request.Request(url, data=payload,
-                                                 headers={"Content-Type": "application/json"})
-                    with urllib.request.urlopen(req, timeout=30) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                    text = ""
-                    for part in (data.get("candidates", [{}])[0].get("content", {}).get("parts", [])):
-                        text += part.get("text", "")
-                    prompts = [p.strip() for p in text.strip().split("\n") if p.strip() and len(p.strip()) > 20]
-                    if len(prompts) >= n_segments:
-                        return prompts[:n_segments]
-                except Exception as e:
-                    self._sv_log_msg(f"  ⚠ Gemini key {key[:10]}... lỗi: {str(e)[:50]}")
-                    continue
+                for model_name in _MODELS:
+                    try:
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
+                        payload = json.dumps({
+                            "contents": [{"parts": [{"text": system_prompt}]}],
+                            "generationConfig": {"temperature": 0.9}
+                        }).encode("utf-8")
+                        req = urllib.request.Request(url, data=payload,
+                                                     headers={"Content-Type": "application/json"})
+                        with urllib.request.urlopen(req, timeout=30) as resp:
+                            data = json.loads(resp.read().decode("utf-8"))
+                        text = ""
+                        for part in (data.get("candidates", [{}])[0].get("content", {}).get("parts", [])):
+                            text += part.get("text", "")
+                        prompts = [p.strip() for p in text.strip().split("\n") if p.strip() and len(p.strip()) > 20]
+                        if len(prompts) >= n_segments:
+                            self._sv_log_msg(f"  ✅ Gemini OK ({model_name})")
+                            return prompts[:n_segments]
+                    except urllib.error.HTTPError as he:
+                        if he.code == 429:
+                            self._sv_log_msg(f"  ⚠ {model_name} key {key[:8]}... quota 429 → thử model tiếp")
+                            continue  # thử model tiếp trong _MODELS
+                        self._sv_log_msg(f"  ⚠ Gemini {model_name} key {key[:8]}... HTTP {he.code}")
+                        break  # lỗi khác → thử key khác
+                    except Exception as e:
+                        self._sv_log_msg(f"  ⚠ Gemini key {key[:8]}... lỗi: {str(e)[:50]}")
+                        break
             return None
 
         # Định nghĩa hàm gọi Groq helper (Thử nhiều model: llama-3.1-8b-instant -> llama-3.3-70b-versatile -> mixtral-8x7b-32768)

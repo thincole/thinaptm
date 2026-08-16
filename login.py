@@ -13,9 +13,26 @@ GOOGLE_SIGNIN = "https://accounts.google.com"
 _KEEP = ("next-auth", "__Secure", "__Host", "_ga", "email")
 
 
+def get_chrome_path():
+    """Lấy đường dẫn Google Chrome chuẩn trên Windows."""
+    candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def _opts(profile_dir=None):
     from DrissionPage import ChromiumOptions
     co = ChromiumOptions()
+    chrome_path = get_chrome_path()
+    if chrome_path:
+        co.set_browser_path(chrome_path)
     co.set_argument("--no-first-run"); co.set_argument("--no-default-browser-check")
     if profile_dir:
         try:
@@ -37,6 +54,19 @@ def _labs_cookie(cks):
         if "labs.google" in c.get("domain", "") and any(k in c.get("name", "") for k in _KEEP):
             parts.append(f"{c.get('name')}={c.get('value','')}")
     return "; ".join(parts)
+
+
+def _is_cookie_valid(cookie):
+    """Xác minh cookie có thực sự lấy được Bearer token còn hạn từ Google Labs hay không."""
+    if not cookie or "next-auth.session-token" not in cookie:
+        return False
+    try:
+        import engine as E
+        res = E.bearer_from_cookie(cookie)
+        token = res[0] if isinstance(res, tuple) else res
+        return bool(token)
+    except Exception:
+        return False
 
 
 def _totp_now(secret):
@@ -128,11 +158,14 @@ def check_and_convert_gemlogin_profile(profile_dir, log=print):
         ]
 
     def decrypt_dpapi_local(data):
-        in_blob = DATA_BLOB_LOCAL(len(data), ctypes.create_string_buffer(data))
-        out_blob = DATA_BLOB_LOCAL()
-        if ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
-            return ctypes.string_at(out_blob.pbData, out_blob.cbData)
-        raise Exception("DPAPI failed")
+        try:
+            in_blob = DATA_BLOB_LOCAL(len(data), ctypes.create_string_buffer(data))
+            out_blob = DATA_BLOB_LOCAL()
+            if ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+                return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        except Exception:
+            pass
+        return None
 
     try:
         with open(local_state_path, "r", encoding="utf-8") as f:
@@ -143,6 +176,8 @@ def check_and_convert_gemlogin_profile(profile_dir, log=print):
         
         encrypted_key = base64.b64decode(enc_key_b64)[5:]
         aes_key = decrypt_dpapi_local(encrypted_key)
+        if not aes_key:
+            return False
 
         # Copy ra file temp để kiểm tra trước
         temp_db = cookies_db + f"_convert_temp_{random.randint(1000, 9999)}"
@@ -285,6 +320,9 @@ def repair_corrupted_profile(profile_dir, log=print):
         # 4. Khởi tạo lại profile sạch bằng DrissionPage
         from DrissionPage import ChromiumPage, ChromiumOptions
         co = ChromiumOptions()
+        chrome_path = get_chrome_path()
+        if chrome_path:
+            co.set_browser_path(chrome_path)
         co.set_argument("--no-first-run")
         co.set_argument("--no-default-browser-check")
         co.set_user_data_path(profile_dir)
@@ -360,8 +398,8 @@ def manual_login(log=print, timeout=360, poll=2, profile_dir=None):
                 ck = _labs_cookie(page.cookies(all_domains=True))
             except Exception:
                 return None   # user đã đóng Chrome
-            if ck and "next-auth.session-token" in ck:
-                log("✅ Đã nhận cookie -> đóng Chrome.")
+            if _is_cookie_valid(ck):
+                log("✅ Đã nhận cookie hợp lệ -> đóng Chrome.")
                 return ck
             time.sleep(poll)
         log("⌛ Hết giờ chờ đăng nhập.")
@@ -402,10 +440,10 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
         page.get(LABS)
         time.sleep(4)
 
-        # Kiểm tra nhanh: profile cũ có session còn sống?
+        # Kiểm tra nhanh: profile cũ có session còn sống và hợp lệ?
         ck = _labs_cookie(page.cookies(all_domains=True))
-        if ck and "next-auth.session-token" in ck:
-            log(f"✅ {email}: profile cũ vẫn có session → lấy cookie luôn.")
+        if _is_cookie_valid(ck):
+            log(f"✅ {email}: profile cũ vẫn có session hợp lệ → lấy cookie luôn.")
             return ck
 
         # ── Chưa có session → Google sẽ redirect sang trang đăng nhập ──
@@ -529,16 +567,16 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
             page.get(LABS)
             time.sleep(5)
 
-        # Chờ tối đa 25s để cookie xuất hiện sau khi chuyển sang trang Flow
-        end = time.time() + 25
+        # Chờ tối đa 35s để cookie xuất hiện và hợp lệ sau khi chuyển sang trang Flow
+        end = time.time() + 35
         while time.time() < end:
             ck = _labs_cookie(page.cookies(all_domains=True))
-            if ck and "next-auth.session-token" in ck:
-                log(f"✅ {email}: login xong — có cookie!")
+            if _is_cookie_valid(ck):
+                log(f"✅ {email}: login xong — có cookie hợp lệ!")
                 return ck
             time.sleep(2)
 
-        log(f"⚠️ {email}: chưa lấy được cookie sau khi login (URL: {page.url[:80]})")
+        log(f"⚠️ {email}: chưa lấy được cookie hợp lệ sau khi login (URL: {page.url[:80]})")
         log(f"  💡 Có thể Google yêu cầu xác minh thêm (captcha, SMS, v.v.)")
         return None
     except Exception as e:
@@ -587,8 +625,8 @@ def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3):
                 ck = _labs_cookie(page.cookies(all_domains=True))
             except Exception:
                 return None   # Chrome đã đóng
-            if ck and "next-auth.session-token" in ck:
-                log("✅ Google tự đăng nhập lại → có cookie mới!")
+            if _is_cookie_valid(ck):
+                log("✅ Google tự đăng nhập lại → có cookie mới hợp lệ!")
                 return ck
             
             # Kiểm tra thoát sớm nếu session đã chết

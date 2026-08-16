@@ -45,6 +45,23 @@ SCENES = [
     ("📱 Studio livestream",
      "in a professional livestream studio with ring light, camera tripod, colorful LED backdrop, and product display shelf",
      "trong studio livestream chuyên nghiệp với đèn ring light, chân tripod camera, phông nền LED nhiều màu, và kệ trưng bày sản phẩm"),
+    ("🏭 Nhà máy sản xuất",
+     "inside the actual factory or manufacturing facility where THIS SPECIFIC product is made — "
+     "the factory type MUST match the product category: if skincare/cosmetics then a clean sterile cosmetics lab with stainless steel mixing tanks and filling machines; "
+     "if electronics/tech then a modern electronics assembly line with circuit boards and robotic arms; "
+     "if food/beverage then a hygienic food processing plant with conveyor belts and packaging machines; "
+     "if fashion/clothing then a textile factory with sewing machines and fabric rolls; "
+     "if household/cleaning then a chemical plant with large vats and bottling lines. "
+     "Workers in professional uniforms and hairnets, bright industrial fluorescent lighting, quality control stations visible, "
+     "conveyor belts with products being packaged, large-scale production atmosphere proving product authenticity and scale",
+     "bên trong nhà máy sản xuất thực tế nơi chính sản phẩm này được làm ra — "
+     "loại nhà máy PHẢI khớp với ngành hàng: nếu mỹ phẩm thì phòng lab sạch với bồn trộn inox và máy chiết rót; "
+     "nếu điện tử thì dây chuyền lắp ráp hiện đại với bo mạch và cánh tay robot; "
+     "nếu thực phẩm thì nhà máy chế biến vệ sinh với băng chuyền và máy đóng gói; "
+     "nếu thời trang thì xưởng may với máy khâu và cuộn vải; "
+     "nếu gia dụng/tẩy rửa thì nhà máy hóa chất với bồn lớn và dây chuyền đóng chai. "
+     "Công nhân mặc đồng phục chuyên nghiệp và đội mũ lưới, ánh sáng huỳnh quang công nghiệp sáng rõ, "
+     "trạm kiểm tra chất lượng, băng chuyền với sản phẩm đang được đóng gói, không khí sản xuất quy mô lớn chứng minh tính chân thực"),
 ]
 
 SCENE_NAMES = [s[0] for s in SCENES]
@@ -64,7 +81,18 @@ CONTENT_MAP_VI = {
     "UGC": "[ĐỊNH DẠNG NỘI DUNG - UGC KHÁCH HÀNG TỰ QUAY: Phong cách máy quay điện thoại cầm tay gia đình tự nhiên, không gian góc phòng ngủ/bàn học ấm áp gần gũi. Người mẫu đưa sản phẩm sát camera với nụ cười thân thiện, mang lại cảm giác đánh giá chân thực như bạn bè chia sẻ với nhau.]\n\n",
     "Unboxing": "[ĐỊNH DẠNG NỘI DUNG - UNBOXING ĐẬP HỘP: Góc máy từ trên xuống mặt bàn. Đôi tay tỉ mỉ bóc gói hàng kraft, tháo lớp bọc chống sốc và hé lộ sản phẩm cùng phụ kiện nguyên vẹn bên trong. Ánh sáng nét rõ, tập trung vào trải nghiệm đập hộp.]\n\n",
     "Demo công dụng": "[ĐỊNH DẠNG NỘI DUNG - DEMO CÔNG DỤNG THỰC TẾ: Camera cận cảnh Macro tập trung 100% vào việc thử nghiệm tính năng, độ bền, kết cấu và hiệu quả sử dụng thực tế của sản phẩm. Thao tác dứt khoát, hình ảnh cực kỳ sắc nét.]\n\n",
+    "Review tự nhiên": "[ĐỊNH DẠNG NỘI DUNG - REVIEW TỰ NHIÊN: Người mẫu đứng tự nhiên cầm sản phẩm, di chuyển thoải mái trong khung cảnh. Camera handheld có rung nhẹ tự nhiên, góc medium shot. Ánh sáng tự nhiên từ cửa sổ hoặc ngoài trời, không dàn dựng studio. Phong cách đời thường, năng động, chân thực như đang chia sẻ với bạn bè.]\n\n",
+    "So Sánh/Đánh Giá": "[ĐỊNH DẠNG NỘI DUNG - SO SÁNH ĐÁNH GIÁ: Người mẫu cầm sản phẩm đặt cạnh các vật tham chiếu để so sánh kích thước, chất lượng. Camera chuyển đổi giữa góc rộng (thấy cả hai) và cận cảnh (chi tiết từng sản phẩm). Ánh sáng đều, trung tính. Biểu cảm phân tích, suy nghĩ chân thực — gật đầu hài lòng hoặc nhăn mặt nhẹ khi so sánh.]\n\n",
 }
+# Alias: tên dropdown mới → key cũ trong CONTENT_MAP
+_CONTENT_STYLE_ALIAS_VI = {
+    "POV (Góc nhìn thứ nhất)": "POV",
+    "UGC Authentic": "UGC",
+    "Demo Công Dụng": "Demo công dụng",
+    "Ngồi Review": "Review tự nhiên",  # Ngồi Review xử lý riêng bằng constraint, content dùng tự nhiên
+}
+for _alias, _target in _CONTENT_STYLE_ALIAS_VI.items():
+    CONTENT_MAP_VI[_alias] = CONTENT_MAP_VI[_target]
 
 CONTENT_MAP_EN = {
     "Review kho hàng": "[CONTENT FORMAT - WAREHOUSE REVIEW: Wide medium shot inside a clean, massive industrial warehouse with neatly organized product shelves stacked high in the background. Presenter stands confidently in the warehouse, holding the product while proudly gesturing toward the bulk inventory.]\n\n",
@@ -72,7 +100,17 @@ CONTENT_MAP_EN = {
     "UGC": "[CONTENT FORMAT - UGC USER GENERATED: Handheld smartphone camera aesthetic, relatable cozy bedroom/desk setting. Presenter holds product close to camera with a warm friendly smile, authentic candid review atmosphere like a friend sharing a recommendation.]\n\n",
     "Unboxing": "[CONTENT FORMAT - UNBOXING: Top-down desk camera angle. Hands carefully opening kraft cardboard package, unwrapping protective bubble wrap, and revealing the pristine product and accessories inside. Crisp clear lighting focused on the unboxing experience.]\n\n",
     "Demo công dụng": "[CONTENT FORMAT - FEATURE DEMO: Extreme close-up macro shots focusing 100% on testing the product's features, material durability, texture, and immediate functional performance. Precise movements with sharp focus on immediate results.]\n\n",
+    "Review tự nhiên": "[CONTENT FORMAT - NATURAL REVIEW: Presenter stands naturally holding the product, moves freely around the scene. Handheld camera with subtle natural shake, medium shot framing. Natural window or outdoor lighting, no studio setup. Casual, energetic, authentic style — like genuinely sharing with friends.]\n\n",
+    "So Sánh/Đánh Giá": "[CONTENT FORMAT - COMPARISON REVIEW: Presenter holds product alongside reference items for size/quality comparison. Camera alternates between wide shots (both items visible) and close-ups (detail on each). Even, neutral lighting. Analytical, thoughtful expressions — satisfied nods or slight skeptical frowns when comparing.]\n\n",
 }
+_CONTENT_STYLE_ALIAS_EN = {
+    "POV (Góc nhìn thứ nhất)": "POV",
+    "UGC Authentic": "UGC",
+    "Demo Công Dụng": "Demo công dụng",
+    "Ngồi Review": "Review tự nhiên",
+}
+for _alias, _target in _CONTENT_STYLE_ALIAS_EN.items():
+    CONTENT_MAP_EN[_alias] = CONTENT_MAP_EN[_target]
 
 
 # ==================== CHỌN KHUNG CẢNH ====================
@@ -118,8 +156,9 @@ _CONT_EN = (
     "**Subject & Character Consistency:**\n"
     "- Character: A 22-year-old {country_en} woman with a bright, cheerful face and natural beauty.\n"
     "- Face & Features: Soft oval face shape, dark brown almond eyes, clear skin, natural rosy blush.\n"
-    "- Hair: Shoulder-length, dark brown hair styled in a straight, neat bob.\n"
-    "- CRITICAL IDENTITY LOCK: The reviewer's face identity must match the reference image exactly (same facial structure, proportions, eyes, skin tone). Do NOT change makeup, age, or hairstyle.\n"
+    "- Hair: {hair}.\n"
+    "- Outfit: {outfit}.\n"
+    "- CRITICAL IDENTITY & OUTFIT LOCK: The presenter MUST be the EXACT SAME person with the EXACT SAME face structure, hairstyle ({hair}), and exact clothing outfit ({outfit}) across ALL segments. DO NOT change her identity, hair style, or clothing between clips.\n"
     "\n"
     "**Environment & Atmosphere:**\n"
     "- {scene}\n"
@@ -134,9 +173,11 @@ _CONT_EN = (
     "- color_and_grading: Neutral color calibration, natural skin tones, crisp details, modern bright/clean color grading.\n"
     "\n"
     "**Negative / Constraints:**\n"
+    "- ABSOLUTELY NO text, NO letters, NO numbers, NO subtitles, NO captions, NO titles, NO watermarks, NO logo overlays, NO HUD, NO UI graphics or artificial text overlays on screen.\n"
+    "- ABSOLUTELY NO gibberish, floating symbols, distorted text fonts, alien characters, or random numbers anywhere in the video frame.\n"
+    "- Keep the entire video screen 100% clean, clear, crisp, ultra-hd, and photorealistic without any text artifacts or screen graphics.\n"
     "- No anatomical anomalies, no extra limbs, no extra hands, no extra fingers, no weird hand deformations.\n"
     "- No chaotic or unintended rapid morphing. No slow-motion effects.\n"
-    "- No text overlays, no watermarks, no on-screen graphics or UI elements.\n"
     "- Do NOT remove, hide, or make any accessory disappear during the video.\n"
     "[{lang_instruction} throughout the video. The model must speak this exact dialogue: \"{dialogue}\"]\n\n"
 )
@@ -651,8 +692,16 @@ def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", revi
     → đảm bảo đồng bộ visual giữa các đoạn.
     Ngôn ngữ nói được đồng bộ qua {lang_instruction} placeholder.
     """
+    # Chuẩn hóa tên style từ dropdown → key trong CONTENT_MAP
+    _style_alias = {
+        "POV (Góc nhìn thứ nhất)": "POV",
+        "UGC Authentic": "UGC",
+        "Demo Công Dụng": "Demo công dụng",
+    }
+    review_style = _style_alias.get(review_style, review_style)
+
     if review_style == "Random" or not review_style:
-        review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên"])
+        review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên", "So Sánh/Đánh Giá"])
 
     pool = SEGMENT_POOL_VI if lang == "vi" else SEGMENT_POOL_EN
     indices = DURATION_MAP.get(duration_sec, DURATION_MAP[16])
@@ -749,7 +798,8 @@ _CONT_FALLBACK_EN = (
     "REALISTIC PRODUCT SIZE (CRITICAL): The product MUST have its REAL-LIFE, NATURAL size proportional to the human body. "
     "DO NOT enlarge or exaggerate the product size — it must look exactly as it would in real life when held by a person. "
     "A small product (cosmetics, phone, bottle) should be small in the person's hands, NOT oversized. "
-    "ABSOLUTELY NO overlay text, subtitles, captions, titles, or watermarks on the video screen. "
+    "ABSOLUTELY NO overlay text, NO subtitles, NO captions, NO titles, NO watermarks, NO gibberish font symbols, NO random numbers, NO alien characters on the video screen. "
+    "Keep the entire screen 100% clean, clear, crisp, ultra-hd, and photorealistic. "
     "NO anatomical anomalies, no extra limbs, no extra hands, no extra fingers, no weird hand deformations. "
     "{lang_instruction} throughout the video. The presenter must speak this exact dialogue: \"{dialogue}\"] "
 )
@@ -767,7 +817,8 @@ _CONT_FALLBACK_VI = (
     "KÍCH THƯỚC SẢN PHẨM THỰC TẾ (QUAN TRỌNG): Sản phẩm PHẢI có kích thước CHUẨN như đời thật, tỷ lệ tự nhiên so với cơ thể người. "
     "KHÔNG được phóng to hay phóng đại kích thước sản phẩm — phải trông giống hệt khi cầm trên tay ngoài đời thực. "
     "Sản phẩm nhỏ (mỹ phẩm, điện thoại, chai lọ) phải NHỎ trong tay người, KHÔNG được to quá cỡ. "
-    "TUYỆT ĐỐI KHÔNG hiển thị text phụ đề, chú thích, tiêu đề, watermark trên video. "
+    "TUYỆT ĐỐI KHÔNG hiển thị text phụ đề, chú thích, tiêu đề, watermark, KHÔNG sinh chữ số ngoằn ngoèo linh tinh lên màn hình video. "
+    "Màn hình video phải 100% sạch sẽ, sắc nét, chân thực, không có chữ viền hay ký tự lạ. "
     "TUYỆT ĐỐI KHÔNG sinh thêm tay, KHÔNG sinh thêm chi, KHÔNG thừa ngón tay, KHÔNG biến dạng bàn tay. "
     "{lang_instruction} xuyên suốt video. Người mẫu phải nói chính xác đoạn thoại sau: \"{dialogue}\"] "
 )
@@ -1015,8 +1066,16 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
     Kiểu tóc + trang phục random mỗi SP → video luôn mới mẻ.
     """
     product_name_clean = clean_product_title(product_name)
+    # Chuẩn hóa tên style từ dropdown → key trong CONTENT_MAP
+    _style_alias = {
+        "POV (Góc nhìn thứ nhất)": "POV",
+        "UGC Authentic": "UGC",
+        "Demo Công Dụng": "Demo công dụng",
+    }
+    review_style = _style_alias.get(review_style, review_style)
+
     if review_style == "Random" or not review_style:
-        review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên"])
+        review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên", "So Sánh/Đánh Giá"])
 
     pool = SEGMENT_POOL_FALLBACK_VI if lang == "vi" else SEGMENT_POOL_FALLBACK_EN
     indices = DURATION_MAP.get(duration_sec, DURATION_MAP[16])

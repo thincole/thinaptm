@@ -342,11 +342,11 @@ def _generate_ai_script(
                     client = genai.Client(api_key=key)
                     try:
                         response = client.models.generate_content(
-                            model="gemini-2.0-flash", contents=prompt
+                            model="gemini-3.5-flash", contents=prompt
                         )
                     except Exception:
                         response = client.models.generate_content(
-                            model="gemini-1.5-flash", contents=prompt
+                            model="gemini-flash-latest", contents=prompt
                         )
                     script = response.text.replace('*', '').replace('#', '').strip()
                     if script:
