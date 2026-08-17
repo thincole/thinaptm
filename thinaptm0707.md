@@ -3646,3 +3646,58 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 97. Tối Ưu Hóa Toàn Bộ Hệ Thống Gọi Gemini Sang Model Lite Có Quota Dồi Dào Nhất (2026-08-16)
+- **Phát hiện**:
+  - Google vừa siết quota gắt gao với các model Flash lớn (`gemini-3.5-flash`, `gemini-3.7-flash`), chỉ cho phép ~20 request/ngày trên gói Free, dẫn đến báo lỗi `HTTP 429 RESOURCE_EXHAUSTED`.
+  - Trong khi đó, dòng model Lite (`gemini-flash-lite-latest`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`) có hạn mức Quota cực lớn và phản hồi nhanh gấp 2 lần (0.4s - 0.6s).
+- **Sửa chữa**:
+  - Cập nhật `_MODELS` trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py): đưa `gemini-flash-lite-latest` và các model Lite lên đầu danh sách ưu tiên.
+  - Cập nhật `GEMINI_MODEL = "gemini-flash-lite-latest"` trong [`engine.py`](file:///E:/ThinAptm0707/engine.py) cho tính năng `rewrite_prompt` (viết lại prompt chống vi phạm chính sách).
+  - Xác nhận 9/9 key `AQ.Ab8RN...` hoạt động 100% thành công không còn lỗi 429.
+
+
+---
+
+## 98. Khắc Phục Triệt Để Vòng Lặp Bật/Tắt Trình Duyệt Khi Tài Khoản Bị Chết Cookie (2026-08-17)
+- **Phát hiện**:
+  - Khi cookie tài khoản bị chết hoặc hết session profile Chrome, các worker chạy ngầm liên tục gọi `ensure_auth()` $\rightarrow$ kích hoạt `auto_recover_cookie()` liên tục mở Chrome lên rồi tắt trong 2-3 giây.
+  - Các tài khoản thiếu password (như `anlangthuong91`) hoặc dính xác minh SMS/Captcha (như `phucphuongdinh40`) không tự khôi phục được ngầm, gây hiện tượng cửa sổ Chrome cứ tự động bật lên rồi tắt làm gián đoạn màn hình người dùng.
+- **Sửa chữa**:
+  - **Bổ sung Anti-Loop Cooldown (`_last_recover_time`)**: Mỗi tài khoản chỉ được phép thử tự động khôi phục tối đa **1 lần mỗi 30 phút (1800s)**.
+  - **Tối ưu hóa `ensure_auth()`**: Tự động tăng `auth_fail_streak` và kích hoạt Circuit Breaker (Lớp 1) để tài khoản nghỉ ngơi và trả job về hàng đợi (Lớp 2), không gọi mở Chrome lặp đi lặp lại.
+  - Người dùng có thể nhấn nút mở trình duyệt thủ công trên giao diện để tự đăng nhập 1 lần duy nhất cho các tài khoản cần xác minh bảo mật của Google.
+
+
+---
+
+## 99. Bổ Sung Diệt Tiến Trình Mồ Côi Của SRWare Iron Browser (iron.exe) Khi Tắt Ứng Dụng (2026-08-17)
+- **Phát hiện**:
+  - Khi người dùng sử dụng Gemlogin hoặc DrissionPage với nhân Chromium SRWare Iron (`iron.exe`), mỗi cửa sổ trình duyệt Chromium tự phân nhánh sinh ra 4-6 tiến trình con (GPU, Network, Crashpad, Utility).
+  - Khi tắt ThinAptm, hàm dọn dẹp `_clean_orphaned_chrome` trước đây chỉ quét tên `chrome.exe` và `chromedriver.exe`, bỏ sót `iron.exe`. Dẫn đến việc các tiến trình `iron.exe` bị mồ côi (orphaned) vẫn còn hiển thị trong Task Manager (ví dụ `Iron Browser (11)`).
+- **Sửa chữa**:
+  - Cập nhật cả 2 hàm `_clean_orphaned_chrome` và `_clean_orphaned_chrome_manually` trong [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py): Quét đồng thời `('chrome.exe', 'iron.exe')`.
+  - Tự động đóng sạch toàn bộ các tiến trình `iron.exe` mồ côi khi tắt ứng dụng hoặc khi người dùng nhấp nút `"🧹 Dọn Chrome Rác"`.
+
+
+---
+
+## 100. Tích Hợp Toàn Diện Ngôn Ngữ & Thị Trường Malaysia (Bahasa Melayu / MY) (2026-08-17)
+- **Nâng cấp**:
+  - Thêm tùy chọn `"Tiếng Malaysia"` vào danh sách ngôn ngữ (`LANG_OPTIONS`) trong [`shopeevideo.py`](file:///E:/ThinAptm0707/shopeevideo.py), [`thin_aptm.py`](file:///E:/ThinAptm0707/thin_aptm.py) và [`SlideShow.py`](file:///E:/ThinAptm0707/SlideShow.py).
+  - Thêm bộ kịch bản đọc TTS chuẩn ngôn ngữ Mã Lai (`TTS_MIDDLES_MY`, `TTS_ENDINGS_MY`) với ngôn phong affiliate lôi cuốn dành riêng cho thị trường Shopee / TikTok Malaysia ("beg kuning", "jualan kilat", "checkout").
+  - Thêm cấu hình mô tả giọng nói cố định `VOICE_PRESETS["my"]` trong [`engine.py`](file:///E:/ThinAptm0707/engine.py).
+  - Đồng bộ 2 chiều giữa dropdown Ngôn ngữ `"Tiếng Malaysia"` và Thị trường `"MY"` trên giao diện Server Video.
+  - Hỗ trợ đầy đủ cho các chế độ TVC 8s, 16s/24s, AI Prompt (Gemini/Groq) và SlideShow cho thị trường Malaysia.
+
+
+---
+
+## 101. Bổ Sung Tùy Chọn "🎲 Random" Và Đặt Mặc Định Cho Kiểu Review (2026-08-17)
+- **Nâng cấp**:
+  - Bổ sung tùy chọn `"🎲 Random"` lên đầu danh sách `Kiểu Review` (Review Style) ở cả tab **Tạo Video Shopee** và **Tạo Video từ Server**.
+  - Đặt giá trị mặc định khi khởi tạo là `"🎲 Random"`.
+  - Cập nhật logic sinh prompt (cả template mặc định `SV.build_video_prompts` và AI generator `_sv_ai_gen_prompts`): Khi chọn Random, mỗi video/sản phẩm sẽ tự động quay ngẫu nhiên 1 trong 7 kiểu review chuyên nghiệp (Review tự nhiên, Ngồi Review, POV, Unboxing, UGC Authentic, Demo Công Dụng, So Sánh/Đánh Giá).
+
+
+---

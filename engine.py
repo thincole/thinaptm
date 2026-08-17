@@ -84,6 +84,7 @@ VOICE_DESC = ""
 VOICE_PRESETS = {
     "vi": "Narrated by a young Vietnamese woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in Vietnamese",
     "id": "Narrated by a young Indonesian woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in Bahasa Indonesia",
+    "my": "Narrated by a young Malaysian woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in Bahasa Melayu",
     "ph": "Narrated by a young Filipino woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in Filipino (Tagalog)",
     "en": "Narrated by a young woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in clear, natural English",
 }
@@ -704,8 +705,8 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=3.5, timeout
     return "failed", "policy", credits
 
 # ---------- GEMINI: viết lại prompt vi phạm chính sách ----------
-GEMINI_MODEL = "gemini-flash-latest"   # đã kiểm: gemini-2.0-flash hay 429, 1.5 đã 404; latest chạy ổn
-GEMINI_BEARER_MODEL = "gemini-3.7-flash"  # model dùng cho AI viết prompt qua bearer token (3.5-flash hay bị quota)
+GEMINI_MODEL = "gemini-flash-lite-latest"   # model Lite có quota dồi dào và tốc độ cao nhất
+GEMINI_BEARER_MODEL = "gemini-3.7-flash"  # model dùng cho AI viết prompt qua bearer token
 
 def rewrite_prompt(api_key, prompt, timeout=30, model=None):
     """Nhờ Gemini viết lại prompt bị lọc nội dung -> bản AN TOÀN (giữ ý, tránh vi phạm).

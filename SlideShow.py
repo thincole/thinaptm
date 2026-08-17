@@ -39,6 +39,8 @@ VOICES = {
     "Gadis (Female)": "id-ID-GadisNeural",
     "🇮🇩 Gadis (Nữ)": "id-ID-GadisNeural",
     "🇮🇩 Ardi (Nam)": "id-ID-ArdiNeural",
+    "🇲🇾 Yasmin (Nữ)": "ms-MY-YasminNeural",
+    "🇲🇾 Osman (Nam)": "ms-MY-OsmanNeural",
 }
 
 ASPECT_RATIOS = {"9:16 (Dọc)": (1080, 1920), "16:9 (Ngang)": (1920, 1080)}
@@ -46,7 +48,7 @@ EFFECTS = ["🎲 Random", "🔍 Zoom In", "🔎 Zoom Out", "⬅ Pan Left", "➡ 
 FADE_DURATIONS = ["0.5s", "0.8s", "1.0s", "1.5s"]
 FPS_OPTIONS = ["24", "30", "60"]
 IMG_EXT = ('.jpg', '.jpeg', '.png', '.webp')
-LANGUAGES = ["🇻🇳 Tiếng Việt", "🇵🇭 Tiếng Philippines", "🇺🇸 Tiếng Anh", "🇮🇩 Tiếng Indonesia"]
+LANGUAGES = ["🇻🇳 Tiếng Việt", "🇵🇭 Tiếng Philippines", "🇺🇸 Tiếng Anh", "🇮🇩 Tiếng Indonesia", "🇲🇾 Tiếng Malaysia"]
 
 # ── Quản lý API Key (Phân loại: Hỏng Vĩnh Viễn vs Cooldown Tạm Thời) ──
 BAD_API_KEYS = set()          # Key hỏng vĩnh viễn (401/403: Sai key hoặc bị khóa)
@@ -221,6 +223,12 @@ def _generate_ai_script(
         prompt = (
             f"Tulis skrip voiceover TTS dalam Bahasa Indonesia untuk memperkenalkan produk '{product_name}'. "
             f"MINIMUM {min_words} kata. Hanya keluarkan teks untuk dibaca TTS."
+        )
+    elif lang in ("my", "ms", "Malaysia"):
+        min_words = 50 if duration <= 15 else 70
+        prompt = (
+            f"Tulis skrip voiceover TTS dalam Bahasa Melayu (Malaysia) untuk memperkenalkan produk '{product_name}'. "
+            f"MINIMUM {min_words} patah perkataan. Hanya keluarkan teks bacaan untuk TTS tanpa arahan tambahan."
         )
     else:  # vi
         min_words = 50 if duration <= 15 else 70

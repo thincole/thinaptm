@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.5"
+APP_VERSION = "ThinAPTM 1.2.6"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -375,8 +375,8 @@ class AccountState:
     def rest_remaining(self):
         return max(0.0, self.resume_at - time.time())
 
-    def rest(self, secs, reason=""):
-        self.resume_at = time.time() + secs
+    def rest(self, seconds, reason=""):
+        self.resume_at = time.time() + max(0, seconds)
         self.rest_reason = reason
 
     def on_upload_throttle(self):
@@ -404,6 +404,12 @@ class AccountState:
         if not email or email == "?":
             return None
             
+        now = time.time()
+        # Chống vòng lặp bật/tắt Chrome: Mỗi tài khoản chỉ thử tự động khôi phục tối đa 1 lần mỗi 30 phút (1800s)
+        if now - getattr(self, "_last_recover_time", 0.0) < 1800:
+            return None
+        self._last_recover_time = now
+
         profile_dir = os.path.join(HERE, "_profiles", str(email).replace("@", "_"))
         fresh_ck = None
         
@@ -461,8 +467,13 @@ class AccountState:
                 b, em = res[0], res[1] if isinstance(res, tuple) else (None, None)
             
             if not b:
-                # Cookie hết hạn -> Tự động khôi phục cookie mới ngầm qua Chrome Profile / Auto Login
-                b = self.auto_recover_cookie()
+                # Cookie hết hạn -> Tăng streak lỗi auth
+                self.auth_fail_streak += 1
+                if self.auth_fail_streak >= 2 and not self.is_circuit_broken():
+                    self.trip_circuit_breaker()
+                # Tự động khôi phục với cơ chế Anti-Loop Cooldown (chỉ thử 1 lần / 30p)
+                if not self.is_circuit_broken():
+                    b = self.auto_recover_cookie()
                 
             if not b:
                 return False
@@ -3523,8 +3534,8 @@ class App(ctk.CTk):
         # Row 1.5: Review Style Config
         row1_5 = ctk.CTkFrame(cfg, fg_color="transparent"); row1_5.pack(fill="x", padx=12, pady=(4, 0))
         ctk.CTkLabel(row1_5, text="Kiểu Review:", font=("", 12)).pack(side="left")
-        self._sp_review_style = ctk.StringVar(value=self.settings.get("shopee_review_style", "Review tự nhiên"))
-        style_opts = ["Review tự nhiên", "Ngồi Review", "POV (Góc nhìn thứ nhất)", "Unboxing", "UGC Authentic", "Demo Công Dụng", "So Sánh/Đánh Giá"]
+        self._sp_review_style = ctk.StringVar(value=self.settings.get("shopee_review_style", "🎲 Random"))
+        style_opts = ["🎲 Random", "Review tự nhiên", "Ngồi Review", "POV (Góc nhìn thứ nhất)", "Unboxing", "UGC Authentic", "Demo Công Dụng", "So Sánh/Đánh Giá"]
         self._sp_style_menu = ctk.CTkOptionMenu(row1_5, values=style_opts, variable=self._sp_review_style, width=200)
         self._sp_style_menu.pack(side="left", padx=(4, 12))
 
@@ -4086,7 +4097,7 @@ class App(ctk.CTk):
             n_segments = len(SV.DURATION_MAP.get(duration_sec, [0, 1])) if SV else 2
             scene_choice = self._sp_scene.get()
             lang_val = self._sp_lang.get()
-            lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("ph" if "Philippines" in lang_val else "en"))
+            lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("my" if "Malaysia" in lang_val else ("ph" if "Philippines" in lang_val else "en")))
             review_style = self._sp_review_style.get()
 
             if SV:
@@ -4355,7 +4366,7 @@ class App(ctk.CTk):
         scene_choice = self._sp_scene.get()
         duration_sec = SV.parse_duration(self._sp_duration.get())
         lang_val = self._sp_lang.get()
-        lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("ph" if "Philippines" in lang_val else "en"))
+        lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("my" if "Malaysia" in lang_val else ("ph" if "Philippines" in lang_val else "en")))
         remove_wm = self._sp_remove_wm.get()
         skip_img = self._sp_skip_img.get()
         
@@ -5357,8 +5368,8 @@ class App(ctk.CTk):
         row2 = ctk.CTkFrame(cfg, fg_color="transparent"); row2.pack(fill="x", padx=12, pady=4)
 
         ctk.CTkLabel(row2, text="Kiểu Review:", font=("", 12)).pack(side="left")
-        self._sv_review_style = ctk.StringVar(value=self.settings.get("sv_review_style", "Review tự nhiên"))
-        self._sv_style_menu = ctk.CTkOptionMenu(row2, values=["Review tự nhiên", "Ngồi Review", "POV (Góc nhìn thứ nhất)", "Unboxing", "UGC Authentic", "Demo Công Dụng", "So Sánh/Đánh Giá"],
+        self._sv_review_style = ctk.StringVar(value=self.settings.get("sv_review_style", "🎲 Random"))
+        self._sv_style_menu = ctk.CTkOptionMenu(row2, values=["🎲 Random", "Review tự nhiên", "Ngồi Review", "POV (Góc nhìn thứ nhất)", "Unboxing", "UGC Authentic", "Demo Công Dụng", "So Sánh/Đánh Giá"],
                                                   variable=self._sv_review_style, width=200)
         self._sv_style_menu.pack(side="left", padx=(4, 12))
 
@@ -5903,12 +5914,13 @@ class App(ctk.CTk):
 
     # --- Đồng bộ Ngôn ngữ ↔ Thị trường ---
     _SV_LANG_TO_MARKET = {
-        "Tiếng Philippines": "PH", "Tiếng Việt": "VN", "Tiếng Indonesia": "ID", "Tiếng Anh": "PH"
+        "Tiếng Philippines": "PH", "Tiếng Việt": "VN", "Tiếng Indonesia": "ID", "Tiếng Malaysia": "MY", "Tiếng Anh": "PH"
     }
     _SV_MARKET_TO_LANG = {
         "PH": "Tiếng Philippines",
         "VN": "Tiếng Việt",
-        "ID": "Tiếng Indonesia"
+        "ID": "Tiếng Indonesia",
+        "MY": "Tiếng Malaysia"
     }
 
     def _sv_sync_lang_to_market(self, lang_val):
@@ -6268,7 +6280,7 @@ class App(ctk.CTk):
             n_segments = len(SV.DURATION_MAP.get(duration_sec, [0, 1])) if SV else 2
             scene_choice = self._sv_scene.get()
             lang_val = self._sv_lang.get()
-            lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("ph" if "Philippines" in lang_val else "en"))
+            lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("my" if "Malaysia" in lang_val else ("ph" if "Philippines" in lang_val else "en")))
             review_style = self._sv_review_style.get()
 
             if SV:
@@ -6356,7 +6368,7 @@ class App(ctk.CTk):
                             mode="gemini", gemini_keys=None, groq_keys=None):
         """Gọi Gemini hoặc Groq để sinh prompt video review sản phẩm chất lượng cao.
         Trả về list[str] prompts hoặc None nếu thất bại."""
-        lang_map = {"vi": "Vietnamese", "en": "Filipino", "id": "Indonesian"}
+        lang_map = {"vi": "Vietnamese", "en": "English", "id": "Indonesian", "my": "Malay", "ph": "Filipino"}
         lang_name = lang_map.get(lang_code, "English")
 
         # Mô tả phong cách review — 7 kiểu chuyên dụng cho video affiliate
@@ -6447,7 +6459,12 @@ class App(ctk.CTk):
                 "CRITICAL: Must show BOTH positive and negative aspects — not purely promotional."
             ),
         }
-        style_desc = _REVIEW_STYLE_DESCS.get(review_style, _REVIEW_STYLE_DESCS["Review tự nhiên"])
+        if review_style in ("🎲 Random", "Random") or not review_style or "random" in str(review_style).lower():
+            import random as _rnd
+            actual_style = _rnd.choice(list(_REVIEW_STYLE_DESCS.keys()))
+            style_desc = _REVIEW_STYLE_DESCS[actual_style]
+        else:
+            style_desc = _REVIEW_STYLE_DESCS.get(review_style, _REVIEW_STYLE_DESCS["Review tự nhiên"])
 
         # Mô tả kịch bản theo số segment
         if n_segments == 2:
@@ -6508,8 +6525,8 @@ class App(ctk.CTk):
             import random as _rnd
             keys_copy = list(keys)
             _rnd.shuffle(keys_copy)
-            # Thứ tự model ưu tiên: gemini-3.5-flash (tốc độ cao & quota dồi dào) → gemini-3.7-flash → gemini-3.6-flash → gemini-flash-latest
-            _MODELS = ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-flash-latest"]
+            # Thứ tự model ưu tiên: gemini-flash-lite-latest (quota dồi dào nhất & tốc độ cao nhất) → gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-3-flash-preview → gemini-3.5-flash
+            _MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.7-flash"]
             for key in keys_copy:
                 for model_name in _MODELS:
                     try:
@@ -6625,7 +6642,7 @@ class App(ctk.CTk):
         scene_choice = self._sv_scene.get()
         duration_sec = SV.parse_duration(self._sv_duration.get())
         lang_val = self._sv_lang.get()
-        lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("ph" if "Philippines" in lang_val else "en"))
+        lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("my" if "Malaysia" in lang_val else ("ph" if "Philippines" in lang_val else "en")))
         remove_wm = self._sv_remove_wm.get()
         del_img = self._sv_del_img.get()
         ghep_anh = self._sv_ghep_anh.get()
@@ -6859,9 +6876,11 @@ class App(ctk.CTk):
                 # === CHẾ ĐỘ 8s: Prompt TVC cố định (1 segment duy nhất) ===
                 if duration_sec == 8:
                     _tvc_lang_map = {
-                        "en": {"nationality": "Filipino", "language": "Filipino"},
+                        "en": {"nationality": "American", "language": "English"},
                         "vi": {"nationality": "Việt Nam", "language": "tiếng Việt"},
                         "id": {"nationality": "Indonesian", "language": "tiếng Indonesia"},
+                        "my": {"nationality": "Malaysian", "language": "tiếng Malaysia (Bahasa Melayu)"},
+                        "ph": {"nationality": "Filipino", "language": "Filipino"},
                     }
                     _tvc = _tvc_lang_map.get(lang_code, _tvc_lang_map["en"])
                     # Rút gọn tên SP (tối đa 80 ký tự)
@@ -7449,9 +7468,9 @@ class App(ctk.CTk):
                         if ppid not in pids_active:
                             try: psutil.Process(pid).kill()
                             except: pass
-                    # 2. CHỈ diệt Chrome tự động hóa do DrissionPage / ThinAptm mở ra (có chứa 'drissionpage', '_profiles' + 'remote-debugging-port')
+                    # 2. CHỈ diệt Chrome / Iron tự động hóa do DrissionPage / ThinAptm mở ra (có chứa 'drissionpage', '_profiles' + 'remote-debugging-port')
                     # KHÔNG BAO GIỜ diệt Chrome bình thường của người dùng!
-                    elif name == 'chrome.exe':
+                    elif name in ('chrome.exe', 'iron.exe'):
                         if 'gemlogin' in cmd:
                             continue
                         try:
@@ -7462,8 +7481,8 @@ class App(ctk.CTk):
                             pass
                         
                         # Bắt buộc CHỈ diệt nếu command line chứa thông số nhận diện tự động hóa riêng của app
-                        is_automated_thinaptm = ('drissionpage' in cmd) or ('_profiles' in cmd and 'remote-debugging-port' in cmd)
-                        if is_automated_thinaptm:
+                        is_automated_thinaptm = ('drissionpage' in cmd) or ('_profiles' in cmd) or ('remote-debugging-port' in cmd)
+                        if is_automated_thinaptm or name == 'iron.exe':
                             if ppid not in pids_active or ppid == current_pid:
                                 try: psutil.Process(pid).kill()
                                 except: pass
@@ -7502,8 +7521,8 @@ class App(ctk.CTk):
                                 killed_count += 1
                                 freed_ram += mem
                             except: pass
-                    # 2. Chrome tự động hóa (Tuyệt đối KHÔNG đụng tới GemLogin)
-                    elif name == 'chrome.exe':
+                    # 2. Chrome / Iron tự động hóa (Tuyệt đối KHÔNG đụng tới GemLogin)
+                    elif name in ('chrome.exe', 'iron.exe'):
                         if 'gemlogin' in cmd:
                             continue
                         try:
@@ -7513,7 +7532,7 @@ class App(ctk.CTk):
                         except Exception:
                             pass
                         is_helper = '--type=' in cmd
-                        is_automated = '--headless' in cmd or '--remote-debugging-port' in cmd or 'automation' in cmd or '_profiles' in cmd
+                        is_automated = '--headless' in cmd or '--remote-debugging-port' in cmd or 'automation' in cmd or '_profiles' in cmd or name == 'iron.exe'
                         parent_dead = ppid not in pids_active
                         parent_proc = [x for x in all_procs if x['pid'] == ppid]
                         parent_name = parent_proc[0]['name'].lower() if parent_proc else ''

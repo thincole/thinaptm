@@ -346,6 +346,37 @@ TTS_ENDINGS_ID = [
     "Jangan ragu lagi, klik keranjang sekarang dan cobain sendiri."
 ]
 
+TTS_MIDDLES_MY = [
+    "Reka bentuknya sangat kemas, perinciannya halus dan selesa dipegang.",
+    "Kualiti bahannya memang terbaik, rasa sangat premium bila disentuh.",
+    "Bila cuba sendiri, baru tahu fungsinya jauh lebih hebat daripada iklan.",
+    "Saiznya sangat tepat, warna sebiji macam dalam gambar, memang puas hati.",
+    "Tengok dari dekat nampak kualiti buatannya sangat teliti dan kukuh.",
+    "Bukan sahaja cantik dipandang, tapi betul-betul memudahkan kerja harian saya.",
+    "Ia berfungsi dengan sangat lancar, ringan tapi tahan lasak dan selamat.",
+    "Saya dah uji banyak kali, memang tahan lama dan sangat berbaloi.",
+    "Bentuknya sempurna, warna menarik, memang tiada cacat cela.",
+    "Sangat praktikal dan menjimatkan banyak masa sejak saya menggunakannya.",
+    "Tengok dari dekat pun tiada kecacatan, kemasan dia bagi 10 per 10.",
+    "Sekarang baru faham kenapa produk ini viral dan ramai orang cari.",
+    "Fungsi dia sangat mantap, saiz padat tak makan ruang langsung.",
+    "Paling saya suka rasa selesa dan mudah bila digunakan.",
+    "Ketahanan dan estetik dia memang buat saya kagum sangat."
+]
+
+TTS_ENDINGS_MY = [
+    "Pendek kata memang berbaloi! Cepat tekan beg kuning sekarang ya.",
+    "Jangan sampai terlepas, pautan ada di sudut bawah kiri skrin.",
+    "Kedai tengah ada jualan kilat hebat, cepat checkout sebelum habis.",
+    "Sangat disyorkan! Memang 100 markah, klik ikon beg sekarang.",
+    "Pegang je terus jatuh hati, jom tekan beg kuning sekarang.",
+    "Semua orang patut ada satu, pautan kedai ada kat bawah kiri.",
+    "Percayalah, beli sekarang dan pasti anda takkan menyesal.",
+    "Ada baucar penghantaran percuma juga, tunggu apa lagi, jom checkout.",
+    "Murah tapi kualiti padu, stok terhad, dapatkan sekarang juga.",
+    "Jangan fikir panjang lagi, klik beg kuning dan cuba sendiri."
+]
+
 TTS_MIDDLES_PH = [
     "Napakaganda ng disenyo, napakapino ng mga detalye, at napakasarap hawakan.",
     "Napakaganda ng kalidad ng materyal, premium ang pakiramdam kapag hinawakan.",
@@ -399,6 +430,11 @@ def generate_tts_script(product_name, segment_index, total_segments, lang="vi"):
     elif lang == "id":
         middles_pool = TTS_MIDDLES_ID
         endings_pool = TTS_ENDINGS_ID
+        prefix_format = "Untuk {name}, "
+        prefix_format_24s = "Mengenai {name}, "
+    elif lang in ("my", "ms"):
+        middles_pool = TTS_MIDDLES_MY
+        endings_pool = TTS_ENDINGS_MY
         prefix_format = "Untuk {name}, "
         prefix_format_24s = "Mengenai {name}, "
     elif lang == "ph":  # Tagalog (Philippines)
@@ -623,7 +659,7 @@ DURATION_MAP = {
     24: [2, 3, 4],  # 24s = 3 clip × ~8s
 }
 
-LANG_OPTIONS = ["Tiếng Việt", "Tiếng Philippines", "Tiếng Indonesia", "Tiếng Anh"]
+LANG_OPTIONS = ["Tiếng Việt", "Tiếng Philippines", "Tiếng Indonesia", "Tiếng Malaysia", "Tiếng Anh"]
 
 _LANG_MAP = {
     "ph": {
@@ -640,6 +676,11 @@ _LANG_MAP = {
         "instruction": "The model speaks Indonesian",
         "country_en": "Indonesian",
         "country_vi": "Indonesia"
+    },
+    "my": {
+        "instruction": "The model speaks Malay",
+        "country_en": "Malaysian",
+        "country_vi": "Malaysia"
     },
     "en": {
         "instruction": "The model speaks English",
@@ -700,7 +741,7 @@ def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", revi
     }
     review_style = _style_alias.get(review_style, review_style)
 
-    if review_style == "Random" or not review_style:
+    if review_style in ("🎲 Random", "Random") or not review_style or "random" in str(review_style).lower():
         review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên", "So Sánh/Đánh Giá"])
 
     pool = SEGMENT_POOL_VI if lang == "vi" else SEGMENT_POOL_EN
@@ -1074,7 +1115,7 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
     }
     review_style = _style_alias.get(review_style, review_style)
 
-    if review_style == "Random" or not review_style:
+    if review_style in ("🎲 Random", "Random") or not review_style or "random" in str(review_style).lower():
         review_style = random.choice(["Review kho hàng", "Ngồi Review", "POV", "UGC", "Unboxing", "Demo công dụng", "Review tự nhiên", "So Sánh/Đánh Giá"])
 
     pool = SEGMENT_POOL_FALLBACK_VI if lang == "vi" else SEGMENT_POOL_FALLBACK_EN
