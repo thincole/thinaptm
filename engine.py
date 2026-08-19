@@ -102,7 +102,13 @@ def _log_err(msg):
         except Exception:
             pass
     else:
-        print("[ENGINE ERROR]", msg)
+        try:
+            print("[ENGINE ERROR]", msg)
+        except Exception:
+            try:
+                print("[ENGINE ERROR]", str(msg).encode("ascii", errors="replace").decode())
+            except Exception:
+                pass
 
 
 def _kw(t=60, proxy=None):
@@ -187,7 +193,18 @@ def bearer_from_cookie(cookie, timeout=25, proxy=None):
                         return None, None, None
                 except Exception as e:
                     _log_err(f"bearer_from_cookie date check exception: {e}")
-            return j.get("access_token"), (j.get("user") or {}).get("email"), new_cookie
+            token = j.get("access_token")
+            if not token:
+                return None, None, None
+            # Xác thực độ tươi thực tế của access_token với máy chủ Google OAuth2
+            try:
+                chk = cffi.get(f"https://oauth2.googleapis.com/tokeninfo?access_token={token}", **_kw(5, proxy=proxy))
+                if chk.status_code != 200:
+                    _log_err(f"bearer_from_cookie: Google OAuth access_token đã hết hạn ({chk.status_code})")
+                    return None, None, None
+            except Exception:
+                pass
+            return token, (j.get("user") or {}).get("email"), new_cookie
         else:
             _log_err(f"bearer_from_cookie failed status: {r.status_code}, response: {r.text[:200]}")
     except Exception as e:
@@ -305,22 +322,23 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=2, proxy=
     try:
         from PIL import Image
         import io
-        import random as _rnd
         img = Image.open(image_path).convert("RGB")
-        # Bơm "muối" (salt pixel) để đổi hoàn toàn mã hash của file
         w, h = img.size
-        px, py = _rnd.randint(0, w-1), _rnd.randint(0, h-1)
-        r, g, b = img.getpixel((px, py))
-        img.putpixel((px, py), (r, g, max(0, b - 1) if b > 0 else 1))
+        # Bơm 3 "muối" (salt pixel) tại các vị trí ngẫu nhiên để đổi hoàn toàn SHA256 & byte map
+        for _ in range(3):
+            px, py = _rnd.randint(0, w-1), _rnd.randint(0, h-1)
+            r, g, b = img.getpixel((px, py))
+            img.putpixel((px, py), (r, g, max(0, b - 1) if b > 0 else 1))
         
         buf = io.BytesIO()
-        # Random chất lượng 90-95 tiếp tục tạo ra byte map hoàn toàn mới
-        img.save(buf, format="JPEG", quality=_rnd.randint(90, 95))
+        # Random chất lượng 89-95 tạo ra cấu trúc DCT block & byte stream hoàn toàn mới chống spam
+        img.save(buf, format="JPEG", quality=_rnd.randint(89, 95), optimize=_rnd.choice([True, False]))
         b64 = base64.b64encode(buf.getvalue()).decode()
     except Exception as e:
         _log_err(f"upload_image failed to process image {image_path}: {e}")
         return None
-    payload = {"clientContext": {"sessionId": f";{int(time.time()*1000)}", "projectId": project, "tool": "PINHOLE",
+    session_id = f";{int(time.time()*1000)}"
+    payload = {"clientContext": {"sessionId": session_id, "projectId": project, "tool": "PINHOLE",
                                  "recaptchaContext": get_recaptcha_context()},
                "imageBytes": b64}
     throttle_count = 0
@@ -343,7 +361,7 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=2, proxy=
                 continue
             elif r.status_code == 401:
                 _log_err(f"upload_image 401 unauthorized")
-                return None  # caller sẽ refresh bearer rồi thử lại
+                return "unauthorized"
             elif r.status_code == 403:
                 _log_err(f"upload_image 403 PERMISSION_DENIED — account bị cấm upload ảnh")
                 return "forbidden"

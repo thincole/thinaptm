@@ -3759,3 +3759,108 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 107. Tối Ưu Triệt Để Chống Throttle (429) & Xử Lý Hiện Tượng Bỏ Nhảy Hàng Đợi SP (2026-08-19)
+- **Nguyên nhân sự cố**:
+  - **Vì sao tài khoản mới bị 429 liên tục**: Khi tài khoản chạy nhiều tác vụ (`Tạo = 5..16`), các luồng worker bắn đồng thời nhiều request `submit_video` vào cùng một mili-giây tới máy chủ Google Flow. Google Flow cấm request trùng phiên song song trên cùng 1 account project nên lập tức phạt 429 (Throttle).
+  - **Vì sao mới tạo được 74 video mà hàng đợi đã nhảy đến SP [342]**: Khi một sản phẩm gặp 429 Throttle, hệ thống trả về `"retry_soft"` và đẩy sản phẩm đó về cuối hàng đợi (`jobq.put`) để nhường chỗ cho sản phẩm tiếp theo. Khi tài khoản bị 429 liên hoàn, các worker liên tục nhặt sản phẩm mới $\rightarrow$ dính 429 $\rightarrow$ đẩy về sau, khiến chỉ số SP bị trôi nhanh từ [0] tới [342] mà các video chưa kịp render xong.
+- **Biện pháp khắc phục đã thực hiện**:
+  1. **Khóa tuần tự hóa Submit (`submit_lock`) + Giãn cách 3.5s - 4.0s (Rule #2)**: Bổ sung `wait_submit_spacing(3.5s)` cho từng tài khoản trong tất cả các module (`_sv_start_run`, `_shopee_start`, `_run`). Các worker của cùng 1 tài khoản gửi lệnh submit tuần tự cách nhau 3.5 giây, sau đó mới chuyển sang polling ngầm (polling không chiếm lock), chấm dứt hoàn toàn việc dồn request gây 429.
+  2. **Khóa tuần tự hóa Upload (`upload_lock`) + Giãn cách 4.0s**: Bổ sung `wait_upload_spacing(4.0s)` cho khâu upload ảnh của từng tài khoản.
+  3. **Thời gian phạt nghỉ thông minh theo Rule #2**: Cập nhật `on_throttle()` phạt nghỉ tăng dần từ 30s đến 150s (`30s * 1.5^(streak-1)`) để Google Token Bucket kịp nạp đầy trước khi tài khoản gửi tiếp.
+  4. **Giữ thời gian làm mát khi xoay Proxy**: Khi xoay proxy lúc dính 429, giữ lại 15s làm mát tối thiểu thay vì xóa trắng về 0s, tránh việc vừa đổi IP đã bắn dồn dập vào cùng 1 Google project bị phạt.
+
+
+---
+
+## 108. Ngăn Chặn Tuyệt Đối Tài Khoản Hết Hạn Cookie Nuốt Và Làm Trôi Hàng Đợi SP (2026-08-19)
+- **Phát hiện cốt lõi từ ảnh chụp thực tế**:
+  - Trong ảnh của người dùng, 4 tài khoản (`jesusitamicelizws33`, `phucphuongdinh40`, `thinlai915`, `colecole2627`) đều có `Xong 0, Lỗi 0` và đang ở trạng thái `😴 nghỉ 53s - 62s` (Circuit Breaker Lớp 1 do cookie Google hết hạn/401).
+  - Trước đây, khi khởi động phiên chạy, các worker thread của 4 tài khoản này vẫn rút liên tục hàng chục sản phẩm từ hàng đợi (`jobq.get()`) trước khi gọi `ensure_auth()`. Khi `ensure_auth()` báo lỗi, 40 sản phẩm này lập tức bị dán cờ `retry_soft`, tăng `_cycles` và bị ném về cuối hàng đợi $\rightarrow$ khiến hàng đợi bị nhảy vọt từ [0] lên [342] và [561] dù các video chưa được tạo.
+- **Biện pháp xử lý**:
+  - Bổ sung chốt chặn `if not st.ensure_auth(): continue` ngay trước lệnh `jobq.get()` trong worker loop của tất cả các chế độ (`_sv_start_run`, `_shopee_start`, `_run`).
+  - Đảm bảo tài khoản chưa đăng nhập / cookie hết hạn sẽ **tuyệt đối không được phép rút bất kỳ sản phẩm nào từ hàng đợi**, bảo toàn thứ tự nguyên vẹn 100% cho các tài khoản đang hoạt động bình thường.
+
+
+---
+
+## 109. Nâng Cấp Hệ Thống Chống Google 429 Upload / Spam & Lọc Sạch Proxy Lỗi (2026-08-19)
+- **Vấn đề đã xử lý**:
+  1. **Khởi động mềm (Warm-up / Slow Start)**:
+     - Khi mới bắt đầu phiên chạy, mỗi tài khoản mới chỉ nhận 1-2 video thăm dò (`min(2, max_busy)`).
+     - Khi tài khoản hoàn thành 1 video trơn tru (`wins >= 1`), hệ thống tự động mở full 100% công suất theo cấu hình (`Upload + 3`).
+  2. **Khởi động so le (Staggered Dispatch 0.8s)**:
+     - Các tài khoản xuất phát cách nhau 0.8 giây, loại bỏ hoàn toàn hiện tượng Thundering Herd (tất cả tài khoản cùng bắn request vào Google trong giây đầu tiên).
+  3. **Cấp đúng số Worker Thread cần thiết**:
+     - Thay vì sinh cứng 20 worker threads cho mỗi tài khoản, hệ thống cấp đúng số worker bằng `st.max_busy` theo cấu hình, giảm tải CPU và tránh nghẽn tranh chấp lock.
+  4. **Xáo trộn vân tay ảnh (Anti-Spam Image Fingerprint)**:
+     - Bơm 3 salt pixel ngẫu nhiên tại nhiều góc ảnh.
+     - Thay đổi bảng lượng tử hóa JPEG (quality 89-95, optimize toggle) và sessionId sinh động theo chuẩn Google Flow.
+  5. **Bộ lọc Proxy nghiêm ngặt & Sửa lỗi giải mã HomeProxy**:
+     - Phát hiện và loại bỏ triệt để các proxy bị cắt cụt/lỗi từ API (như `97:29229:william718:nta4mde4mjm0mw==`).
+     - Bổ sung hàm kiểm tra `is_valid_proxy_host()` bắt buộc host phải có định dạng hợp lệ (chứa dấu chấm/hai chấm, độ dài >= 4, không phải số nguyên cụt).
+     - Bổ sung cơ chế bù padding Base64 tự động khi giải mã mật khẩu proxy của HomeProxy.
+
+
+---
+
+## 110. Bỏ Qua Khâu Kiểm Tra / Chặn Tài Khoản Ở Đầu Phiên Tạo Video (2026-08-19)
+- **Yêu cầu của người dùng**: Bỏ qua toàn bộ chức năng kiểm tra và loại bỏ tài khoản khi bắt đầu tạo video.
+- **Nguyên nhân trước đây gây hiểu nhầm**:
+  - Khi check trong Tab Tài khoản (chạy mạng trực tiếp), cookie vẫn sống 100%.
+  - Nhưng khi bấm Bắt đầu tạo video, tool gán Proxy từ pool vào và cố gắng kết nối `https://labs.google`. Nếu Proxy đó bị chậm/treo/chết (timeout 50s-60s), tool cũ lại vội vàng in ra `cookie lỗi → bỏ qua`, khiến người dùng nghĩ cookie bị hỏng.
+- **Thay đổi đã thực hiện**:
+  - Gỡ bỏ `_ensure_checked_accs_alive()` và vòng lặp chặn auth cứng tại khâu xuất phát của tất cả 3 chế độ (`_sv_start_run`, `_shopee_start`, `_run`).
+  - Toàn bộ các tài khoản có tích chọn "Dùng" trong Tab Tài khoản đều được nạp trực tiếp 100% vào Pool ngay tức thì (0 giây), sẵn sàng xuất phát.
+  - Quá trình xác thực Bearer token được thực hiện ngầm linh hoạt (lazy on-demand) bởi các luồng worker trong suốt phiên chạy.
+
+
+---
+
+## 111. Tắt Hoàn Toàn Việc Tự Động Bật Cửa Sổ Trình Duyệt Chrome Khi Đang Tạo Video (2026-08-19)
+- **Hiện tượng**: Khi đang bấm Tạo Video từ Server, nếu một tài khoản gặp lỗi mạng/timeout Bearer, tool tự động kích hoạt `auto_recover_cookie()` và `_do_health_check()`, làm một loạt cửa sổ Chrome tự động bật lên màn hình gây phiền toái và gián đoạn cho người dùng.
+- **Nguyên nhân**:
+  1. Trong `AccountState.ensure_auth()` có đoạn code tự gọi `auto_recover_cookie()` (chạy DrissionPage Chrome).
+  2. Trong Circuit Breaker Lớp 3 `_trigger_instant_health_check()` có gọi `_do_health_check()` mở Chrome tự động login lại.
+- **Xử lý triệt để**:
+  - Gỡ bỏ hoàn toàn việc gọi `auto_recover_cookie()` bên trong `ensure_auth()`. Quá trình tạo video chỉ sử dụng HTTP API ngầm 100%.
+  - Tắt việc mở Chrome trong `_trigger_instant_health_check()`.
+  - Cửa sổ trình duyệt Chrome **chỉ mở khi người dùng chủ động bấm "🔑 Auto login" trong tab Tài khoản**. Tuyệt đối không tự động bật cửa sổ khi đang tạo video.
+
+
+---
+
+## 112. Loại Bỏ Ô Cài Đặt Chung 'Upload/TK' Ở Thanh Công Cụ Dưới Cùng (2026-08-19)
+- **Yêu cầu của người dùng**: Bỏ ô cài đặt `📤 Upload/TK` ở góc phải thanh công cụ dưới cùng.
+- **Lý do**:
+  - Mỗi tài khoản trong bảng Pool (`Pool tài khoản (A/MD)`) đã có sẵn cột menu chọn luồng upload riêng biệt cho từng tài khoản (`Upload: [2], [3],...`).
+  - Ô cài đặt chung ở thanh dưới cùng bị thừa và gây rối mắt.
+- **Thay đổi đã thực hiện**:
+  - Gỡ bỏ widget `sv_up_box` trong Tab Server và `sp_up_box` trong Tab Shopee.
+  - Luồng upload của từng tài khoản được quản lý độc lập 100% qua bảng Pool theo thời gian thực.
+
+
+---
+
+## 113. Khắc Phục Lỗi 'Upload Trả Về Rỗng' & Chuẩn Hóa Session ID Cho Google Flow API (2026-08-19)
+- **Nguyên nhân cốt lõi**:
+  1. Trong hàm `upload_image()`, cấu trúc `sessionId` bị thêm hậu tố UUID (`f";{int(time.time()*1000)}_{uuid}"`), trong khi máy chủ Google Flow yêu cầu `sessionId` phải đúng định dạng số nguyên mili-giây chuẩn (`f";{int(time.time()*1000)}"`). Do đó Google trả về lỗi `INVALID_ARGUMENT` ngay lập tức và từ chối cấp Media ID.
+  2. Khi upload dính 429 hoặc các mã lỗi khác, hàm `upload_image()` trước đây trả về `None` khiến log hiển thị chung chung là `❌ Upload trả về rỗng`.
+- **Biện pháp xử lý**:
+  - Chuẩn hóa lại `sessionId = f";{int(time.time()*1000)}"` khớp 100% với đặc tả API của Google Flow.
+  - Phân loại rõ ràng trạng thái trả về của `upload_image()`: `"throttle"`, `"unauthorized"`, `"forbidden"`, `"proxy_dead"`.
+  - Nâng cấp hiển thị log chi tiết, ghi rõ lý do chính xác (429 Throttle, 401 Cookie hết hạn, 403 Quyền, hoặc Proxy mất kết nối) thay vì in thông báo rỗng.
+
+
+---
+
+## 114. Cập Nhật Cơ Chế Xác Thực Độ Tươi Của Access Token Với Google OAuth2 (2026-08-19)
+- **Vấn đề phát hiện**:
+  - Khi cookie tài khoản Google bị hết hạn OAuth2 token (quá 1 giờ), endpoint session nội bộ của Google Labs (`/fx/api/auth/session`) vẫn trả về chuỗi access token cũ từ bộ nhớ đệm NextAuth.
+  - Khi đó, nút `Check` và `Auto login` kiểm tra thấy có chuỗi token nên tưởng còn sống và hiện popup *"Không cần login"*. Nhưng khi gửi request lên Google Flow thì bị máy chủ Google chặn lại với mã lỗi `401 Unauthorized`.
+- **Cải tiến đã thực hiện**:
+  - Bổ sung bước kiểm tra độ tươi trực tiếp của `access_token` qua endpoint xác thực Google OAuth2 (`oauth2.googleapis.com/tokeninfo`).
+  - Giúp `Check` và `Auto login` nhận biết chính xác 100% tài khoản nào thực sự còn hiệu lực với Google Flow, tài khoản nào đã chết để mở Chrome đăng nhập lại lấy cookie mới.
+
+
+---
