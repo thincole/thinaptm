@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.6"
+APP_VERSION = "ThinAPTM 1.2.7"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -94,9 +94,9 @@ def _find_brand():
 WORKERS_PER_ACCOUNT = 8    # Tối ưu: 8 workers (Tạo max = 8)
 GEN_ATTEMPTS = 60          
 # --- Cổng submit THÍCH ỨNG (AIMD):
-SUBMIT_START = 6.0         
-SUBMIT_MIN = 4.0           # Tốc độ min = 4
-SUBMIT_MAX = 8.0           # Trần tốc độ lý tưởng (Tốc độ max = 8)
+SUBMIT_START = 7.0         
+SUBMIT_MIN = 2.0           # Tốc độ min = 2
+SUBMIT_MAX = 20.0          # Tốc độ max = 20
 SUBMIT_UP_AFTER = 5        
 SUBMIT_DOWN = 0.5          # gặp throttle thì nhân giới hạn với số này (giảm nhân — multiplicative decrease)
 BYPASS_QUICK = 0.4         # bypass/token trượt -> thử lại NHANH (giây)
@@ -305,12 +305,17 @@ class AccountState:
         self._circuit_broken = False       # True khi bị ngắt mạch
         # --- Proxy health tracking ---
         self.proxy_fail_streak = 0         # số lần proxy fail liên tiếp (DNS/connection)
-        # --- Upload Rate Limit (mỗi luồng upload của CÙNG 1 tài khoản cách nhau 10s) ---
+        # --- Upload Rate Limit & Luồng Upload riêng của từng tài khoản ---
+        self.upload_threads = int(acc.get("upload_threads", 4)) # Mặc định 4 luồng/TK
+        self.upload_inflight = 0
+        self._upload_gate = threading.Condition()
         self.last_upload_ts = 0.0          # thời điểm upload gần nhất của tài khoản này
         self.upload_lock = threading.Lock() # khóa giãn cách 10s giữa các lần upload của cùng 1 tài khoản
-        # --- Cổng submit THÍCH ỨNG (AIMD) ---
-        self._submit_max = submit_max          # trần tốc độ do người dùng cài đặt
-        self.submit_limit = min(SUBMIT_START, submit_max)   # khởi đầu từ SUBMIT_START hoặc trần
+        # --- Tạo & Tốc độ = upload_threads + 3 (Min 2, Max 20) ---
+        calc_rate = max(2, min(20, self.upload_threads + 3))
+        self.max_busy = calc_rate
+        self._submit_max = float(calc_rate)
+        self.submit_limit = float(calc_rate)
         self.inflight = 0                  # số submit đang bay
         self._ok_streak = 0                # số submit OK liên tiếp (để tăng dần)
         self._gate = threading.Condition()
@@ -391,6 +396,36 @@ class AccountState:
     def on_upload_ok(self):
         """Upload thành công → reset streak."""
         self.upload_throttle_streak = 0
+
+    def acquire_upload(self, stop_check=lambda: False):
+        """Giới hạn số luồng upload đồng thời của riêng tài khoản này."""
+        with self._upload_gate:
+            while self.upload_inflight >= self.upload_threads:
+                if stop_check():
+                    return False
+                self._upload_gate.wait(0.5)
+            self.upload_inflight += 1
+            return True
+
+    def release_upload(self):
+        """Nhả luồng upload của tài khoản này."""
+        with self._upload_gate:
+            self.upload_inflight = max(0, self.upload_inflight - 1)
+            self._upload_gate.notify_all()
+
+    def set_upload_threads(self, val):
+        """Thay đổi số luồng upload trong thời gian thực (real-time) mà không cần restart.
+        Tạo và Tốc độ = số luồng upload + 3 (Min 2, Max 20)."""
+        with self._upload_gate:
+            self.upload_threads = max(2, min(20, int(val)))
+            self.acc["upload_threads"] = self.upload_threads
+            calc_rate = max(2, min(20, self.upload_threads + 3))
+            self.max_busy = calc_rate
+            with self._gate:
+                self._submit_max = float(calc_rate)
+                self.submit_limit = float(calc_rate)
+                self._gate.notify_all()
+            self._upload_gate.notify_all()
 
     def clear_rest(self):
         self.resume_at = 0.0
@@ -562,11 +597,14 @@ class App(ctk.CTk):
         self.check_vars = []  # BooleanVar cho mỗi job trong hàng đợi
         self._pool_states = []  # AccountState[] của phiên chạy hiện tại (cho panel trạng thái pool)
         self._run_t0 = 0.0; self._eta_jobs = []; self._run_done0 = 0   # để tính tốc độ + ETA
-        # Gemini: viết lại prompt vi phạm (nhiều key, xoay tìm key dùng được)
+        # Gemini & Groq: phân phối key xoay vòng (Round-Robin) đều cho tất cả các luồng
         self.gemini_keys = self.settings.get("gemini_keys", [])
         self._gemini_bad = set()       # key sai/hết quyền -> loại
         self._gemini_lock = threading.Lock()
         self._gemini_active = []       # danh sách key dùng cho phiên chạy hiện tại
+        self._gemini_key_rr_idx = 0
+        self._groq_key_rr_idx = 0
+        self._ai_key_lock = threading.Lock()
         # Cookie health check: tự kiểm tra + auto re-login
         self._health_check_enabled = self.settings.get("health_check_enabled", False)
         self._health_check_interval = self.settings.get("health_check_interval", 30)  # phút
@@ -651,7 +689,9 @@ class App(ctk.CTk):
         self.frames = {}
         self._build_acc(); self._build_gen(); self._build_queue(); self._build_shopee(); self._build_server_video()
         self._show("acc")
-        self.after(2000, self._update_pool)   # panel trạng thái pool video (live)
+        self.after(500, self._update_pool)        # panel trạng thái pool video (live)
+        self.after(600, self._sp_update_pool)     # panel trạng thái pool Shopee (live)
+        self.after(700, self._sv_update_pool)     # panel trạng thái pool Server Video (live)
         if self._startup_clean_msg:
             self._log(self._startup_clean_msg)
         self._start_telegram_polling()
@@ -665,6 +705,12 @@ class App(ctk.CTk):
         self.frames[key].pack(fill="both", expand=True, padx=18, pady=16)
         for k, b in self.nav.items():
             b.configure(fg_color=("#e8f0fe" if k == key else "transparent"), text_color=(AC if k == key else T1))
+        if key == "gen":
+            self.after(0, self._update_pool)
+        elif key == "shopee":
+            self.after(0, self._sp_update_pool)
+        elif key == "server_video":
+            self.after(0, self._sv_update_pool)
 
     # ============ TAB TÀI KHOẢN ============
     def _build_acc(self):
@@ -1114,6 +1160,14 @@ class App(ctk.CTk):
                          text_color=(GR if has_pass else "#ef5350")).pack(side="left", padx=(6, 0))
             ctk.CTkLabel(row, text='có' if a.get('totp') else '-', font=("Consolas", 11), width=40, anchor="w", text_color=T2).pack(side="left", padx=(6, 0))
 
+        # Đồng bộ danh sách tài khoản đã chọn sang Pool của tất cả các Tab
+        if hasattr(self, "pool_rows_frame"):
+            self.after(0, self._update_pool)
+        if hasattr(self, "_sp_pool_rows_frame"):
+            self.after(0, self._sp_update_pool)
+        if hasattr(self, "_sv_pool_rows_frame"):
+            self.after(0, self._sv_update_pool)
+
     def _toggle_acc(self, idx, var):
         if idx < 0 or idx >= len(self.accounts): return
         self.accounts[idx]["enabled"] = var.get()
@@ -1434,17 +1488,19 @@ class App(ctk.CTk):
                 for i, a in enumerate(dead_accs, 1):
                     email = a.get("email") or a.get("id") or "?"
                     profile_dir = os.path.join(HERE, "_profiles", email.replace("@", "_"))
-                    if not hasattr(self, "_hc_attempted_accs"):
-                        self._hc_attempted_accs = set()
-                    if email in self._hc_attempted_accs:
-                        self._log(f"  [{i}/{len(dead_accs)}] {email}: Đã thử khôi phục 1 lần → Bỏ qua tự bật Chrome ngầm (Vui lòng nhấp 'Mở trình duyệt' trong tab Tài khoản để đăng nhập thủ công).")
+                    if not hasattr(self, "_hc_attempted_accs") or isinstance(self._hc_attempted_accs, set):
+                        self._hc_attempted_accs = {}
+                    now = time.time()
+                    last_try = self._hc_attempted_accs.get(email, 0.0)
+                    if now - last_try < 1800:
+                        self._log(f"  [{i}/{len(dead_accs)}] {email}: Đã thử khôi phục gần đây ({int(now - last_try)}s trước) → Tạm dừng để tránh vòng lặp bật/tắt.")
                         still_dead.append(a)
                         continue
                     if not os.path.exists(profile_dir):
                         self._log(f"  [{i}/{len(dead_accs)}] {email}: chưa có profile → bỏ qua pha 1.")
                         still_dead.append(a)
                         continue
-                    self._hc_attempted_accs.add(email)
+                    self._hc_attempted_accs[email] = now
                     self._log(f"  [{i}/{len(dead_accs)}] {email}: đang mở profile cũ...")
                     try:
                         ck = L.reopen_profile_cookie(
@@ -1577,7 +1633,7 @@ class App(ctk.CTk):
         self.opt_aspect.set(self.settings.get("aspect", "Dọc 9:16 (TikTok)"))
         
         ctk.CTkLabel(rs, text="Upload/TK:").pack(side="left")
-        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["1", "2", "3", "4", "5", "6", "7", "8"], width=60)
+        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=60)
         self.opt_upload_threads_per_acc.pack(side="left", padx=(4, 12))
         saved_gen_up = self.settings.get("gen_upload_threads_per_acc", "4")
         self.opt_upload_threads_per_acc.set(saved_gen_up)
@@ -2327,21 +2383,43 @@ class App(ctk.CTk):
         self.after(0, self._sp_update_pool)
         self.after(0, self._sv_update_pool)
 
+    def _on_acc_upload_threads_change(self, st, val):
+        """Thay đổi số luồng upload của riêng tài khoản này — có hiệu lực ngay lập tức trong thời gian thực."""
+        try:
+            num = max(2, min(10, int(val)))
+            st.set_upload_threads(num)
+            for a in self.accounts:
+                if (a.get("email") or a.get("id")) == st.email:
+                    a["upload_threads"] = num
+                    break
+            save_accs(self.accounts)
+            if hasattr(self, '_sv_log_msg') and getattr(self, '_sv_running', False):
+                self._sv_log_msg(f"⚙️ {st.email[:16]}: Đã đổi luồng Upload thành {num} (có hiệu lực ngay lập tức)")
+            if hasattr(self, '_sp_log_msg') and getattr(self, '_shopee_running', False):
+                self._sp_log_msg(f"⚙️ {st.email[:16]}: Đã đổi luồng Upload thành {num} (có hiệu lực ngay lập tức)")
+            self._log(f"⚙️ [{st.email}] Đã đổi số luồng Upload thành {num} (có hiệu lực tức thì)")
+        except Exception as e:
+            self._log(f"❌ Lỗi đổi luồng upload: {e}")
+
     def _update_pool(self):
         """Panel POOL VIDEO (cập nhật mỗi 2s): 4 ô tổng quan + bảng tài khoản. Tốc độ TỰ ĐỘNG (AIMD)."""
         try:
             self.pool_eta_lbl.configure(text=self._eta_text())
-            states = getattr(self, "_pool_states", None) or []
+            is_running = getattr(self, "_running", False)
+            states = getattr(self, "_pool_states", None)
+            if not is_running or not states:
+                # Khi chưa bấm Bắt đầu, hiển thị danh sách tài khoản đã chọn (Dùng) từ Tab Tài khoản
+                states = [AccountState(a) for a in self.accounts if a.get("enabled", True) and a.get("role", "main") == "main"]
             total = len(states)
             resting = sum(1 for s in states if s.rest_remaining() > 0)
             running = total - resting
             generating = sum(1 for s in states if getattr(s, "busy", 0) > 0)
             self.pool_stat_lbl["acc"].configure(text=str(total))
-            self.pool_stat_lbl["run"].configure(text=str(running))
+            self.pool_stat_lbl["run"].configure(text=str(running if is_running else total))
             self.pool_stat_lbl["gen"].configure(text=str(generating))
-            self.pool_stat_lbl["rest"].configure(text=str(resting))
+            self.pool_stat_lbl["rest"].configure(text=str(resting if is_running else 0))
 
-            # Dựng lại bảng tài khoản khi tập tài khoản thay đổi (mỗi phiên chạy 1 lần)
+            # Dựng lại bảng tài khoản khi tập tài khoản thay đổi
             sig = tuple(s.email for s in states)
             if sig != self._pool_row_sig:
                 self._pool_row_sig = sig
@@ -2349,27 +2427,31 @@ class App(ctk.CTk):
                     w.destroy()
                 self._pool_rows = {}
                 if not states:
-                    ctk.CTkLabel(self.pool_rows_frame, text="Chưa chạy — bấm ▶ Bắt đầu.",
+                    ctk.CTkLabel(self.pool_rows_frame, text="Chưa có tài khoản nào được chọn ở Tab 'Tài khoản'.",
                                  font=("", 11), text_color=T2).pack(anchor="w", pady=6)
                 else:
-                    cols = [("Tài khoản", 150), ("✅ Xong", 65), ("❌ Lỗi", 55),
-                            ("⚡ Tạo", 55), ("🚀 Tốc độ", 75), ("Trạng thái", 120), ("Hành động", 70)]
+                    cols = [("Tài khoản", 140), ("✅ Xong", 55), ("❌ Lỗi", 50),
+                            ("⚡ Tạo", 45), ("🚀 Tốc độ", 65), ("Trạng thái", 110), ("Hành động", 65), ("📤 Upload", 60)]
                     hdr = ctk.CTkFrame(self.pool_rows_frame, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 2))
                     for txt, w in cols:
                         ctk.CTkLabel(hdr, text=txt, font=("", 10, "bold"), text_color=T2, width=w, anchor="w").pack(side="left", padx=(2, 0))
                     for i, s in enumerate(states):
                         row = ctk.CTkFrame(self.pool_rows_frame, fg_color=("#f6f8fc" if i % 2 else CARD), corner_radius=6)
                         row.pack(fill="x", pady=1)
-                        ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=150, anchor="w").pack(side="left", padx=(2, 0))
-                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=65, anchor="w"); wl.pack(side="left", padx=(2, 0))
-                        fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=55, anchor="w"); fl.pack(side="left", padx=(2, 0))
-                        bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=55, anchor="w"); bl.pack(side="left", padx=(2, 0))
-                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=75, anchor="w"); rl.pack(side="left", padx=(2, 0))
-                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=120, anchor="w"); sl.pack(side="left", padx=(2, 0))
-                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=62, height=24, font=("", 11, "bold"),
+                        ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=140, anchor="w").pack(side="left", padx=(2, 0))
+                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=55, anchor="w"); wl.pack(side="left", padx=(2, 0))
+                        fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=50, anchor="w"); fl.pack(side="left", padx=(2, 0))
+                        bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=45, anchor="w"); bl.pack(side="left", padx=(2, 0))
+                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=65, anchor="w"); rl.pack(side="left", padx=(2, 0))
+                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=110, anchor="w"); sl.pack(side="left", padx=(2, 0))
+                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=60, height=24, font=("", 11, "bold"),
                                            command=lambda e=s.email: self._toggle_acc_enabled(e))
-                        ab.pack(side="left", padx=(4, 0))
-                        self._pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "a": ab}
+                        ab.pack(side="left", padx=(2, 0))
+                        uo = ctk.CTkOptionMenu(row, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
+                                               command=lambda v, st=s: self._on_acc_upload_threads_change(st, v))
+                        uo.pack(side="left", padx=(4, 0))
+                        uo.set(str(getattr(s, "upload_threads", 4)))
+                        self._pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "a": ab, "u": uo}
 
             # Cập nhật giá trị từng tài khoản
             for s in states:
@@ -2384,6 +2466,9 @@ class App(ctk.CTk):
                 if not is_enabled:
                     r["s"].configure(text="⏹ đã dừng", text_color=T2)
                     r["a"].configure(text="▶ Chạy", fg_color="#26A69A", hover_color="#00897B")
+                elif not is_running:
+                    r["s"].configure(text="⏳ Sẵn sàng", text_color=GR)
+                    r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
                 else:
                     r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
                     rem = s.rest_remaining()
@@ -3237,8 +3322,9 @@ class App(ctk.CTk):
                     w = st.rest_remaining()
                     if w > 0:
                         time.sleep(min(w, 3)); continue        # account đang nghỉ -> không pull job
-                    if st.upload_throttle_streak > 0 and st.busy >= 4:
-                        time.sleep(0.5); continue
+                    with st.blk:
+                        if st.busy >= getattr(st, "max_busy", max(2, min(20, st.upload_threads + 3))):
+                            time.sleep(0.5); continue
                     try:
                         job = jobq.get(timeout=2)
                     except queue.Empty:
@@ -3284,7 +3370,7 @@ class App(ctk.CTk):
 
             threads = []
             for st in states:
-                for _ in range(wpa):
+                for _ in range(20):
                     t = threading.Thread(target=worker, args=(st,), daemon=True)
                     t.start(); threads.append(t)
 
@@ -3715,7 +3801,7 @@ class App(ctk.CTk):
         sp_up_box = ctk.CTkFrame(self._sp_btn_row, fg_color=CARD, corner_radius=8, height=42)
         sp_up_box.pack(side="left", padx=(6, 0))
         ctk.CTkLabel(sp_up_box, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(10, 4), pady=6)
-        self._sp_upload_threads_per_acc = ctk.CTkOptionMenu(sp_up_box, values=["1", "2", "3", "4", "5", "6", "7", "8"], width=60, height=28)
+        self._sp_upload_threads_per_acc = ctk.CTkOptionMenu(sp_up_box, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=60, height=28)
         self._sp_upload_threads_per_acc.pack(side="left", padx=(0, 8), pady=6)
         saved_sp_up = self.settings.get("shopee_upload_threads_per_acc", "4")
         self._sp_upload_threads_per_acc.set(saved_sp_up)
@@ -4195,40 +4281,50 @@ class App(ctk.CTk):
         """Panel POOL Shopee (cập nhật mỗi 2s): tốc độ tự động AIMD."""
         try:
             self._sp_pool_eta_lbl.configure(text=self._sp_eta_text())
-            states = self._sp_pool_states or []
+            is_running = getattr(self, "_shopee_running", False)
+            states = getattr(self, "_sp_pool_states", None)
+            if not is_running or not states:
+                states = [AccountState(a) for a in self.accounts if a.get("enabled", True) and a.get("role", "main") == "main"]
             total = len(states)
             resting = sum(1 for s in states if s.rest_remaining() > 0)
             running = total - resting
             generating = sum(1 for s in states if getattr(s, "busy", 0) > 0)
             self._sp_pool_stat["acc"].configure(text=str(total))
-            self._sp_pool_stat["run"].configure(text=str(running))
+            self._sp_pool_stat["run"].configure(text=str(running if is_running else total))
             self._sp_pool_stat["gen"].configure(text=str(generating))
-            self._sp_pool_stat["rest"].configure(text=str(resting))
+            self._sp_pool_stat["rest"].configure(text=str(resting if is_running else 0))
             sig = tuple(s.email for s in states)
             if sig != self._sp_pool_row_sig:
                 self._sp_pool_row_sig = sig
                 for w in self._sp_pool_rows_frame.winfo_children(): w.destroy()
                 self._sp_pool_rows = {}
-                if states:
-                    cols = [("Tài khoản", 140), ("✅ Xong", 55), ("❌ Lỗi", 50),
-                            ("⚡ Tạo", 45), ("🚀 Tốc độ", 60), ("Trạng thái", 110), ("🌐 Proxy", 160), ("Hành động", 70)]
+                if not states:
+                    ctk.CTkLabel(self._sp_pool_rows_frame, text="Chưa có tài khoản nào được chọn ở Tab 'Tài khoản'.",
+                                 font=("", 11), text_color=T2).pack(anchor="w", pady=6)
+                else:
+                    cols = [("Tài khoản", 130), ("✅ Xong", 50), ("❌ Lỗi", 45),
+                            ("⚡ Tạo", 40), ("🚀 Tốc độ", 55), ("Trạng thái", 105), ("🌐 Proxy", 150), ("Hành động", 65), ("📤 Upload", 60)]
                     hdr = ctk.CTkFrame(self._sp_pool_rows_frame, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 2))
                     for txt, w in cols:
                         ctk.CTkLabel(hdr, text=txt, font=("", 10, "bold"), text_color=T2, width=w, anchor="w").pack(side="left", padx=(2, 0))
                     for i, s in enumerate(states):
                         row = ctk.CTkFrame(self._sp_pool_rows_frame, fg_color=("#f6f8fc" if i % 2 else CARD), corner_radius=6)
                         row.pack(fill="x", pady=1)
-                        ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=140, anchor="w").pack(side="left", padx=(2, 0))
-                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=55, anchor="w"); wl.pack(side="left", padx=(2, 0))
-                        fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=50, anchor="w"); fl.pack(side="left", padx=(2, 0))
-                        bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=45, anchor="w"); bl.pack(side="left", padx=(2, 0))
-                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=60, anchor="w"); rl.pack(side="left", padx=(2, 0))
-                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=110, anchor="w"); sl.pack(side="left", padx=(2, 0))
-                        pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=160, anchor="w"); pl.pack(side="left", padx=(2, 0))
-                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=62, height=24, font=("", 11, "bold"),
+                        ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=130, anchor="w").pack(side="left", padx=(2, 0))
+                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=50, anchor="w"); wl.pack(side="left", padx=(2, 0))
+                        fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=45, anchor="w"); fl.pack(side="left", padx=(2, 0))
+                        bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=40, anchor="w"); bl.pack(side="left", padx=(2, 0))
+                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=55, anchor="w"); rl.pack(side="left", padx=(2, 0))
+                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=105, anchor="w"); sl.pack(side="left", padx=(2, 0))
+                        pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=150, anchor="w"); pl.pack(side="left", padx=(2, 0))
+                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=60, height=24, font=("", 11, "bold"),
                                            command=lambda e=s.email: self._toggle_acc_enabled(e))
-                        ab.pack(side="left", padx=(4, 0))
-                        self._sp_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab}
+                        ab.pack(side="left", padx=(2, 0))
+                        uo = ctk.CTkOptionMenu(row, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
+                                               command=lambda v, st=s: self._on_acc_upload_threads_change(st, v))
+                        uo.pack(side="left", padx=(4, 0))
+                        uo.set(str(getattr(s, "upload_threads", 4)))
+                        self._sp_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab, "u": uo}
             for s in states:
                 r = self._sp_pool_rows.get(s.email)
                 if not r: continue
@@ -4249,6 +4345,9 @@ class App(ctk.CTk):
                 if not is_enabled:
                     r["s"].configure(text="⏹ đã dừng", text_color=T2)
                     r["a"].configure(text="▶ Chạy", fg_color="#26A69A", hover_color="#00897B")
+                elif not is_running:
+                    r["s"].configure(text="⏳ Sẵn sàng", text_color=GR)
+                    r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
                 else:
                     r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
                     rem = s.rest_remaining()
@@ -4529,8 +4628,8 @@ class App(ctk.CTk):
             self._sp_eta_products = products
 
             # ── Shared Job Queue ──
-            n_upload_threads = max(3, len(accs) * 3)
-            upload_sem = threading.Semaphore(n_upload_threads)   # số luồng upload = số TK × 3 (9 luồng cho 3 TK)
+            n_upload_threads = max(8, sum(getattr(s, "upload_threads", 4) for s in states) * 2)
+            upload_sem = threading.Semaphore(n_upload_threads)
             jobq = queue.Queue()
             for idx, prod in enumerate(products):
                 prod["_idx"] = idx
@@ -4672,15 +4771,24 @@ class App(ctk.CTk):
                                     ev = model_uploading_locks.pop((st.email, model_img), None)
                                     if ev: ev.set()
                                 return "retry_soft"
-                            time.sleep(random.uniform(2, 5))  # stagger ngoài semaphore → tránh giữ lock
-                            st.wait_upload_spacing(10.0)
-                            upload_sem.acquire()  # CHỜ đến lượt
-                            self._sp_log_msg("  📤 Upload ảnh người mẫu...")
-                            try:
-                                mid = E.upload_image(bearer, project, model_img, proxy=st.proxy)
-                            finally:
-                                upload_sem.release()
+                            if not st.acquire_upload(lambda: self._shopee_stop_flag):
                                 st.release_submit()
+                                with cache_lock:
+                                    ev = model_uploading_locks.pop((st.email, model_img), None)
+                                    if ev: ev.set()
+                                return "retry_soft"
+                            try:
+                                time.sleep(random.uniform(2, 5))  # stagger ngoài semaphore → tránh giữ lock
+                                st.wait_upload_spacing(10.0)
+                                upload_sem.acquire()  # CHỜ đến lượt
+                                self._sp_log_msg(f"  📤 [{st.email[:12]}] Upload ảnh người mẫu (luồng {st.upload_inflight}/{st.upload_threads})...")
+                                try:
+                                    mid = E.upload_image(bearer, project, model_img, proxy=st.proxy)
+                                finally:
+                                    upload_sem.release()
+                                    st.release_submit()
+                            finally:
+                                st.release_upload()
                             if mid == "throttle":
                                 st.on_throttle()
                                 bypassed_mid = None
@@ -4743,14 +4851,20 @@ class App(ctk.CTk):
                         # Upload ảnh SP
                         if not st.acquire_submit(lambda: self._shopee_stop_flag):
                             return "retry_soft"
-                        time.sleep(random.uniform(1, 3))  # stagger ngoài semaphore → tránh giữ lock
-                        upload_sem.acquire()
-                        self._sp_log_msg("  📤 Upload ảnh sản phẩm...")
-                        try:
-                            product_mid = E.upload_image(bearer, project, prod["img"], proxy=st.proxy)
-                        finally:
-                            upload_sem.release()
+                        if not st.acquire_upload(lambda: self._shopee_stop_flag):
                             st.release_submit()
+                            return "retry_soft"
+                        try:
+                            time.sleep(random.uniform(1, 3))  # stagger ngoài semaphore → tránh giữ lock
+                            upload_sem.acquire()
+                            self._sp_log_msg(f"  📤 [{st.email[:12]}] Upload ảnh sản phẩm (luồng {st.upload_inflight}/{st.upload_threads})...")
+                            try:
+                                product_mid = E.upload_image(bearer, project, prod["img"], proxy=st.proxy)
+                            finally:
+                                upload_sem.release()
+                                st.release_submit()
+                        finally:
+                            st.release_upload()
                         if product_mid == "throttle":
                             st.on_throttle()
                             bypassed_mid = None
@@ -5084,8 +5198,9 @@ class App(ctk.CTk):
                     w = st.rest_remaining()
                     if w > 0:
                         time.sleep(min(w, 3)); continue
-                    if st.upload_throttle_streak > 0 and st.busy >= 4:
-                        time.sleep(0.5); continue
+                    with st.blk:
+                        if st.busy >= getattr(st, "max_busy", max(2, min(20, st.upload_threads + 3))):
+                            time.sleep(0.5); continue
                     try:
                         prod = jobq.get(timeout=2)
                     except queue.Empty:
@@ -5147,10 +5262,10 @@ class App(ctk.CTk):
                         self.after(0, lambda c=c, t=total: self._sp_progress.set(c / max(t, 1)))
                         self.after(0, lambda c=c, t=total: self._shopee_status.configure(text=f"⏳ {c}/{t}..."))
 
-            # ── Khởi chạy workers (per-account × wpa) ──
+            # ── Khởi chạy workers (tối đa 20 luồng dự phòng/TK, tự điều phối theo max_busy) ──
             threads = []
             for st in states:
-                for _ in range(wpa):
+                for _ in range(20):
                     t = threading.Thread(target=worker, args=(st,), daemon=True)
                     t.start(); threads.append(t)
 
@@ -5516,7 +5631,7 @@ class App(ctk.CTk):
         sv_up_box = ctk.CTkFrame(btn_row, fg_color=CARD, corner_radius=8, height=42)
         sv_up_box.pack(side="left", padx=(6, 0))
         ctk.CTkLabel(sv_up_box, text="📤 Upload/TK:", font=("", 11, "bold"), text_color=T1).pack(side="left", padx=(10, 4), pady=6)
-        self._sv_upload_threads_per_acc = ctk.CTkOptionMenu(sv_up_box, values=["1", "2", "3", "4", "5", "6", "7", "8"], width=60, height=28)
+        self._sv_upload_threads_per_acc = ctk.CTkOptionMenu(sv_up_box, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=60, height=28)
         self._sv_upload_threads_per_acc.pack(side="left", padx=(0, 8), pady=6)
         saved_sv_up = self.settings.get("sv_upload_threads_per_acc", "4")
         self._sv_upload_threads_per_acc.set(saved_sv_up)
@@ -5571,40 +5686,50 @@ class App(ctk.CTk):
         """Panel POOL Server (cập nhật mỗi 2s): tốc độ tự động AIMD."""
         try:
             self._sv_pool_eta_lbl.configure(text=self._sv_eta_text())
-            states = self._sv_pool_states or []
+            is_running = getattr(self, "_sv_running", False)
+            states = getattr(self, "_sv_pool_states", None)
+            if not is_running or not states:
+                states = [AccountState(a) for a in self.accounts if a.get("enabled", True) and a.get("role", "main") == "main"]
             total = len(states)
             resting = sum(1 for s in states if s.rest_remaining() > 0)
             running = total - resting
             generating = sum(1 for s in states if getattr(s, "busy", 0) > 0)
             self._sv_pool_stat["acc"].configure(text=str(total))
-            self._sv_pool_stat["run"].configure(text=str(running))
+            self._sv_pool_stat["run"].configure(text=str(running if is_running else total))
             self._sv_pool_stat["gen"].configure(text=str(generating))
-            self._sv_pool_stat["rest"].configure(text=str(resting))
+            self._sv_pool_stat["rest"].configure(text=str(resting if is_running else 0))
             sig = tuple(s.email for s in states)
             if sig != self._sv_pool_row_sig:
                 self._sv_pool_row_sig = sig
                 for w in self._sv_pool_rows_frame.winfo_children(): w.destroy()
                 self._sv_pool_rows = {}
-                if states:
-                    cols = [("Tài khoản", 140), ("✅ Xong", 55), ("❌ Lỗi", 50),
-                            ("⚡ Tạo", 45), ("🚀 Tốc độ", 60), ("Trạng thái", 110), ("🌐 Proxy", 160), ("Hành động", 70)]
+                if not states:
+                    ctk.CTkLabel(self._sv_pool_rows_frame, text="Chưa có tài khoản nào được chọn ở Tab 'Tài khoản'.",
+                                 font=("", 11), text_color=T2).pack(anchor="w", pady=6)
+                else:
+                    cols = [("Tài khoản", 130), ("✅ Xong", 50), ("❌ Lỗi", 45),
+                            ("⚡ Tạo", 40), ("🚀 Tốc độ", 55), ("Trạng thái", 105), ("🌐 Proxy", 150), ("Hành động", 65), ("📤 Upload", 60)]
                     hdr = ctk.CTkFrame(self._sv_pool_rows_frame, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 2))
                     for txt, w in cols:
                         ctk.CTkLabel(hdr, text=txt, font=("", 10, "bold"), text_color=T2, width=w, anchor="w").pack(side="left", padx=(2, 0))
                     for i, s in enumerate(states):
                         row = ctk.CTkFrame(self._sv_pool_rows_frame, fg_color=("#f6f8fc" if i % 2 else CARD), corner_radius=6)
                         row.pack(fill="x", pady=1)
-                        ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=140, anchor="w").pack(side="left", padx=(2, 0))
-                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=55, anchor="w"); wl.pack(side="left", padx=(2, 0))
-                        fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=50, anchor="w"); fl.pack(side="left", padx=(2, 0))
-                        bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=45, anchor="w"); bl.pack(side="left", padx=(2, 0))
-                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=60, anchor="w"); rl.pack(side="left", padx=(2, 0))
-                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=110, anchor="w"); sl.pack(side="left", padx=(2, 0))
-                        pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=160, anchor="w"); pl.pack(side="left", padx=(2, 0))
-                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=62, height=24, font=("", 11, "bold"),
+                        ctk.CTkLabel(row, text=str(s.email).split("@")[0][:22], font=("", 11), text_color=T1, width=130, anchor="w").pack(side="left", padx=(2, 0))
+                        wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=50, anchor="w"); wl.pack(side="left", padx=(2, 0))
+                        fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=45, anchor="w"); fl.pack(side="left", padx=(2, 0))
+                        bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=40, anchor="w"); bl.pack(side="left", padx=(2, 0))
+                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=55, anchor="w"); rl.pack(side="left", padx=(2, 0))
+                        sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=105, anchor="w"); sl.pack(side="left", padx=(2, 0))
+                        pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=150, anchor="w"); pl.pack(side="left", padx=(2, 0))
+                        ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=60, height=24, font=("", 11, "bold"),
                                            command=lambda e=s.email: self._toggle_acc_enabled(e))
-                        ab.pack(side="left", padx=(4, 0))
-                        self._sv_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab}
+                        ab.pack(side="left", padx=(2, 0))
+                        uo = ctk.CTkOptionMenu(row, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
+                                               command=lambda v, st=s: self._on_acc_upload_threads_change(st, v))
+                        uo.pack(side="left", padx=(4, 0))
+                        uo.set(str(getattr(s, "upload_threads", 4)))
+                        self._sv_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab, "u": uo}
             for s in states:
                 r = self._sv_pool_rows.get(s.email)
                 if not r: continue
@@ -5623,6 +5748,9 @@ class App(ctk.CTk):
                 if not is_enabled:
                     r["s"].configure(text="⏹ đã dừng", text_color=T2)
                     r["a"].configure(text="▶ Chạy", fg_color="#26A69A", hover_color="#00897B")
+                elif not is_running:
+                    r["s"].configure(text="⏳ Sẵn sàng", text_color=GR)
+                    r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
                 else:
                     r["a"].configure(text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350")
                     rem = s.rest_remaining()
@@ -6520,14 +6648,19 @@ class App(ctk.CTk):
             f"Just {n_segments} raw prompt lines.\n"
         )
 
-        # Định nghĩa hàm gọi Gemini helper
+        # Định nghĩa hàm gọi Gemini helper xoay vòng (Round-Robin so le qua tất cả API keys)
         def _run_gemini(keys):
-            import random as _rnd
-            keys_copy = list(keys)
-            _rnd.shuffle(keys_copy)
-            # Thứ tự model ưu tiên: gemini-flash-lite-latest (quota dồi dào nhất & tốc độ cao nhất) → gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-3-flash-preview → gemini-3.5-flash
+            if not keys: return None
+            with getattr(self, "_ai_key_lock", threading.Lock()):
+                start_idx = getattr(self, "_gemini_key_rr_idx", 0) % len(keys)
+                self._gemini_key_rr_idx = getattr(self, "_gemini_key_rr_idx", 0) + 1
+            # Xếp danh sách key bắt đầu từ start_idx rồi xoay vòng đều cho các luồng
+            keys_ordered = list(keys[start_idx:]) + list(keys[:start_idx])
+            
+            # Thứ tự model ưu tiên: gemini-flash-lite-latest (quota dồi dào nhất) → gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-3-flash-preview → gemini-3.5-flash → gemini-3.7-flash
             _MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.7-flash"]
-            for key in keys_copy:
+            for key in keys_ordered:
+                k_tag = f"...{key[-6:]}" if len(key) >= 6 else key
                 for model_name in _MODELS:
                     try:
                         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
@@ -6544,55 +6677,58 @@ class App(ctk.CTk):
                             text += part.get("text", "")
                         prompts = [p.strip() for p in text.strip().split("\n") if p.strip() and len(p.strip()) > 20]
                         if len(prompts) >= n_segments:
-                            self._sv_log_msg(f"  ✅ Gemini OK ({model_name})")
+                            self._sv_log_msg(f"  ✅ Gemini OK ({model_name} | key {k_tag})")
                             return prompts[:n_segments]
                     except urllib.error.HTTPError as he:
                         if he.code == 429:
-                            self._sv_log_msg(f"  ⚠ {model_name} key {key[:8]}... quota 429 → thử model tiếp")
+                            self._sv_log_msg(f"  ⚠ {model_name} key {k_tag} quota 429 → chuyển key/model tiếp")
                             continue  # thử model tiếp trong _MODELS
-                        self._sv_log_msg(f"  ⚠ Gemini {model_name} key {key[:8]}... HTTP {he.code}")
+                        self._sv_log_msg(f"  ⚠ Gemini {model_name} key {k_tag} HTTP {he.code}")
                         break  # lỗi khác → thử key khác
                     except Exception as e:
-                        self._sv_log_msg(f"  ⚠ Gemini key {key[:8]}... lỗi: {str(e)[:50]}")
+                        self._sv_log_msg(f"  ⚠ Gemini key {k_tag} lỗi: {str(e)[:50]}")
                         break
             return None
 
-        # Định nghĩa hàm gọi Groq helper (Thử nhiều model: llama-3.1-8b-instant -> llama-3.3-70b-versatile -> mixtral-8x7b-32768)
+        # Định nghĩa hàm gọi Groq helper (Cố định model llama-3.1-8b-instant, xoay vòng so le API keys)
         def _run_groq(keys):
-            import random as _rnd
-            keys_copy = list(keys)
-            _rnd.shuffle(keys_copy)
-            groq_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"]
-            for key in keys_copy:
-                for model in groq_models:
-                    try:
-                        url = "https://api.groq.com/openai/v1/chat/completions"
-                        payload = json.dumps({
-                            "model": model,
-                            "messages": [
-                                {"role": "system", "content": "You generate Google Veo 3 video prompts for Shopee product reviews."},
-                                {"role": "user", "content": system_prompt}
-                            ],
-                            "temperature": 0.9,
-                            "max_tokens": 2000
-                        }).encode("utf-8")
-                        req = urllib.request.Request(url, data=payload, headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {key}",
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                        })
-                        with urllib.request.urlopen(req, timeout=15) as resp:
-                            data = json.loads(resp.read().decode("utf-8"))
-                        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                        prompts = [p.strip() for p in text.strip().split("\n") if p.strip() and len(p.strip()) > 20]
-                        if len(prompts) >= n_segments:
-                            return prompts[:n_segments]
-                    except Exception as e:
-                        err_str = str(e).lower()
-                        if any(tok in err_str for tok in ("400", "401", "403", "restricted", "blocked", "invalid", "forbidden")):
-                            self._sv_log_msg(f"  ⚠ Groq key {key[:12]}... bị khóa/lỗi ({e}) → Chuyển key tiếp theo.")
-                            break  # Bỏ qua key hỏng/bị khóa này, chuyển ngay sang key khác
+            if not keys: return None
+            with getattr(self, "_ai_key_lock", threading.Lock()):
+                start_idx = getattr(self, "_groq_key_rr_idx", 0) % len(keys)
+                self._groq_key_rr_idx = getattr(self, "_groq_key_rr_idx", 0) + 1
+            keys_ordered = list(keys[start_idx:]) + list(keys[:start_idx])
+            groq_model = "llama-3.1-8b-instant"
+            for key in keys_ordered:
+                k_tag = f"...{key[-6:]}" if len(key) >= 6 else key
+                try:
+                    url = "https://api.groq.com/openai/v1/chat/completions"
+                    payload = json.dumps({
+                        "model": groq_model,
+                        "messages": [
+                            {"role": "system", "content": "You generate Google Veo 3 video prompts for Shopee product reviews."},
+                            {"role": "user", "content": system_prompt}
+                        ],
+                        "temperature": 0.9,
+                        "max_tokens": 2000
+                    }).encode("utf-8")
+                    req = urllib.request.Request(url, data=payload, headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {key}",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    })
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    prompts = [p.strip() for p in text.strip().split("\n") if p.strip() and len(p.strip()) > 20]
+                    if len(prompts) >= n_segments:
+                        self._sv_log_msg(f"  ✅ Groq OK ({groq_model} | key {k_tag})")
+                        return prompts[:n_segments]
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if any(tok in err_str for tok in ("401", "403", "restricted", "blocked", "invalid", "forbidden")):
+                        self._sv_log_msg(f"  ⚠ Groq key {k_tag} bị khóa/lỗi ({e}) → Chuyển key tiếp theo.")
                         continue
+                    continue
             return None
 
         # Thực hiện gọi và tự động fallback
@@ -6774,10 +6910,9 @@ class App(ctk.CTk):
             results_lock = threading.Lock()
             success_count = [0]
             error_count = [0]
-            upload_per_acc = int(self._sv_upload_threads_per_acc.get())
-            n_upload_threads = max(1, len(states) * upload_per_acc)
+            n_upload_threads = max(8, sum(getattr(s, "upload_threads", 4) for s in states) * 2)
             upload_sem = threading.Semaphore(n_upload_threads)
-            self._sv_log_msg(f"📤 Khởi tạo {n_upload_threads} luồng upload song song ({len(states)} TK × {upload_per_acc} luồng/TK)")
+            self._sv_log_msg(f"📤 Khởi tạo pool upload ({len(states)} TK — cài đặt luồng upload riêng biệt từng TK trong bảng Pool)")
             # Tự động tối ưu số luồng ghép video (FFmpeg) đồng thời dựa trên số nhân CPU của máy khách (14 luồng cho 56 nhân)
             merge_sem = threading.Semaphore(max(4, os.cpu_count() // 4))
 
@@ -6927,57 +7062,62 @@ class App(ctk.CTk):
                             self._sv_log_msg(f"  📝 Prompt A + B sinh {len(prompts)} prompt (cảnh: {scene_name})")
                     n_segments = len(prompts)
 
-                # --- Upload ảnh SP ---
-                st.wait_upload_spacing(10.0)  # Giãn cách 10s giữa các lần upload của CÙNG 1 tài khoản
-                with upload_sem:
-                    if self._sv_stop_flag: return "retry_soft"
-                    self._sv_log_msg(f"  📤 Upload ảnh SP...")
-                    try:
-                        mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy)
-                    except Exception as ex:
-                        self._sv_log_msg(f"  ❌ Upload lỗi: {ex}")
-                        return "retry_soft"
-                    if mid == "proxy_dead":
-
-                        self._sv_handle_proxy_dead(st)
-                        return "retry_soft"
-                    if mid == "throttle":
-                        st.on_throttle()
-                        bypassed_mid = None
-                        if self._donor_states and sv_use_laundering:
-                            donors_copy = list(self._donor_states)
-                            random.shuffle(donors_copy)
-                            for donor_st in donors_copy:
-                                if donor_st.ensure_auth():
-                                    self._sv_log_msg(f"  {st.email[:16]}: 429 image → bypass qua donor {donor_st.email[:16]}...")
-                                    try:
-                                        bypassed_mid = E.upload_image_via_donor(
-                                            donor_st.bearer, donor_st.project,
-                                            bearer, project,
-                                            composite_path,
-                                            proxy=donor_st.proxy,
-                                            main_proxy=st.proxy
-                                        )
-                                    except Exception as ex:
-                                        self._sv_log_msg(f"    ⚠ Lỗi donor {donor_st.email[:16]}: {ex}")
-                                        bypassed_mid = None
-                                        continue
-                                    if bypassed_mid == "quota_hard":
-                                        donor_st.img_quota_exhausted = True
-                                        bypassed_mid = None
-                                        continue
-                                    if bypassed_mid and bypassed_mid != "quota_hard" and bypassed_mid not in ("throttle", "forbidden", "unusual"):
-                                        self._sv_log_msg(f"    ✅ Bypass image thành công! [{donor_st.email[:16]}]")
-                                        mid = bypassed_mid
-                                        break
-                        if mid == "throttle":
-                            time.sleep(THROTTLE_SLEEP + random.uniform(0, 1.0))
+                # --- Upload ảnh SP với Semaphore riêng của từng tài khoản ---
+                if not st.acquire_upload(lambda: self._sv_stop_flag):
+                    return "retry_soft"
+                try:
+                    st.wait_upload_spacing(10.0)  # Giãn cách 10s giữa các lần upload của CÙNG 1 tài khoản
+                    with upload_sem:
+                        if self._sv_stop_flag: return "retry_soft"
+                        self._sv_log_msg(f"  📤 [{st.email[:12]}] Upload ảnh SP (luồng {st.upload_inflight}/{st.upload_threads})...")
+                        try:
+                            mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy)
+                        except Exception as ex:
+                            self._sv_log_msg(f"  ❌ Upload lỗi: {ex}")
                             return "retry_soft"
-                    if not mid or mid in ("forbidden", "unusual", "throttle", "proxy_dead"):
-                        self._sv_log_msg(f"  ❌ Upload trả về rỗng")
-                        return "retry_soft"
-                    st.proxy_fail_streak = 0  # Upload OK → reset proxy streak
-                    self._sv_log_msg(f"  ✅ Media ID: {mid[:20]}...")
+                        if mid == "proxy_dead":
+
+                            self._sv_handle_proxy_dead(st)
+                            return "retry_soft"
+                        if mid == "throttle":
+                            st.on_throttle()
+                            bypassed_mid = None
+                            if self._donor_states and sv_use_laundering:
+                                donors_copy = list(self._donor_states)
+                                random.shuffle(donors_copy)
+                                for donor_st in donors_copy:
+                                    if donor_st.ensure_auth():
+                                        self._sv_log_msg(f"  {st.email[:16]}: 429 image → bypass qua donor {donor_st.email[:16]}...")
+                                        try:
+                                            bypassed_mid = E.upload_image_via_donor(
+                                                donor_st.bearer, donor_st.project,
+                                                bearer, project,
+                                                composite_path,
+                                                proxy=donor_st.proxy,
+                                                main_proxy=st.proxy
+                                            )
+                                        except Exception as ex:
+                                            self._sv_log_msg(f"    ⚠ Lỗi donor {donor_st.email[:16]}: {ex}")
+                                            bypassed_mid = None
+                                            continue
+                                        if bypassed_mid == "quota_hard":
+                                            donor_st.img_quota_exhausted = True
+                                            bypassed_mid = None
+                                            continue
+                                        if bypassed_mid and bypassed_mid != "quota_hard" and bypassed_mid not in ("throttle", "forbidden", "unusual"):
+                                            self._sv_log_msg(f"    ✅ Bypass image thành công! [{donor_st.email[:16]}]")
+                                            mid = bypassed_mid
+                                            break
+                            if mid == "throttle":
+                                time.sleep(THROTTLE_SLEEP + random.uniform(0, 1.0))
+                                return "retry_soft"
+                        if not mid or mid in ("forbidden", "unusual", "throttle", "proxy_dead"):
+                            self._sv_log_msg(f"  ❌ Upload trả về rỗng")
+                            return "retry_soft"
+                        st.proxy_fail_streak = 0  # Upload OK → reset proxy streak
+                        self._sv_log_msg(f"  ✅ Media ID: {mid[:20]}...")
+                finally:
+                    st.release_upload()
 
                 # --- Tạo video từng segment (Tự động dùng lại segment đã hoàn thành trong temp) ---
                 clip_paths = []
@@ -7169,6 +7309,10 @@ class App(ctk.CTk):
                     if w > 0:
                         time.sleep(min(w, 2))
                         continue
+                    with st.blk:
+                        if st.busy >= getattr(st, "max_busy", max(2, min(20, st.upload_threads + 3))):
+                            time.sleep(0.5)
+                            continue
                     try:
                         prod = jobq.get(timeout=2)
                     except queue.Empty:
@@ -7226,11 +7370,12 @@ class App(ctk.CTk):
                         except:
                             pass
 
-            # Spawn workers — 1 Hàng đợi chung, tất cả TK pull song song
+            # Spawn workers — 1 Hàng đợi chung, tất cả TK pull song song theo max_busy = upload_threads + 3
+            total_workers = len(states) * 20
             with ThreadPoolExecutor(max_workers=total_workers) as executor:
                 futures = []
                 for st in states:
-                    for _ in range(wpa):
+                    for _ in range(20):
                         futures.append(executor.submit(worker, st, jobq))
                 for fut in futures:
                     fut.result()
@@ -7274,6 +7419,8 @@ class App(ctk.CTk):
             self._do_health_check()
             # Đồng bộ cookie mới vào các AccountState của Server tab
             self._sv_sync_cookies()
+            live_count = sum(1 for a in self.accounts if a.get("cookie") and a.get("status") == "ok")
+            self._sv_log_msg(f"⚡ [Instant HC] Hoàn tất: {live_count}/{len(self.accounts)} tài khoản sẵn sàng.")
 
         threading.Thread(target=_instant_hc, daemon=True).start()
 

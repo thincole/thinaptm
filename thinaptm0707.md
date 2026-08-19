@@ -3701,3 +3701,61 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 102. Tối Ưu Hóa & Minh Bạch Hóa Luồng Tự Động Lấy Cookie (Instant Health Check) (2026-08-18)
+- **Phân tích**:
+  - Cơ chế **Proactive Refresh (Lớp 4)** và **Instant Health Check (Lớp 3)** vẫn kích hoạt đều đặn khi phát hiện cookie hết hạn trong lúc tool chạy ngầm.
+  - Tuy nhiên, nhật ký chi tiết của Pha 1 (Profile) và Pha 2 (Password) trước đây ghi vào tab Log / `log.txt` thay vì hiển thị trực tiếp trên tab Server Video, khiến người dùng nghĩ rằng hệ thống không tự check.
+  - Đối với các tài khoản không có mật khẩu (như `anlangthuong91`) hoặc dính bảo mật xác minh SMS/Thiết bị của Google (như `phucphuongdinh40`, `colecole2627`), trình duyệt không thể tự vượt qua mà cần người dùng xác nhận 1 lần.
+- **Sửa chữa**:
+  - Cập nhật cơ chế Cooldown khôi phục `_hc_attempted_accs` dạng Dict thời gian (30 phút/lần) thay vì set vĩnh viễn, tránh khóa vĩnh viễn tài khoản.
+  - Bổ sung log kết quả `⚡ [Instant HC] Hoàn tất: X/Y tài khoản sẵn sàng` trực tiếp tại màn hình Server Video.
+
+
+---
+
+## 103. Tích Hợp Cài Đặt Số Luồng Upload Từng Tài Khoản Trong Bảng Pool (Real-time) (2026-08-18)
+- **Yêu cầu**: Trong bảng "Pool tài khoản", mỗi dòng tài khoản có thêm cài đặt số luồng Upload cho riêng tài khoản đó (mặc định là 4). Khi người dùng chỉnh số luồng upload từ dropdown thì có hiệu lực ngay lập tức với tài khoản đó trong thời gian thực mà không cần phải dừng hay khởi động lại phần mềm.
+- **Thực hiện**:
+  - **AccountState**: Thêm thuộc tính `upload_threads = int(acc.get("upload_threads", 4))` kèm biến điều phối luồng `Condition` (`_upload_gate`) và bộ đếm `upload_inflight`.
+  - **Cơ chế điều phối tức thì**: Cung cấp `acquire_upload(stop_check)`, `release_upload()`, và `set_upload_threads(val)`. Khi `set_upload_threads` được gọi, `_upload_gate.notify_all()` sẽ đánh thức ngay các worker đang đợi để áp dụng giới hạn luồng mới tức thì.
+  - **Giao diện bảng Pool**: Bổ sung cột `"📤 Upload"` (OptionMenu từ `1` đến `8`, mặc định `4`) vào bên cạnh nút Hành động trong các bảng Pool (Server Video, Shopee Local, và Video thường).
+  - **Lưu cấu hình tự động**: Khi thay đổi giá trị, cập nhật trực tiếp vào danh sách tài khoản và lưu vào `accounts.json` để tự động ghi nhớ cho các phiên chạy sau.
+  - **Tích hợp Worker**: Tích hợp `acquire_upload` / `release_upload` vào tất cả các bước tải ảnh sản phẩm / ảnh người mẫu trong quá trình tạo video.
+
+
+---
+
+## 104. Nâng Cấp Khoảng Luồng Upload Từ 2 Đến 10 & Tối Ưu Quota AI Prompt (2026-08-18)
+- **Nâng cấp**:
+  - Mở rộng menu chọn số luồng upload thành khoảng **2 đến 10** trên tất cả bảng Pool (Server Video, Shopee Local, Video Thường).
+  - Tăng dung lượng luồng worker tối đa lên 10 luồng/tài khoản (`max_workers = len(states) * 10`).
+  - **Phân phối API Key So Le (Round-Robin)**: Thay thế việc bốc ngẫu nhiên (dễ dồn key) bằng cơ chế Thread-Safe Round-Robin xoay vòng tuần tự qua từng key trong danh sách cho mỗi luồng request (`_gemini_key_rr_idx`, `_groq_key_rr_idx`).
+  - **Hiển thị định danh Key**: Log hiển thị 6 ký tự cuối của key (`...7OwPDJ`, `...XcHQ`, `...NsZ-UQ`) thay vì 8 ký tự đầu để người dùng dễ dàng phân biệt các key khác nhau.
+  - **Cố định Model Groq**: Cố định sử dụng duy nhất model **`llama-3.1-8b-instant`** (tốc độ siêu nhanh ~0.2s/prompt, quota cao nhất 14.400 request/ngày/key) và loại bỏ model `mixtral-8x7b-32768` đã bị Groq khai tử (chấm dứt lỗi HTTP 400 Bad Request).
+  - Thêm cơ chế Stagger/Jitter ngẫu nhiên khi gọi Gemini API để tránh việc 24-60 luồng cùng lúc gửi request trong 1 giây gây lỗi nghẽn RPM (429).
+
+
+---
+
+## 105. Đồng Bộ Tài Khoản Đã Chọn Từ Tab Tài Khoản Sang Bảng Pool Các Tab Khác Ngay Cả Khi Chưa Chạy (2026-08-18)
+- **Yêu cầu**: Khi các tài khoản được tick chọn ở tab Tài khoản (cột "Dùng"), chúng phải hiển thị ngay lập tức trong bảng "Pool tài khoản" ở tất cả các tab khác (Tạo video, Tạo Video Shopee, Tạo Video từ Server) ngay cả trước khi bấm Bắt đầu.
+- **Thực hiện**:
+  - Cập nhật `_update_pool`, `_sp_update_pool`, `_sv_update_pool` tự động nạp danh sách tài khoản đang kích hoạt (`enabled=True`) từ `self.accounts` khi ứng dụng ở trạng thái nghỉ (`is_running = False`).
+  - Hiển thị trạng thái `"⏳ Sẵn sàng"` cho các tài khoản đang chờ chạy trong bảng Pool.
+  - Cho phép người dùng xem trước và điều chỉnh số luồng `📤 Upload` riêng cho từng tài khoản ngay trên bảng Pool trước khi bấm Bắt đầu.
+  - Tích hợp cơ chế tự động đồng bộ ngay lập tức khi bật/tắt checkbox "Dùng" trong Tab Tài khoản và khi chuyển đổi giữa các Tab (`_show`).
+
+
+---
+
+## 106. Cập Nhật Cơ Chế Tính Tạo Và Tốc Độ = Số Luồng Upload + 3 (Min: 2, Max: 20) (2026-08-19)
+- **Yêu cầu**: Cột `⚡ Tạo` (số job tạo song song) và cột `🚀 Tốc độ` (AIMD Submit Limit) được tự động tính theo công thức: `Tạo & Tốc độ = số luồng upload + 3`, với `Min = 2` và `Max = 20`.
+- **Thực hiện**:
+  - **AccountState**: Cập nhật `max_busy`, `self._submit_max`, và `self.submit_limit` khởi tạo và thay đổi trong `set_upload_threads(val)` theo `max(2, min(20, upload_threads + 3))`.
+  - **Giới hạn Worker Loop**: Cập nhật cổng kiểm soát luồng `if st.busy >= st.max_busy: continue` cho cả 3 chế độ (`_sv_start_run`, `_shopee_start`, `_run`).
+  - **Mở rộng Worker Capacity**: Nâng tổng số slot worker khởi tạo cho mỗi tài khoản lên 20 slots (`for _ in range(20)` / `total_workers = len(states) * 20`), cho phép tài khoản nhận tối đa lên tới 20 tác vụ song song khi người dùng điều chỉnh số luồng upload.
+  - **Đồng bộ thời gian thực**: Khi thay đổi `📤 Upload` trên bảng Pool, cả `⚡ Tạo` (max_busy) và `🚀 Tốc độ` (submit_limit) đều tự động cập nhật ngay lập tức.
+
+
+---
