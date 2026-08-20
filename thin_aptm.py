@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.8"
+APP_VERSION = "ThinAPTM 1.2.9"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -362,13 +362,30 @@ class AccountState:
                 time.sleep(min_interval - elapsed + random.uniform(0.1, 0.4))
             self.last_upload_ts = time.time()
 
-    def wait_submit_spacing(self, min_interval=3.5):
-        """Bắt buộc mỗi lệnh submit video của CÙNG 1 tài khoản phải cách nhau ít nhất min_interval (3.5-4s) theo Rule #2."""
+    def wait_submit_spacing(self, min_interval=4.0, max_interval=6.0):
+        """Bắt buộc mỗi lệnh submit video của CÙNG 1 tài khoản phải cách nhau ngẫu nhiên từ 4-6 giây theo Rule #2."""
         with self.submit_lock:
+            target_wait = random.uniform(min_interval, max_interval)
             elapsed = time.time() - self.last_submit_ts
-            if elapsed < min_interval:
-                time.sleep(min_interval - elapsed + random.uniform(0.1, 0.4))
+            if elapsed < target_wait:
+                time.sleep(target_wait - elapsed)
             self.last_submit_ts = time.time()
+
+    def submit_guard(self, min_spacing=4.0, max_spacing=6.0):
+        """Context manager giữ khóa độc quyền submit của CÙNG 1 tài khoản trong suốt quá trình gửi và đảm bảo giãn cách 4-6s."""
+        import contextlib
+        @contextlib.contextmanager
+        def _cm():
+            with self.submit_lock:
+                target_wait = random.uniform(min_spacing, max_spacing)
+                elapsed = time.time() - self.last_submit_ts
+                if elapsed < target_wait:
+                    time.sleep(target_wait - elapsed)
+                try:
+                    yield
+                finally:
+                    self.last_submit_ts = time.time()
+        return _cm()
 
     def acquire_submit(self, stop_check):
         with self._gate:
@@ -1000,15 +1017,7 @@ class App(ctk.CTk):
         
         def _dec(p):
             if not p: return ""
-            p = str(p).strip()
-            try:
-                padded = p + '=' * ((4 - len(p) % 4) % 4)
-                decoded = _b64.b64decode(padded).decode('utf-8', errors='ignore')
-                if decoded.isprintable() and len(decoded) > 0:
-                    return decoded
-                return p
-            except:
-                return p
+            return str(p).strip()
 
         def is_valid_proxy_host(h):
             if not h: return False
@@ -3244,11 +3253,12 @@ class App(ctk.CTk):
                 # 2) Generate — cổng submit THÍCH ỨNG & Lock per-account (Rule #2), phân loại lỗi để xử lý ĐÚNG
                 for attempt in range(GEN_ATTEMPTS):
                     if self._stop: return "retry_soft"
+                    # Cổng submit THÍCH ỨNG & Lock per-account giữ khóa độc quyền giãn cách 4-6s (Rule #2)
                     if not st.acquire_submit(lambda: self._stop):
                         return "retry_soft"
                     try:
-                        st.wait_submit_spacing(3.5)
-                        kind, ops = E.submit_video(bearer, project, job["prompt"], seed, aspect, model, ref_mid, proxy=st.proxy)
+                        with st.submit_guard(4.0, 6.0):
+                            kind, ops = E.submit_video(bearer, project, job["prompt"], seed, aspect, model, ref_mid, proxy=st.proxy)
                     finally:
                         st.release_submit()
                     if kind == "ok":
@@ -5044,15 +5054,15 @@ class App(ctk.CTk):
                                 st.ensure_auth(force=True)
                                 bearer, project = st.bearer, st.project
 
-                            # ★ AIMD gating & Lock per-account: chờ slot submit và giãn cách 3.5s (Rule #2)
+                            # ★ AIMD gating & Lock per-account: chờ slot submit và giữ khóa độc quyền giãn cách 4-6s (Rule #2)
                             if not st.acquire_submit(lambda: self._shopee_stop_flag):
                                 return "retry_soft"
                             try:
-                                st.wait_submit_spacing(3.5)
-                                v_status, ops = E.submit_video(
-                                    bearer, project, vid_prompt,
-                                    seed=vid_seed, aspect=aspect_key,
-                                    model=E.VID_I2V_MODEL, ref_media_id=comp_mid, proxy=st.proxy)
+                                with st.submit_guard(4.0, 6.0):
+                                    v_status, ops = E.submit_video(
+                                        bearer, project, vid_prompt,
+                                        seed=vid_seed, aspect=aspect_key,
+                                        model=E.VID_I2V_MODEL, ref_media_id=comp_mid, proxy=st.proxy)
                             finally:
                                 st.release_submit()
 
@@ -7092,16 +7102,16 @@ class App(ctk.CTk):
 
                     self._sv_log_msg(f"  🎬 Segment {seg_idx+1}/{n_segments}...")
 
-                    # AIMD gating & Lock per-account: chờ slot submit và giữ khoảng giãn cách 3.5s (Rule #2)
+                    # AIMD gating & Lock per-account: chờ slot submit và giữ khóa độc quyền giãn cách 4-6s (Rule #2)
                     if not st.acquire_submit(lambda: self._sv_stop_flag):
                         return "retry_soft"
                     try:
-                        st.wait_submit_spacing(3.5)
-                        vid_seed = random.randint(1, 999999)
-                        v_status, ops = E.submit_video(
-                            bearer, project, prompt, seed=vid_seed, aspect=aspect_key,
-                            model=E.VID_I2V_MODEL, ref_media_id=mid, proxy=st.proxy
-                        )
+                        with st.submit_guard(4.0, 6.0):
+                            vid_seed = random.randint(1, 999999)
+                            v_status, ops = E.submit_video(
+                                bearer, project, prompt, seed=vid_seed, aspect=aspect_key,
+                                model=E.VID_I2V_MODEL, ref_media_id=mid, proxy=st.proxy
+                            )
                     finally:
                         st.release_submit()
 
@@ -7240,15 +7250,24 @@ class App(ctk.CTk):
                 except Exception as e:
                     self._sv_log_msg(f"  ⚠ Báo server lỗi: {e}")
 
-                # --- Xóa ảnh tạm ---
-                if del_img:
-                    try: os.remove(img_path)
-                    except: pass
-
-                # --- Xóa clip tạm ---
-                for cp in clip_paths:
-                    try: os.remove(cp)
-                    except: pass
+                # --- Dọn dẹp triệt để file tạm (Auto-cleanup) ---
+                try:
+                    if composite_path and os.path.exists(composite_path):
+                        try: os.remove(composite_path)
+                        except: pass
+                    if del_img and img_path and os.path.exists(img_path):
+                        try: os.remove(img_path)
+                        except: pass
+                    for cp in clip_paths:
+                        if cp and os.path.exists(cp):
+                            try: os.remove(cp)
+                            except: pass
+                    import glob
+                    for f in glob.glob(os.path.join(temp_dir, f"sv_{item_id}_*")):
+                        try: os.remove(f)
+                        except: pass
+                except Exception:
+                    pass
 
                 # Update trạng thái
                 self._sv_last_video_time = time.time()

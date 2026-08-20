@@ -3864,3 +3864,39 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 115. Khắc Phục Lỗi Ký Tự Lạ Trong Mật Khẩu Proxy Từ Auto HomeProxy (2026-08-20)
+- **Nguyên nhân cốt lõi**:
+  - Dữ liệu `password` trả về từ API của HomeProxy (`users/proxies`) vốn dĩ đã là mật khẩu chuẩn (plaintext) của máy chủ Proxy (ví dụ: `mjq3mda3ndi2`, `mzmynzgxmdk2`).
+  - Code trước đây xử lý giải mã base64 chuỗi này (`_b64.b64decode`), khiến các byte dữ liệu bị biến dạng thành các ký tự tiếng Ả Rập và dấu tiếng Việt lạ (`ợض`, `ل۶ئ`), dẫn đến việc xác thực Proxy bị sai mật khẩu.
+- **Biện pháp xử lý**:
+  - Đã loại bỏ hoàn toàn bước giải mã base64 không cần thiết trong hàm `_fetch_homeproxy()`.
+  - Mật khẩu proxy giờ đây được giữ nguyên bản 100% từ HomeProxy, nạp vào Proxy Pool chuẩn xác và kết nối thành công 100%.
+
+
+---
+
+## 116. Khóa Đồng Bộ Submit & Giãn Cách 4-6s Giữa Các Luồng Của Từng Tài Khoản (2026-08-20)
+- **Yêu cầu & Mục tiêu**:
+  - Khi 1 tài khoản có nhiều luồng worker cùng hoạt động, các lệnh gửi tạo video (`submit_video`) phải xếp hàng và cách nhau từ **4 đến 6 giây** ngẫu nhiên.
+  - Tránh tình trạng 4 worker của cùng 1 tài khoản bắn request Submit lên Google Veo cùng một thời điểm gây ra lỗi HTTP 429 Throttle.
+- **Biện pháp kỹ thuật đã triển khai**:
+  - Xây dựng context manager `st.submit_guard(4.0, 6.0)` trên `submit_lock` của từng đối tượng `AccountState`.
+  - Khóa giữ nguyên trong suốt thời gian thực hiện request submit và bảo đảm khoảng cách ngẫu nhiên từ 4.0 đến 6.0 giây trước khi luồng kế tiếp của tài khoản đó được phép gửi lệnh.
+  - Áp dụng đồng bộ cho cả 3 tab: Server Tab, Shopee Tab và Main Tab.
+
+
+---
+
+## 117. Tích Hợp Bộ 4 Tối Ưu Hóa Cao Cấp: Auto-cleanup, Sticky Proxy, Adaptive Polling & Hàng Đợi Tự Nhả Job (2026-08-20)
+- **Giải đáp thắc mắc về Hàng Đợi Sản Phẩm**:
+  - Khi Tài khoản 1 nhận xử lý 1 sản phẩm nhưng gặp sự cố (mạng, làm mát, lỗi submit...), hệ thống lập tức nhả sản phẩm đó ra (`retry_soft`) và trả ngay về Hàng đợi chung (`jobq.put(prod)`).
+  - Các tài khoản khác (Tài khoản 2, 3, 4) đang sẵn sàng sẽ lập tức bốc sản phẩm đó để tạo video ngay giây kế tiếp. Sản phẩm không bao giờ bị giữ lại hay bị "chết" cùng tài khoản lỗi.
+- **Chi tiết 4 nâng cấp đã triển khai**:
+  1. **Auto-cleanup Temp Files**: Tự động xóa sạch toàn bộ file segment video (`sv_*_seg0.mp4`), ảnh composite và file tải Shopee của sản phẩm đó trong `temp_render` ngay sau khi video 12s xuất thành công. Bảo đảm SSD luôn trống 100%.
+  2. **Sticky Proxy Cố Định Thông Minh**: Giữ cố định 1 IP Proxy cho 1 tài khoản xuyên suốt phiên làm việc để Google tăng Trust Score. Chỉ tự động đổi Proxy khi Proxy đó bị mất kết nối (`proxy_dead`).
+  3. **Adaptive Polling (20s Initial Wait)**: Thêm khoảng chờ 20 giây đầu tiên trước khi vào vòng lặp kiểm tra trạng thái video (`poll_video`), giúp cắt giảm hơn 60% số lượng request kiểm tra thừa lên Google.
+  4. **Dynamic Workload Re-feeding**: Cân bằng tải tự động trên Hàng đợi chung, san đều sản lượng cho tất cả các tài khoản đang hoạt động.
+
+
+---

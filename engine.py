@@ -670,12 +670,16 @@ def _find_status(o, out=None):
     return out
 
 
-def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=3.5, timeout=60, proxy=None):
+def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout=60, proxy=None, initial_wait=20.0):
     """Thăm dò trạng thái render của video qua endpoint media.getMediaUrlRedirect."""
     if not ops:
         return "failed", "ops_empty", None
     media_id = ops[0]
     credits = None
+    
+    # Adaptive Polling: Nghỉ trước 20s vì Google Veo luôn cần tối thiểu 20-35s để tạo video
+    if initial_wait and initial_wait > 0:
+        time.sleep(initial_wait)
     
     H = {
         "Authorization": f"Bearer {bearer}" if bearer else "",

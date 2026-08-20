@@ -43,7 +43,7 @@ Tài liệu này chứa các quy tắc thiết kế, hành vi và tính năng t�
 - **Tìm Merchant ID**: Tự động gọi API `/orders?page=1&limit=1` để lấy `merchant_id` của tài khoản và truyền vào header khi cần.
 - **Endpoint lấy Proxy**: 
   - *Chính*: `GET https://app.homeproxy.vn/api/v2/users/proxies?page=1&limit=500` (hoặc domain `api.homeproxy.vn/api/v1`).
-  - *Giải mã mật khẩu*: Giải mã base64 của trường `password` trong dữ liệu trả về trước khi nạp vào Proxy Pool.
+  - *Xử lý mật khẩu*: Sử dụng trực tiếp chuỗi `password` gốc từ dữ liệu trả về của HomeProxy (không giải mã base64 vì password trên server đã là chuỗi plaintext chuẩn).
   - *Lọc hạn dùng*: Chỉ nạp proxy có `status = Completed` và `expiredAt` chưa hết hạn.
   - *Cảnh báo*: Nếu bị lỗi (như 401, 0 proxy), phải hiển thị hộp thoại cảnh báo Popup (`messagebox.showwarning`) cho người dùng.
 - **Auto-load**: Tự động gọi API tải proxy mới nhất khi khởi động ứng dụng và trước khi chạy phiên làm việc (cả tab thường và tab tạo từ Server).
