@@ -1552,7 +1552,7 @@ class App(ctk.CTk):
                         self._hc_attempted_accs = {}
                     now = time.time()
                     last_try = self._hc_attempted_accs.get(email, 0.0)
-                    if now - last_try < 1800:
+                    if now - last_try < 300:
                         self._log(f"  [{i}/{len(dead_accs)}] {email}: Đã thử khôi phục gần đây ({int(now - last_try)}s trước) → Tạm dừng để tránh vòng lặp bật/tắt.")
                         still_dead.append(a)
                         continue
@@ -1640,6 +1640,10 @@ class App(ctk.CTk):
             self.after(0, lambda: self._hc_status_lbl.configure(text=f"❌ Lỗi", text_color=RD))
         finally:
             self._health_checking = False
+            try:
+                self._sv_sync_cookies()
+            except Exception:
+                pass
             # Đặt lịch lần check kế nếu vẫn bật
             if self._health_check_enabled:
                 self.after(0, self._schedule_health_check)
@@ -7399,8 +7403,19 @@ class App(ctk.CTk):
         self._sv_log_msg("⏹ Đã gửi lệnh dừng, chờ hoàn tất bước hiện tại...")
 
     def _trigger_instant_health_check(self, target_email=""):
-        """Lớp 3: Đồng bộ trạng thái tài khoản ngầm khi có lỗi auth, không mở cửa sổ Chrome làm phiền người dùng."""
-        self._sv_sync_cookies()
+        """Lớp 3: Kích hoạt Health Check khẩn cấp tức thì (Instant Health Check) khi phát hiện lỗi auth/cookie hết hạn."""
+        if getattr(self, "_health_checking", False):
+            self._sv_sync_cookies()
+            return
+        self._sv_log_msg(f"⚡ [Instant HC] Kích hoạt Health Check khẩn cấp{f' cho {target_email[:16]}' if target_email else ''}...")
+        def _hc_bg():
+            try:
+                self._do_health_check()
+            except Exception as ex:
+                self._sv_log_msg(f"  ⚠️ [Instant HC] Lỗi: {ex}")
+            finally:
+                self._sv_sync_cookies()
+        threading.Thread(target=_hc_bg, daemon=True).start()
 
     def _sv_sync_cookies(self):
         """Đồng bộ cookie mới từ self.accounts vào các AccountState của Server tab sau Health Check."""
@@ -7419,6 +7434,10 @@ class App(ctk.CTk):
                             self._sv_log_msg(f"  ✅ [Sync] {st.email[:16]}: Cookie đã được làm mới → sẵn sàng!")
                         else:
                             self._sv_log_msg(f"  ⚠️ [Sync] {st.email[:16]}: Cookie mới nhưng vẫn không auth được")
+                    elif acc.get("status") == "ok" and st.is_circuit_broken():
+                        st.reset_circuit_breaker()
+                        st.clear_rest()
+                        st.ensure_auth(force=True)
                     break
 
     def _sv_handle_proxy_dead(self, st):

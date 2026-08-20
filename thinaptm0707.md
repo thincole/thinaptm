@@ -3900,3 +3900,17 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 118. Nâng Cấp Tự Động Kích Hoạt Auto Re-login Khi Cookie Hết Hạn 24/7 (2026-08-20)
+- **Vấn đề phát hiện**:
+  - Khi cắm máy 24/7, sau 1-2 giờ các cookie Google OAuth2 hết hạn tự nhiên.
+  - Luồng Proactive Refresh và Circuit Breaker gọi `_trigger_instant_health_check` nhưng hàm này trước đó chỉ gọi `_sv_sync_cookies` mà chưa khởi chạy `_do_health_check` ngầm để mở Chrome profile hoặc dùng password đăng nhập lại lấy cookie mới.
+- **Cải tiến đã thực hiện**:
+  - `_trigger_instant_health_check()` giờ đây tự động kích hoạt `_do_health_check()` chạy trong thread nền độc lập.
+  - Tự động thực hiện 2 pha:
+    1. **Pha 1 (Profile)**: Mở Chrome với profile cũ trong `_profiles` để Google tự đăng nhập lại (không cần password).
+    2. **Pha 2 (Password)**: Nếu session Google hết hạn hoàn toàn, tự động dùng email + password đã lưu để đăng nhập vào Google Flow lấy cookie mới 100%.
+  - Sau khi lấy cookie mới, tự động gọi `_sv_sync_cookies()` đồng bộ trực tiếp vào các luồng render của Server tab để tiếp tục tạo video liền mạch.
+
+
+---
