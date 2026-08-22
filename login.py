@@ -569,11 +569,24 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
 
         # Chờ tối đa 35s để cookie xuất hiện và hợp lệ sau khi chuyển sang trang Flow
         end = time.time() + 35
+        clicked_btn = False
         while time.time() < end:
             ck = _labs_cookie(page.cookies(all_domains=True))
             if _is_cookie_valid(ck):
                 log(f"✅ {email}: login xong — có cookie hợp lệ!")
                 return ck
+            # Bấm nút Sign in / Create with Google Flow nếu có trên trang Labs (chỉ bấm 1 lần)
+            if not clicked_btn:
+                try:
+                    for sel in ["text:Create with Google Flow", "text:Try Google Flow", "text:Sign in", "text:Đăng nhập", "text:Bắt đầu sáng tạo", "text:Get started", "tag:button@type=submit"]:
+                        btn = page.ele(sel, timeout=1)
+                        if btn:
+                            btn.click(by_js=True)
+                            clicked_btn = True
+                            time.sleep(3)
+                            break
+                except Exception:
+                    pass
             time.sleep(2)
 
         log(f"⚠️ {email}: chưa lấy được cookie hợp lệ sau khi login (URL: {page.url[:80]})")
@@ -620,6 +633,7 @@ def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3):
         log("⏳ Chờ Google tự đăng nhập lại từ session cũ...")
         start_time = time.time()
         end = time.time() + timeout
+        clicked_btn = False
         while time.time() < end:
             try:
                 ck = _labs_cookie(page.cookies(all_domains=True))
@@ -629,18 +643,25 @@ def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3):
                 log("✅ Google tự đăng nhập lại → có cookie mới hợp lệ!")
                 return ck
             
-            # Kiểm tra thoát sớm nếu session đã chết
+            # Thử bấm nút Sign in / Create with Google Flow bằng JavaScript click (chỉ bấm 1 lần)
+            if not clicked_btn:
+                try:
+                    for sel in ["text:Create with Google Flow", "text:Try Google Flow", "text:Sign in", "text:Đăng nhập", "text:Bắt đầu sáng tạo", "text:Get started", "tag:button@type=submit"]:
+                        btn = page.ele(sel, timeout=1)
+                        if btn:
+                            btn.click(by_js=True)
+                            clicked_btn = True
+                            time.sleep(3)
+                            break
+                except Exception:
+                    pass
+
+            # Kiểm tra thoát sớm nếu session đã chết và bị chuyển hướng sang form đăng nhập Google
             try:
                 curr_url = page.url
-                if "accounts.google.com" in curr_url or "signin" in curr_url:
-                    log("⌛ Session Google trong profile đã hết hạn (bị chuyển hướng sang đăng nhập).")
+                if "accounts.google.com/v3/signin/identifier" in curr_url or "signin/v2/identifier" in curr_url:
+                    log("⌛ Session Google trong profile đã hết hạn (chuyển sang trang đăng nhập).")
                     return None
-                
-                # Nếu đã qua 10 giây mà vẫn ở trang landing page chưa đăng nhập
-                if time.time() - start_time > 10:
-                    if page.ele("text:Create with Google Flow", timeout=1) or page.ele("text:Sign in", timeout=1):
-                        log("⌛ Session Google trong profile đã hết hạn (trang landing page).")
-                        return None
             except Exception:
                 pass
 

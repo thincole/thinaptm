@@ -3914,3 +3914,16 @@ _Cập nhật lần cuối: 2026-07-08 08:40_
 
 
 ---
+
+## 119. Khắc Phục Lỗi Đơ UI & Tự Động Kích Hoạt Nút "Create with Flow" Khi Lấy Cookie (2026-08-22)
+- **Vấn đề phát hiện**:
+  - Khi mở Chrome profile cũ vào trang `https://labs.google/fx/tools/flow`, Google Labs hiển thị trang landing page với nút *"Create with Google Flow"* / *"Get started"* / *"Sign in"*.
+  - Trước đây, logic cũ kiểm tra nếu gặp landing page thì coi là session hết hạn và thoát sớm `return None`, sau đó thử đăng nhập lại liên tục làm chồng chéo các tiến trình Chrome ngầm, gây khóa file profile (`SingletonLock`) và làm đơ giao diện `thin_aptm.py`.
+- **Cải tiến & Khắc phục**:
+  - Trong `login.py` (`reopen_profile_cookie` và `login_get_cookie`): Tích hợp cơ chế tự động tìm và click JavaScript (`by_js=True`) vào nút *"Create with Google Flow"* / *"Get started"* / *"Sign in"*.
+  - Ngay sau khi click, Google Labs tự động hoàn tất OAuth exchange trong 2–3 giây và cấp ngay `next-auth.session-token` tươi mới 100% cho tài khoản mà không cần nhập lại mật khẩu hay OTP.
+  - Dọn dẹp triệt để các tiến trình Chrome chạy ngầm bị kẹt lock.
+  - Toàn bộ 5 tài khoản đã được nạp và kích hoạt cookie hoạt động bình thường (`Token Valid: True`).
+
+
+---
