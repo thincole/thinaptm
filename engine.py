@@ -74,7 +74,15 @@ CHECK = f"{BASE}/video:batchCheckAsyncVideoGenerationStatus?key={KEY}"
 
 VID_ASPECTS = {"Dọc 9:16 (TikTok)": "VIDEO_ASPECT_RATIO_PORTRAIT", "Ngang 16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE"}
 IMG_ASPECTS = {"Dọc 9:16 (TikTok)": "IMAGE_ASPECT_RATIO_PORTRAIT", "Ngang 16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE", "Vuông 1:1": "IMAGE_ASPECT_RATIO_SQUARE"}
-VID_MODELS = {"Veo 3.1 (nhanh)": "veo_3_1_t2v_lite_low_priority", "Veo 3.1 (chất lượng)": "veo_3_1_t2v"}
+VID_MODELS = {
+    "Veo 3.1 (miễn phí)": "veo_3_1_t2v_lite_low_priority",
+    "⚡ Omni Flash (Credit, 8s)": "abra_i2v_8s",
+    "⚡ Omni Flash (Credit, 10s)": "abra_i2v_10s",
+}
+VID_I2V_MODELS = {
+    "veo_3_1": "veo_3_1_r2v_lite_low_priority",
+    "abra": None,  # Omni Flash: abra_i2v đã là i2v sẵn, không cần đổi model
+}
 VID_I2V_MODEL = "veo_3_1_r2v_lite_low_priority"
 
 # Mô tả giọng nói cố định — gắn vào cuối mọi prompt để giữ giọng nhất quán giữa các video
@@ -317,7 +325,7 @@ def _hc(bearer):  # headers Chrome cho poll/upload (nâng cấp giống AutoVeo3
 
 
 # ---------- UPLOAD ảnh (cho I2V / ảnh tham chiếu) ----------
-def upload_image(bearer, project, image_path, timeout=120, max_retries=2, proxy=None):
+def upload_image(bearer, project, image_path, timeout=120, max_retries=4, proxy=None):
     import random as _rnd
     try:
         from PIL import Image
@@ -355,7 +363,8 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=2, proxy=
                     return None
             elif r.status_code == 429:
                 throttle_count += 1
-                wait = 4.0 + (attempt * 3.0) + _rnd.uniform(0, 1.5)
+                # Backoff tăng dần: 8→15→25→40s + random jitter
+                wait = min(8.0 * (1.8 ** attempt), 45.0) + _rnd.uniform(0, 3.0)
                 _log_err(f"upload_image 429 throttled — retry {attempt+1}/{max_retries}, chờ {wait:.1f}s")
                 time.sleep(wait)
                 continue
@@ -370,7 +379,13 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=2, proxy=
                 return None
         except Exception as e:
             err_str = str(e).lower()
-            if "resolve proxy" in err_str or "resolve host" in err_str or "connect to proxy" in err_str:
+            proxy_dead_patterns = (
+                "resolve proxy", "resolve host", "connect to proxy",
+                "could not connect to server", "failed to connect to",
+                "tunnel failed", "response 407", "proxy refused",
+                "connection refused", "connection timed out",
+            )
+            if any(p in err_str for p in proxy_dead_patterns):
                 _log_err(f"upload_image proxy dead: {e}")
                 return "proxy_dead"
             _log_err(f"upload_image request exception: {e}")
@@ -452,16 +467,17 @@ LAUNDER_PROMPT = (
 def upload_image_via_donor(donor_bearer, donor_project, main_bearer, main_project,
                            image_path, proxy=None, main_proxy=None, timeout=120):
     """Upload ảnh qua TK donor khi TK chính bị 429.
-    [Rửa 1/3] Upload ảnh lên TK Donor -> donor_mid
-    [Rửa 2/3 & 3/3] Gọi AI tái tạo ảnh trực tiếp TRÊN project TK chính -> nhận mediaId chính sạch.
+    [Rửa 1/2] Upload ảnh lên TK Donor -> donor_mid
+    [Rửa 2/2] Gọi AI tái tạo ảnh trực tiếp TRÊN project TK chính -> nhận mediaId chính sạch.
+    Cross-project reference không hoạt động nên phải dùng AI vẽ lại.
     Trả media_id (string) nếu thành công, None nếu thất bại.
     """
-    import random as _rnd, tempfile as _tmpf
+    import random as _rnd
 
     # Bước 1: Upload ảnh gốc lên project DONOR
     donor_mid = upload_image(donor_bearer, donor_project, image_path,
-                             timeout=timeout, max_retries=2, proxy=proxy)
-    if not donor_mid or donor_mid in ("throttle", "forbidden"):
+                             timeout=timeout, max_retries=4, proxy=proxy)
+    if not donor_mid or donor_mid in ("throttle", "forbidden", "proxy_dead"):
         _log_err(f"bypass_donor: upload lên donor thất bại ({donor_mid})")
         return None
 
@@ -487,6 +503,7 @@ def upload_image_via_donor(donor_bearer, donor_project, main_bearer, main_projec
     # Lấy name (mediaId chính) từ result
     new_mid = result.get("name")
     if new_mid:
+        _log_err(f"bypass_donor: OK — AI tái tạo ảnh thành công, mediaId mới: {new_mid[:30]}...")
         return new_mid
         
     _log_err("bypass_donor: batchGenerateImages thành công nhưng không trả về trường 'name'.")
@@ -614,7 +631,8 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
         dbg_f.write(f"aspect: {aspect}\n")
     
     # I2V (có ảnh gốc) BẮT BUỘC dùng model r2v (reference->video); dùng model t2v -> render FAIL.
-    if ref_media_id:
+    # Omni Flash (abra_i2v_*) đã là model i2v sẵn → không cần đổi.
+    if ref_media_id and not model.startswith("abra"):
         model = VID_I2V_MODEL
     url = GEN_I2V if ref_media_id else GEN_T2V
     payload = _vpayload(prompt, project, seed, aspect, model, ref_media_id)
@@ -622,7 +640,7 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
         r = cffi.post(url, headers=_hf(bearer), data=json.dumps(payload), **_kw(timeout, proxy=proxy))
     except Exception as e:
         err_str = str(e).lower()
-        if "resolve proxy" in err_str or "resolve host" in err_str or "connect to proxy" in err_str:
+        if any(p in err_str for p in ("resolve proxy", "resolve host", "connect to proxy", "could not connect to server", "failed to connect to", "tunnel failed", "response 407", "proxy refused", "connection refused", "connection timed out")):
             _log_err(f"submit_video proxy dead: {e}")
             return "proxy_dead", None
         _log_err(f"submit_video HTTP client exception: {e}")
@@ -698,7 +716,7 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout
             proxy_fail_count = 0  # Reset khi request thành công
         except Exception as e:
             err_str = str(e).lower()
-            if "resolve proxy" in err_str or "resolve host" in err_str or "connect to proxy" in err_str:
+            if any(p in err_str for p in ("resolve proxy", "resolve host", "connect to proxy", "could not connect to server", "failed to connect to", "tunnel failed", "response 407", "proxy refused", "connection refused", "connection timed out")):
                 proxy_fail_count += 1
                 if proxy_fail_count >= 5:
                     _log_err(f"poll_video proxy dead after {proxy_fail_count} consecutive DNS failures")
@@ -858,7 +876,7 @@ def download_video(media_id, cookie, dst, timeout=180, proxy=None):
             _log_err(f"download_video failed. status: {r.status_code}, content-type: {r.headers.get('content-type')}, response: {r.text[:200]}")
     except Exception as e:
         err_str = str(e).lower()
-        if "resolve proxy" in err_str or "resolve host" in err_str or "connect to proxy" in err_str:
+        if any(p in err_str for p in ("resolve proxy", "resolve host", "connect to proxy", "could not connect to server", "failed to connect to", "tunnel failed", "response 407", "proxy refused", "connection refused", "connection timed out")):
             _log_err(f"download_video proxy dead: {e}")
             return -1  # Signal proxy dead
         _log_err(f"download_video exception: {e}")
