@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.11"
+APP_VERSION = "ThinAPTM 1.2.12"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
