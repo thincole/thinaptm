@@ -3,7 +3,7 @@ Thìn Aptm — Engine tạo VIDEO + ẢNH Google Flow bằng android_bypass.
 HTTP client: pyreqwest_impersonate (TLS giống AutoVeo3) → fallback curl_cffi.
 Auth: cookie labs.google -> bearer. Video: submit -> poll -> tải mp4.
 """
-import json, time, base64, os, uuid, urllib.parse
+import json, time, base64, os, uuid, urllib.parse, threading
 
 # ── TLS Impersonation: ưu tiên pyreqwest_impersonate (Rust, TLS chuẩn Chrome như AutoVeo3) ──
 # AutoVeo3 dùng pyreqwest_impersonate qua ai_transport.pyd (193KB) → TLS ClientHello giống hệt Chrome.
@@ -62,10 +62,22 @@ BYPASS_TOKEN = "android_bypass"
 APP_ANDROID = "RECAPTCHA_APPLICATION_TYPE_ANDROID"
 IMP = "chrome_131"  # pyreqwest_impersonate dùng version cụ thể
 IMP_CFFI = "chrome110"  # curl_cffi: dùng version cụ thể (chrome110 hỗ trợ rộng)
-# Fallback nếu chrome110 không tồn tại
-try:
-    cffi.get("https://labs.google", impersonate=IMP_CFFI, timeout=5)
-except Exception:
+# Kiểm tra IMP_CFFI có được build hiện tại hỗ trợ hay không — tra cứu OFFLINE trong danh sách
+# target của curl_cffi, KHÔNG gửi request mạng lúc import (chậm khởi động + fail khi offline).
+def _cffi_target_supported(name):
+    try:
+        from curl_cffi.requests import BrowserType
+        return name in {m.value for m in BrowserType}
+    except Exception:
+        pass
+    try:
+        import typing
+        from curl_cffi.requests.impersonate import BrowserTypeLiteral
+        return name in set(typing.get_args(BrowserTypeLiteral))
+    except Exception:
+        return True   # không tra được → cứ giữ nguyên, request đầu tiên sẽ tự báo lỗi
+
+if not _cffi_target_supported(IMP_CFFI):
     IMP_CFFI = "chrome"  # fallback generic
 
 GEN_T2V = f"{BASE}/video:batchAsyncGenerateVideoText"
@@ -103,6 +115,36 @@ def get_voice_for_lang(lang_code):
 
 ERROR_LOG_FUNC = None
 
+# ── Debug API trace ──
+# Mặc định TẮT. Trước đây mọi lệnh submit_video đều ghi vào debug_api.txt không giới hạn
+# → file phình tới hàng chục GB khi chạy 24/7. Bật bằng biến môi trường THINAPTM_DEBUG_API=1
+# hoặc gán engine.DEBUG_API = True. Khi bật, file tự xoay vòng ở DEBUG_API_MAX_BYTES.
+DEBUG_API = os.environ.get("THINAPTM_DEBUG_API", "").strip() in ("1", "true", "True", "yes")
+DEBUG_API_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_api.txt")
+DEBUG_API_MAX_BYTES = 8 * 1024 * 1024   # 8 MB → giữ 1 bản .old, tối đa ~16 MB trên đĩa
+_dbg_lock = threading.Lock()
+
+
+def _log_api(msg):
+    """Ghi 1 dòng trace API vào debug_api.txt (chỉ khi DEBUG_API bật, có xoay vòng theo dung lượng)."""
+    if not DEBUG_API:
+        return
+    try:
+        with _dbg_lock:
+            try:
+                if os.path.getsize(DEBUG_API_FILE) >= DEBUG_API_MAX_BYTES:
+                    old = DEBUG_API_FILE + ".old"
+                    if os.path.exists(old):
+                        os.remove(old)
+                    os.replace(DEBUG_API_FILE, old)
+            except OSError:
+                pass   # file chưa tồn tại hoặc đang bị khóa → cứ ghi tiếp
+            with open(DEBUG_API_FILE, "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
 def _log_err(msg):
     if ERROR_LOG_FUNC:
         try:
@@ -127,36 +169,48 @@ def _kw(t=60, proxy=None):
     return d
 
 
-def _http_get(url, headers, **kwargs):
-    """GET request qua pyreqwest_impersonate (ưu tiên) hoặc curl_cffi."""
-    if _USE_PYREQWEST:
-        try:
-            client = pri.Client(impersonate=IMP, timeout=kwargs.get('timeout', 60))
-            proxy = kwargs.get('proxies')
-            if proxy:
-                p = proxy.get('https') or proxy.get('http')
-                if p:
-                    client = pri.Client(impersonate=IMP, timeout=kwargs.get('timeout', 60), proxy=p)
-            return client.get(url, headers=headers)
-        except Exception:
-            pass  # fallback
-    return cffi.get(url, headers=headers, **_kw(kwargs.get('timeout', 60), kwargs.get('proxies')))
+# ══════════════════ PHÂN LOẠI LỖI MẠNG (dùng chung mọi hàm HTTP) ══════════════════
+# Trước đây mỗi hàm tự chép 1 tuple pattern giống nhau và CHỈ bắt được lỗi "không kết nối
+# nổi tới proxy". Các lỗi hay gặp nhất khi chạy proxy residential — kết nối bị cắt giữa
+# dòng, TLS trả rác, timeout — đều rơi vào nhánh "không rõ" và bị đánh lỗi cứng, làm mất
+# job oan. Nay tách 2 nhóm rõ ràng:
+
+# Nhóm 1: proxy/đường truyền CHẾT HẲN → nên đổi proxy ngay, retry cùng proxy là vô ích.
+_PROXY_DEAD_PATTERNS = (
+    "resolve proxy", "resolve host", "connect to proxy",
+    "could not connect to server", "failed to connect to",
+    "tunnel failed", "response 407", "proxy refused",
+    "connection refused", "connection timed out",
+)
+
+# Nhóm 2: lỗi TẠM THỜI → thử lại là có cơ hội thành công.
+#   "closed abruptly" / "connection was reset": proxy cắt kết nối giữa dòng
+#   "invalid library" / "tls connect error": proxy trả rác không phải TLS record
+#                                           (BoringSSL báo invalid library)
+#   "operation timed out" / "recv failure": mạng chậm/nghẽn tạm thời
+_TRANSIENT_PATTERNS = (
+    "closed abruptly", "connection was reset", "connection reset",
+    "recv failure", "send failure",
+    "tls connect error", "invalid library",
+    "operation timed out", "timed out after",
+    "empty reply", "transfer closed", "http/2 stream",
+    "ssl connect error", "gnutls", "unexpected eof",
+)
 
 
-def _http_post(url, headers, data=None, **kwargs):
-    """POST request qua pyreqwest_impersonate (ưu tiên) hoặc curl_cffi."""
-    if _USE_PYREQWEST:
-        try:
-            client = pri.Client(impersonate=IMP, timeout=kwargs.get('timeout', 60))
-            proxy = kwargs.get('proxies')
-            if proxy:
-                p = proxy.get('https') or proxy.get('http')
-                if p:
-                    client = pri.Client(impersonate=IMP, timeout=kwargs.get('timeout', 60), proxy=p)
-            return client.post(url, headers=headers, data=data)
-        except Exception:
-            pass  # fallback
-    return cffi.post(url, headers=headers, data=data, **_kw(kwargs.get('timeout', 60), kwargs.get('proxies')))
+def net_error_kind(exc):
+    """Phân loại 1 exception mạng: 'proxy_dead' | 'transient' | 'other'."""
+    s = str(exc).lower()
+    if any(p in s for p in _PROXY_DEAD_PATTERNS):
+        return "proxy_dead"
+    if any(p in s for p in _TRANSIENT_PATTERNS):
+        return "transient"
+    return "other"
+
+
+def is_net_retryable(value):
+    """True nếu `value` là sentinel lỗi mạng mà caller nên requeue job (KHÔNG đánh lỗi cứng)."""
+    return value in ("net_fail", "proxy_dead", "throttle")
 
 
 # ---------- AUTH ----------
@@ -378,23 +432,25 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=4, proxy=
                 _log_err(f"upload_image failed status: {r.status_code}, response: {r.text[:300]}")
                 return None
         except Exception as e:
-            err_str = str(e).lower()
-            proxy_dead_patterns = (
-                "resolve proxy", "resolve host", "connect to proxy",
-                "could not connect to server", "failed to connect to",
-                "tunnel failed", "response 407", "proxy refused",
-                "connection refused", "connection timed out",
-            )
-            if any(p in err_str for p in proxy_dead_patterns):
+            kind = net_error_kind(e)
+            if kind == "proxy_dead":
                 _log_err(f"upload_image proxy dead: {e}")
                 return "proxy_dead"
+            if kind == "transient" and attempt < max_retries - 1:
+                # Kết nối bị cắt / TLS rác / timeout → THỬ LẠI. Trước đây return None ngay
+                # trong except nên bỏ luôn các lượt retry còn lại → mất job oan.
+                wait = min(3.0 * (1.7 ** attempt), 20.0) + _rnd.uniform(0, 1.5)
+                _log_err(f"upload_image lỗi mạng tạm thời (retry {attempt+1}/{max_retries}, chờ {wait:.1f}s): {e}")
+                time.sleep(wait)
+                continue
             _log_err(f"upload_image request exception: {e}")
-            return None
+            # Lỗi mạng nhưng đã hết lượt retry → net_fail để caller requeue thay vì đánh lỗi cứng
+            return "net_fail" if kind == "transient" else None
     # Hết retry mà vẫn bị 429 → trả "throttle" để caller xử lý đúng (requeue thay vì fail)
     if throttle_count > 0:
         _log_err(f"upload_image 429 throttled {throttle_count} lần liên tiếp — trả throttle cho caller")
         return "throttle"
-    return None
+    return "net_fail"
 
 def upload_audio(bearer, project, audio_path, timeout=120, max_retries=2, proxy=None):
     try:
@@ -624,12 +680,8 @@ def _classify(r):
 
 
 def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None, timeout=120, proxy=None):
-    with open('debug_api.txt', 'a', encoding='utf-8') as dbg_f:
-        dbg_f.write(f"\n=== submit_video called ===\n")
-        dbg_f.write(f"model: {model}\n")
-        dbg_f.write(f"ref_media_id: {ref_media_id}\n")
-        dbg_f.write(f"aspect: {aspect}\n")
-    
+    _log_api(f"submit_video: model={model} ref={ref_media_id} aspect={aspect}")
+
     # I2V (có ảnh gốc) BẮT BUỘC dùng model r2v (reference->video); dùng model t2v -> render FAIL.
     # Omni Flash (abra_i2v_*) đã là model i2v sẵn → không cần đổi.
     if ref_media_id and not model.startswith("abra"):
@@ -639,8 +691,7 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
     try:
         r = cffi.post(url, headers=_hf(bearer), data=json.dumps(payload), **_kw(timeout, proxy=proxy))
     except Exception as e:
-        err_str = str(e).lower()
-        if any(p in err_str for p in ("resolve proxy", "resolve host", "connect to proxy", "could not connect to server", "failed to connect to", "tunnel failed", "response 407", "proxy refused", "connection refused", "connection timed out")):
+        if net_error_kind(e) == "proxy_dead":
             _log_err(f"submit_video proxy dead: {e}")
             return "proxy_dead", None
         _log_err(f"submit_video HTTP client exception: {e}")
@@ -662,8 +713,7 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
                 if pm_id:
                     ops.append(pm_id)
         if ops:
-            with open('debug_api.txt', 'a', encoding='utf-8') as dbg_f:
-                dbg_f.write(f"submit_video succeeded, ops: {ops}\n")
+            _log_api(f"submit_video ok: ops={ops}")
             return "ok", ops
         else:
             _log_err(f"submit_video succeeded but no operations found in JSON: {j}")
@@ -688,17 +738,116 @@ def _find_status(o, out=None):
     return out
 
 
-def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout=60, proxy=None, initial_wait=20.0):
-    """Thăm dò trạng thái render của video qua endpoint media.getMediaUrlRedirect."""
+# Khóa có thể chứa lý do thất bại trong response batchCheckAsyncVideoGenerationStatus
+_REASON_KEYS = ("reason", "errorReason", "publicErrorMessage", "raiFilteredReason",
+                "failureReason", "errorMessage", "message", "detail")
+
+
+def _find_reasons(o, out=None):
+    """Quét đệ quy mọi chuỗi trông giống lý do thất bại (PUBLIC_ERROR_* / *_FILTER*)."""
+    out = out if out is not None else []
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k in _REASON_KEYS and isinstance(v, str) and v.strip():
+                up = v.upper()
+                if "PUBLIC_ERROR" in up or "FILTER" in up or "RAI" in up or "POLICY" in up:
+                    out.append(v.strip())
+            else:
+                _find_reasons(v, out)
+    elif isinstance(o, list):
+        for v in o:
+            _find_reasons(v, out)
+    return out
+
+
+# Lý do = vi phạm chính sách vĩnh viễn (retry vô ích, KHÔNG rewrite được).
+# AUDIO_FILTERED xử lý riêng ở GUI: nhờ Gemini viết lại prompt rồi thử lại.
+POLICY_TOKENS = ("DANGER_FILTER", "PROMINENT_PEOPLE", "IP_INPUT_IMAGE",
+                 "PUBLIC_ERROR_MINOR", "CHILD", "SEXUAL", "RAI_FILTERED")
+
+
+def is_policy_reason(reason, include_audio=False):
+    """True nếu `reason` là lỗi vi phạm chính sách (job nên đánh 'vi phạm cs', không retry)."""
+    if not reason:
+        return False
+    up = str(reason).upper()
+    if include_audio and "AUDIO_FILTERED" in up:
+        return True
+    return any(tok in up for tok in POLICY_TOKENS)
+
+
+_FAIL_STATUS_TOKENS = ("FAILED", "FAILURE", "REJECTED", "CANCELLED", "CANCELED", "ERROR")
+_DONE_STATUS_TOKENS = ("SUCCEEDED", "SUCCESSFUL", "COMPLETED", "COMPLETE", "DONE")
+
+
+def check_video_status(bearer, ops, timeout=30, proxy=None):
+    """Hỏi trạng thái render THẬT qua batchCheckAsyncVideoGenerationStatus.
+
+    Endpoint media.getMediaUrlRedirect chỉ trả 404 cho cả 'đang render' và 'render fail'
+    nên không phân biệt được. Endpoint này trả status + lý do (PUBLIC_ERROR_*).
+
+    Trả ('done'|'failed'|'running', reason_or_None), hoặc (None, None) nếu không đọc được
+    (server đổi schema / lỗi mạng) -> caller cứ tiếp tục poll như cũ.
+    """
+    if not ops:
+        return None, None
+    payloads = (
+        {"operations": [{"operation": {"name": n}} for n in ops]},
+        {"operations": [{"name": n} for n in ops]},
+    )
+    for payload in payloads:
+        try:
+            r = cffi.post(CHECK, headers=_hf(bearer), data=json.dumps(payload),
+                          **_kw(timeout, proxy=proxy))
+        except Exception as e:
+            _log_api(f"check_video_status exception: {e}")
+            return None, None
+        if r.status_code != 200:
+            _log_api(f"check_video_status HTTP {r.status_code}: {r.text[:200]}")
+            continue     # thử shape payload kế tiếp
+        try:
+            body = r.json() or {}
+        except Exception:
+            return None, None
+        statuses = [s.upper() for s in _find_status(body)]
+        reasons = _find_reasons(body)
+        reason = reasons[0] if reasons else None
+        _log_api(f"check_video_status: statuses={statuses} reason={reason}")
+        if not statuses and not reason:
+            return None, None
+        if reason or any(any(t in s for t in _FAIL_STATUS_TOKENS) for s in statuses):
+            return "failed", reason
+        if statuses and all(any(t in s for t in _DONE_STATUS_TOKENS) for s in statuses):
+            return "done", None
+        return "running", None
+    return None, None
+
+
+def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout=60, proxy=None,
+               initial_wait=20.0, status_every=6):
+    """Thăm dò trạng thái render của video.
+
+    Kênh chính: media.getMediaUrlRedirect (302/200+video = xong).
+    Kênh phụ:   batchCheckAsyncVideoGenerationStatus, gọi mỗi `status_every` lượt poll để
+                phát hiện render FAIL kèm LÝ DO thật (PUBLIC_ERROR_AUDIO_FILTERED,
+                DANGER_FILTER, ...). Trước đây hàm này luôn trả "policy" khi hết lượt nên
+                không thể phân biệt vi phạm chính sách / timeout / audio bị lọc.
+
+    Trả (kind, detail, credits):
+      done       -> detail = media_id
+      failed     -> detail = lý do thật (PUBLIC_ERROR_*) nếu đọc được, else "timeout"
+      auth       -> bearer chết
+      proxy_dead -> proxy hỏng
+    """
     if not ops:
         return "failed", "ops_empty", None
     media_id = ops[0]
     credits = None
-    
+
     # Adaptive Polling: Nghỉ trước 20s vì Google Veo luôn cần tối thiểu 20-35s để tạo video
     if initial_wait and initial_wait > 0:
         time.sleep(initial_wait)
-    
+
     H = {
         "Authorization": f"Bearer {bearer}" if bearer else "",
         "Cookie": cookie if cookie else "",
@@ -707,16 +856,16 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout
         "Accept": "*/*"
     }
     proxy_fail_count = 0  # Đếm lỗi proxy DNS liên tiếp
-    
+    status_supported = bool(bearer)   # tắt kênh phụ nếu server không hiểu payload
+
     for attempt in range(max_attempts):
         try:
             # Tắt redirect để kiểm tra Location / Content-Type
-            r = cffi.get(f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}", 
+            r = cffi.get(f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}",
                          headers=H, **_kw(timeout, proxy=proxy), allow_redirects=False)
             proxy_fail_count = 0  # Reset khi request thành công
         except Exception as e:
-            err_str = str(e).lower()
-            if any(p in err_str for p in ("resolve proxy", "resolve host", "connect to proxy", "could not connect to server", "failed to connect to", "tunnel failed", "response 407", "proxy refused", "connection refused", "connection timed out")):
+            if net_error_kind(e) == "proxy_dead":
                 proxy_fail_count += 1
                 if proxy_fail_count >= 5:
                     _log_err(f"poll_video proxy dead after {proxy_fail_count} consecutive DNS failures")
@@ -724,25 +873,43 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout
             _log_err(f"poll_video network exception (attempt {attempt+1}/{max_attempts}): {e}")
             time.sleep(interval)
             continue
-            
+
         if r.status_code == 401:
             _log_err(f"poll_video unauthorized (401)")
             return "auth", None, credits
-            
+
         if r.status_code in [302, 307] or (r.status_code == 200 and r.headers.get("content-type", "").startswith("video")):
             # Video đã render thành công và sẵn sàng để tải!
             return "done", media_id, credits
-            
+
         if r.status_code in [404, 500]:
-            # Video đang trong quá trình render trên máy chủ Google (trả 404/500 trong 10-30s đầu cho tới khi ready)
-            pass
+            # 404/500 = ĐANG render HOẶC render đã FAIL — endpoint này không phân biệt được.
+            # Hỏi kênh phụ định kỳ để bắt lý do fail sớm thay vì chờ hết max_attempts.
+            if status_supported and attempt > 0 and attempt % status_every == 0:
+                kind, reason = check_video_status(bearer, ops, proxy=proxy)
+                if kind is None:
+                    status_supported = False      # server không trả được → thôi hỏi nữa
+                elif kind == "failed":
+                    _log_err(f"poll_video: render FAILED — lý do: {reason or 'không rõ'}")
+                    return "failed", (reason or "render fail"), credits
+                elif kind == "done":
+                    return "done", media_id, credits
         else:
             _log_err(f"poll_video check unexpected status {r.status_code}, response: {r.text[:200]}")
-            
+
         time.sleep(interval)
-        
-    _log_err(f"poll_video timeout or render failed after {max_attempts} attempts.")
-    return "failed", "policy", credits
+
+    # Hết lượt poll: hỏi kênh phụ lần cuối để biết fail thật hay chỉ chậm
+    if status_supported:
+        kind, reason = check_video_status(bearer, ops, proxy=proxy)
+        if kind == "failed":
+            _log_err(f"poll_video: render FAILED sau {max_attempts} lượt — lý do: {reason or 'không rõ'}")
+            return "failed", (reason or "render fail"), credits
+        if kind == "done":
+            return "done", media_id, credits
+
+    _log_err(f"poll_video timeout sau {max_attempts} lượt (không xác định được lý do).")
+    return "failed", "timeout", credits
 
 # ---------- GEMINI: viết lại prompt vi phạm chính sách ----------
 GEMINI_MODEL = "gemini-flash-lite-latest"   # model Lite có quota dồi dào và tốc độ cao nhất
@@ -816,7 +983,7 @@ def generate_video_prompts(topic, num_scenes=5, char_style="stickman", timeout=6
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         headers = {"Content-Type": "application/json"}
     elif cookie:
-        bearer, _email = bearer_from_cookie(cookie, proxy=proxy)
+        bearer, _email, _new_cookie = bearer_from_cookie(cookie, proxy=proxy)
         if not bearer:
             return "dead", None
         model = GEMINI_BEARER_MODEL
@@ -862,25 +1029,38 @@ def generate_video_prompts(topic, num_scenes=5, char_style="stickman", timeout=6
     return "busy", f"Lỗi Google {r.status_code}: {err_msg}"
 
 
-def download_video(media_id, cookie, dst, timeout=180, proxy=None):
+# Mã trả về đặc biệt của download_video (số byte > 0 = thành công)
+DL_PROXY_DEAD = -1   # proxy chết → caller nên đổi proxy rồi requeue
+DL_NET_FAIL = -2     # lỗi mạng tạm thời, đã hết lượt retry → caller nên requeue
+
+
+def download_video(media_id, cookie, dst, timeout=180, proxy=None, max_retries=3):
     H = {"Cookie": cookie, "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "*/*"}
-    try:
-        r = cffi.get(f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}", headers=H,
-                     **_kw(timeout, proxy=proxy), allow_redirects=True)
-        if r.status_code == 200 and r.headers.get("content-type", "").startswith("video"):
-            os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-            with open(dst, "wb") as f:
-                f.write(r.content)
-            return len(r.content)
-        else:
+    for attempt in range(max_retries):
+        try:
+            r = cffi.get(f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}", headers=H,
+                         **_kw(timeout, proxy=proxy), allow_redirects=True)
+            if r.status_code == 200 and r.headers.get("content-type", "").startswith("video"):
+                os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+                with open(dst, "wb") as f:
+                    f.write(r.content)
+                return len(r.content)
             _log_err(f"download_video failed. status: {r.status_code}, content-type: {r.headers.get('content-type')}, response: {r.text[:200]}")
-    except Exception as e:
-        err_str = str(e).lower()
-        if any(p in err_str for p in ("resolve proxy", "resolve host", "connect to proxy", "could not connect to server", "failed to connect to", "tunnel failed", "response 407", "proxy refused", "connection refused", "connection timed out")):
-            _log_err(f"download_video proxy dead: {e}")
-            return -1  # Signal proxy dead
-        _log_err(f"download_video exception: {e}")
-    return 0
+            return 0
+        except Exception as e:
+            kind = net_error_kind(e)
+            if kind == "proxy_dead":
+                _log_err(f"download_video proxy dead: {e}")
+                return DL_PROXY_DEAD
+            if kind == "transient" and attempt < max_retries - 1:
+                # Tải dở bị cắt giữa dòng (rất hay gặp với proxy residential) → thử lại
+                wait = 3.0 * (attempt + 1)
+                _log_err(f"download_video lỗi mạng tạm thời (retry {attempt+1}/{max_retries}, chờ {wait:.0f}s): {e}")
+                time.sleep(wait)
+                continue
+            _log_err(f"download_video exception: {e}")
+            return DL_NET_FAIL if kind == "transient" else 0
+    return DL_NET_FAIL
 
 
 def download_url(url, dst, timeout=120, proxy=None):

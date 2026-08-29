@@ -738,6 +738,9 @@ def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", revi
     n_segments = len(indices)
     
     prompts = []
+    # Malaysia: random style cho non-fallback
+    _my_nf_style = _get_my_character_style() if lang == "my" else None
+
     for i, idx in enumerate(indices):
         dialogue = generate_tts_script(product_name, i, n_segments, lang=lang)
         prompt = pool[idx].format(
@@ -748,6 +751,31 @@ def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", revi
             country_vi=lang_info["country_vi"],
             dialogue=dialogue
         )
+
+        # --- Malaysia: thay đổi SECTION 3 theo phương án an toàn ---
+        if lang == "my" and _my_nf_style:
+            import re as _re
+            if _my_nf_style == "product_only":
+                product_only_sec3 = (
+                    "=== SECTION 3: PRODUCT SHOWCASE (NO HUMAN MODEL) ===\n"
+                    "- NO human model, NO presenter in this video.\n"
+                    "- Product showcase on clean white/marble background with soft studio lighting.\n"
+                    "- Smooth camera rotation around the product, close-up shots from multiple angles.\n"
+                    "- Professional e-commerce commercial style.\n"
+                    "\n"
+                )
+                prompt = _re.sub(r'=== SECTION 3:.*?=== SECTION 4:', product_only_sec3 + '=== SECTION 4:', prompt, count=1, flags=_re.DOTALL)
+            elif _my_nf_style == "male":
+                prompt = prompt.replace("A 22-year-old Malaysian woman", "A Malay male model, modest clothing, approximately 25-30 years old")
+                prompt = prompt.replace("her identity", "his identity")
+                prompt = prompt.replace("her outfit", "his outfit")
+                prompt = prompt.replace("her face", "his face")
+            elif _my_nf_style == "hijabi":
+                prompt = prompt.replace(
+                    "A 22-year-old Malaysian woman with a bright, cheerful face and natural beauty",
+                    "A Malay hijabi woman, wearing hijab and modest long-sleeve clothing, no skin showing, smiling, approximately 22-28 years old"
+                )
+
         target_style = review_style if review_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN) else content_style
         if target_style and target_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN):
             content_constraint = (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN)[target_style]
@@ -812,6 +840,51 @@ _OUTFIT_POOL_VI = [
     "áo cardigan tím lavender khoác ngoài áo hai dây trắng phối quần xám nhạt",
     "áo blazer camel lịch lãm khoác ngoài áo cổ lọ đen phối quần tây đen",
 ]
+
+# ---- Malaysia (MY) — tuân thủ văn hóa/tôn giáo: 3 phương án an toàn ----
+# Style 1: Product-Only (RECOMMENDED — no human model)
+_MY_PRODUCT_ONLY_CHARACTER = (
+    "- NO human model in this video. Focus entirely on the product.\n"
+    "- Show the product '{name}' on a clean white/marble background with soft studio lighting.\n"
+    "- Camera smoothly rotates around the product, showing close-up details from multiple angles.\n"
+)
+# Style 2: Male model
+_MY_MALE_HAIR_POOL = [
+    "short neat black hair with clean side part",
+    "medium-length wavy dark hair, well-groomed",
+    "short cropped hair with subtle fade",
+]
+_MY_MALE_OUTFIT_POOL = [
+    "a clean white long-sleeve button-down shirt with dark trousers",
+    "a navy blue polo shirt with khaki pants",
+    "a light gray kurta with dark pants — modest and professional",
+]
+# Style 3: Female hijabi model
+_MY_HIJAB_HAIR_POOL = [
+    "wearing a soft cream-colored hijab neatly draped",
+    "wearing an elegant pastel blue hijab with clean folds",
+    "wearing a stylish dusty rose hijab with neat pleats",
+    "wearing a classic black hijab with simple elegant style",
+    "wearing a sage green hijab with soft draping",
+]
+_MY_HIJAB_OUTFIT_POOL = [
+    "a modest long-sleeve white blouse with high neckline and long dark skirt",
+    "a modest loose-fit pastel tunic with long sleeves and wide-leg pants",
+    "a modest long-sleeve baju kurung in soft blue with matching long skirt",
+    "a modest cream-colored long cardigan over a high-neck top with ankle-length pants",
+    "a modest long-sleeve floral blouse fully covering arms with a long flowing skirt",
+]
+
+def _get_my_character_style():
+    """Random chọn 1 trong 3 phương án an toàn cho Malaysia."""
+    # Tỉ lệ: 40% product-only, 30% male, 30% hijabi
+    roll = random.random()
+    if roll < 0.4:
+        return "product_only"
+    elif roll < 0.7:
+        return "male"
+    else:
+        return "hijabi"
 
 _CONT_FALLBACK_EN = (
     "=== SECTION 1: GENERAL RULES & NEGATIVE CONSTRAINTS ===\n"
@@ -1108,10 +1181,25 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
     pool = SEGMENT_POOL_FALLBACK_VI if lang == "vi" else SEGMENT_POOL_FALLBACK_EN
     indices = DURATION_MAP.get(duration_sec, DURATION_MAP[16])
     lang_info = _LANG_MAP.get(lang, _LANG_MAP["en"])
-    hair_pool = _HAIR_POOL_VI if lang == "vi" else _HAIR_POOL_EN
-    outfit_pool = _OUTFIT_POOL_VI if lang == "vi" else _OUTFIT_POOL_EN
-    hair = random.choice(hair_pool)
-    outfit = random.choice(outfit_pool)
+
+    # --- Malaysia: 3 phương án an toàn ---
+    _my_style = None
+    if lang == "my":
+        _my_style = _get_my_character_style()
+        if _my_style == "male":
+            hair = random.choice(_MY_MALE_HAIR_POOL)
+            outfit = random.choice(_MY_MALE_OUTFIT_POOL)
+        elif _my_style == "hijabi":
+            hair = random.choice(_MY_HIJAB_HAIR_POOL)
+            outfit = random.choice(_MY_HIJAB_OUTFIT_POOL)
+        else:  # product_only
+            hair = "N/A"
+            outfit = "N/A"
+    else:
+        hair_pool = _HAIR_POOL_VI if lang == "vi" else _HAIR_POOL_EN
+        outfit_pool = _OUTFIT_POOL_VI if lang == "vi" else _OUTFIT_POOL_EN
+        hair = random.choice(hair_pool)
+        outfit = random.choice(outfit_pool)
     n_segments = len(indices)
     
     prompts = []
@@ -1127,6 +1215,35 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
             outfit=outfit,
             dialogue=dialogue
         )
+
+        # --- Malaysia: Thay đổi SECTION 3 theo phương án an toàn ---
+        if lang == "my" and _my_style:
+            if _my_style == "product_only":
+                # Thay toàn bộ SECTION 3 bằng mô tả product-only
+                import re as _re
+                product_only_sec3 = (
+                    "=== SECTION 3: PRODUCT SHOWCASE (NO HUMAN MODEL) ===\n"
+                    "- NO human model, NO presenter in this video.\n"
+                    "- Product showcase on clean white/marble background with soft studio lighting.\n"
+                    "- Smooth camera rotation around the product, close-up shots from multiple angles.\n"
+                    "- Professional e-commerce commercial style.\n"
+                    "\n"
+                )
+                prompt = _re.sub(r'=== SECTION 3:.*?=== SECTION 4:', product_only_sec3 + '=== SECTION 4:', prompt, count=1, flags=_re.DOTALL)
+            elif _my_style == "male":
+                # Thay "A beautiful Malaysian woman" → "A Malay male model"
+                prompt = prompt.replace("A beautiful Malaysian woman", "A Malay male model, modest clothing")
+                prompt = prompt.replace("approximately 20-22 years old with a natural, youthful appearance", "approximately 25-30 years old with a professional, friendly appearance")
+                prompt = prompt.replace("her identity", "his identity")
+                prompt = prompt.replace("her outfit", "his outfit")
+                prompt = prompt.replace("her face", "his face")
+            elif _my_style == "hijabi":
+                # Thay description → Hijabi Malay woman
+                prompt = prompt.replace(
+                    "A beautiful Malaysian woman, approximately 20-22 years old with a natural, youthful appearance",
+                    "A Malay hijabi woman, wearing hijab and modest long-sleeve clothing, no skin showing, smiling, approximately 22-28 years old"
+                )
+
         target_style = review_style if review_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN) else content_style
         if target_style and target_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN):
             content_constraint = (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN)[target_style]
