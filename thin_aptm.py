@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.13"
+APP_VERSION = "ThinAPTM 1.2.14"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -7174,9 +7174,16 @@ class App(ctk.CTk):
         """Khởi tạo ShopAPI client từ API Key đã nhập."""
         import sys
         sdk_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_sdk")
+        if not os.path.isdir(sdk_dir):
+            raise ImportError(f"Không tìm thấy thư mục SDK '{sdk_dir}'.\nHãy copy cả thư mục '_sdk' sang máy này.")
         if sdk_dir not in sys.path:
             sys.path.insert(0, sdk_dir)
-        from shopapi import ShopAPI
+        try:
+            from shopapi import ShopAPI
+        except ImportError as e:
+            if "httpx" in str(e).lower():
+                raise ImportError("Thiếu thư viện 'httpx' để chạy ShopAPI.\nHãy chạy 'SETUP.bat' hoặc lệnh: pip install httpx")
+            raise ImportError(f"Lỗi tải module ShopAPI: {e}\nHãy kiểm tra thư mục '_sdk/shopapi' hoặc chạy SETUP.bat.")
         api_key = self._sv_shopapi_key.get().strip()
         if not api_key:
             raise ValueError("Chưa nhập ShopAPI API Key.\nVui lòng nhập key ở ô 🔑 ShopAPI Key.")
@@ -9801,14 +9808,25 @@ class App(ctk.CTk):
                             headers={"Cache-Control": "no-cache", "User-Agent": "thinaptm-app-updater"}
                         )
                         data = urllib.request.urlopen(req, timeout=12).read()
-                        if data and len(data) >= 30:
-                            local_path = os.path.join(HERE, f)
+                        if data and len(data) >= 1:
+                            local_path = os.path.join(HERE, f.replace("/", os.sep))
+                            os.makedirs(os.path.dirname(local_path), exist_ok=True)
                             with open(local_path, "wb") as fp:
                                 fp.write(data)
                             updated_count += 1
                     except Exception as ex:
                         print(f"Lỗi tải {f}: {ex}")
                 
+                # Cài đặt httpx nếu thiếu
+                try:
+                    import httpx
+                except ImportError:
+                    try:
+                        import subprocess
+                        subprocess.run([sys.executable, "-m", "pip", "install", "httpx", "-q"], timeout=30)
+                    except Exception:
+                        pass
+
                 self.after(0, lambda: messagebox.showinfo("Cập Nhật Thành Công", f"🎉 Đã tải thành công {updated_count} file từ GitHub!\n\nVui lòng đóng phần mềm và mở lại (chạy CHAY.bat) để áp dụng bản mới nhất."))
                 self.after(0, self._show_up_to_date_badge)
             except Exception as e:
