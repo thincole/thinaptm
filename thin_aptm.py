@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.12"
+APP_VERSION = "ThinAPTM 1.2.13"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -7042,28 +7042,14 @@ class App(ctk.CTk):
             f"   - ITEM PERSISTENCE: Any object held or worn must remain naturally present throughout.\n"
             f"2. SECTION 2 (PRODUCT TO ADVERTISE): \"{product_name}\" is the HERO. Prominently featured and in sharp focus.\n"
         )
-        # Malaysia: chỉ định presenter phù hợp văn hóa
+        # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
         if lang_code == "my":
-            import random as _rnd2
-            _my_roll = _rnd2.random()
-            if _my_roll < 0.4:
-                system_prompt += (
-                    f"3. SECTION 3 (PRODUCT-ONLY — NO HUMAN MODEL): This video has NO human presenter. "
-                    f"Focus entirely on the product with clean white/marble background, soft studio lighting, "
-                    f"smooth camera rotation showing close-up details from multiple angles. Professional e-commerce style.\n"
-                )
-            elif _my_roll < 0.7:
-                system_prompt += (
-                    f"3. SECTION 3 (PRESENTER & OUTFIT LOCK): Define ONE fixed Malay MALE presenter (~25-30yo, "
-                    f"modest clothing: long-sleeve shirt, neat appearance) and REPEAT THAT EXACT CHARACTER AND "
-                    f"OUTFIT DESCRIPTION VERBATIM in all {n_segments} prompts.\n"
-                )
-            else:
-                system_prompt += (
-                    f"3. SECTION 3 (PRESENTER & OUTFIT LOCK): Define ONE fixed Malay HIJABI FEMALE presenter "
-                    f"(~22-28yo, wearing hijab and modest long-sleeve clothing, NO skin showing, smiling) "
-                    f"and REPEAT THAT EXACT CHARACTER AND OUTFIT DESCRIPTION VERBATIM in all {n_segments} prompts.\n"
-                )
+            system_prompt += (
+                f"3. SECTION 3 (PRESENTER & OUTFIT LOCK): Define ONE fixed Malay MALE presenter (~25-30yo, "
+                f"modest clothing: clean long-sleeve button-down or polo shirt, dark trousers, neat well-groomed hair, "
+                f"friendly professional appearance) and REPEAT THAT EXACT MALE CHARACTER AND "
+                f"OUTFIT DESCRIPTION VERBATIM in all {n_segments} prompts. (CRITICAL: MUST be a MALE presenter, NO female model).\n"
+            )
         else:
             system_prompt += (
                 f"3. SECTION 3 (PRESENTER & OUTFIT LOCK): Define ONE fixed presenter anchor (~22-26yo Asian woman, "
@@ -7270,9 +7256,9 @@ class App(ctk.CTk):
                         if isinstance(v_cap, dict):
                             avail = v_cap.get("available") or (v_cap.get("capacity", 0) - v_cap.get("running", 0))
                             if avail and avail > 0:
-                                return max(1, min(int(avail), 16))
+                                return max(1, int(avail))
                         elif isinstance(v_cap, (int, float)) and v_cap > 0:
-                            return max(1, min(int(v_cap), 16))
+                            return max(1, int(v_cap))
                 except Exception:
                     pass
 
@@ -7283,9 +7269,9 @@ class App(ctk.CTk):
                     capacity = int(detail.get("capacity") or 0)
                     running = int(detail.get("running") or 0)
                     if capacity > 0:
-                        return max(1, min(capacity - running, 16))
+                        return max(1, capacity - running)
                     concur = int((limits.get("concurrent_jobs") or {}).get("video") or 4)
-                    return max(1, min(concur, 16))
+                    return max(1, concur)
                 except Exception:
                     return 4
 
@@ -7364,9 +7350,9 @@ class App(ctk.CTk):
                 return "error", "Hết số lần thử gửi job"
 
             def poll_job_until_done(job_id):
-                """Quy tắc 4, 6: Nhịp hỏi tối thiểu 30s -> nhân 1.5 kẹp trần 60s, phân biệt retryable."""
-                poll_interval = 30.0  # Quy tắc 4: Lần đầu chờ 30s
-                max_timeout = 600.0   # 10 phút
+                """Polling ShopAPI job. Poll nhanh (5s) → tăng nhẹ → tối đa 15s, timeout 5 phút."""
+                poll_interval = 5.0
+                max_timeout = 300.0   # 5 phút
                 start_t = time.monotonic()
 
                 while True:
@@ -7381,14 +7367,14 @@ class App(ctk.CTk):
                         time.sleep(1)
 
                     if time.monotonic() - start_t > max_timeout:
-                        self._sv_log_msg(f"  ❌ Quá thời gian chờ (10 phút) cho job {job_id[:16]}")
-                        return "retry_soft", None
+                        self._sv_log_msg(f"  ⏰ Timeout 5 phút cho job {job_id[:16]}... bỏ qua")
+                        return "retry_temporary", "Timeout 300s"
 
                     try:
                         result = shopapi_client.jobs.retrieve(job_id)
                     except Exception as ex:
                         self._sv_log_msg(f"  ⚠ Lỗi mạng khi kiểm tra job ({ex}), sẽ thử lại...")
-                        poll_interval = min(60.0, poll_interval * 1.5)
+                        poll_interval = min(15.0, poll_interval + 2)
                         continue
 
                     status = result.get("status", "")
@@ -7396,7 +7382,6 @@ class App(ctk.CTk):
                     if status in ("succeeded", "done"):
                         return "succeeded", result
                     elif status in ("failed", "cancelled", "rejected"):
-                        # Quy tắc 6: Phân biệt retryable
                         err_info = result.get("error") or {}
                         if not isinstance(err_info, dict):
                             err_info = {"message": str(err_info)}
@@ -7412,8 +7397,8 @@ class App(ctk.CTk):
                             self._sv_log_msg(f"  ❌ Lỗi dữ liệu/chính sách [retryable=False]: {err_msg[:80]}")
                             return "fail_permanent", err_msg
                     else:
-                        # Job đang queued/running/retrying -> tăng nhịp hỏi: x1.5 kẹp trần 60s
-                        poll_interval = min(60.0, poll_interval * 1.5)
+                        # pending/processing — tăng nhẹ interval, tối đa 15s
+                        poll_interval = min(15.0, poll_interval + 2)
 
             def process_one_shopapi(prod):
                 idx = prod["_idx"]
@@ -7463,36 +7448,17 @@ class App(ctk.CTk):
                     }
                     _tvc = _tvc_lang_map.get(lang_code, _tvc_lang_map["en"])
                     short_name = product_name[:80].strip()
-                    # Malaysia: 3 phương án an toàn
+                    # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
                     if lang_code == "my":
-                        _my_roll = random.random()
-                        if _my_roll < 0.4:
-                            tvc_prompt = (
-                                f'Product showcase video of "{short_name}". Clean white/marble background, '
-                                f'soft studio lighting, smooth camera rotation, close-up shots from multiple angles. '
-                                f'Professional e-commerce style. No human model. No text on screen. '
-                                f'The product is accurately sized.'
-                            )
-                        elif _my_roll < 0.7:
-                            tvc_prompt = (
-                                f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
-                                f'A Malay male model, modest clothing, about 25 years old, holds the product and introduces its key benefits. '
-                                f'He states the benefits right away without any introduction. '
-                                f'He speaks {_tvc["language"]}; no text is displayed in the video. '
-                                f'The product is accurately sized. '
-                                f'The product price is not mentioned in the video.'
-                            )
-                        else:
-                            tvc_prompt = (
-                                f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
-                                f'A Malay hijabi woman, wearing hijab and modest long-sleeve clothing, no skin showing, smiling, about 25 years old, '
-                                f'holds the product and introduces its key benefits. '
-                                f'She states the benefits right away without any introduction. '
-                                f'She speaks {_tvc["language"]}; no text is displayed in the video. '
-                                f'The product is accurately sized. '
-                                f'Her outfit is modest and fully covering. '
-                                f'The product price is not mentioned in the video.'
-                            )
+                        tvc_prompt = (
+                            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
+                            f'A handsome Malay male model, modest clothing (clean long-sleeve shirt, dark trousers), about 25 years old, '
+                            f'holds the product and introduces its key benefits. '
+                            f'He states the benefits right away without any introduction. '
+                            f'He speaks {_tvc["language"]}; no text is displayed in the video. '
+                            f'The product is accurately sized. '
+                            f'The product price is not mentioned in the video.'
+                        )
                     else:
                         tvc_prompt = (
                             f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
@@ -7504,7 +7470,7 @@ class App(ctk.CTk):
                             f'The product price is not mentioned in the video.'
                         )
                     prompts = [tvc_prompt]
-                    self._sv_log_msg(f"  📺 TVC 8s: 1 prompt")
+                    self._sv_log_msg(f"  📺 TVC 8s: 1 prompt (Mẫu Nam)")
                 else:
                     # === CHẾ ĐỘ 16s/24s: AI hoặc Template sinh nhiều prompt ===
                     prompts = None
@@ -7581,8 +7547,11 @@ class App(ctk.CTk):
                             "- Realistic product size proportional to human body. NO oversized items.\n"
                             "- Presenter has exactly 2 normal hands, 5 fingers each. NO extra limbs.\n"
                             "- No anatomical anomalies, no extra arms, no third hand, no weird deformations.\n"
-                            "- Neutral color grading, clean white balance, no morphing or identity drift.\n\n"
+                            "- Neutral color grading, clean white balance, no morphing or identity drift.\n"
                         )
+                        if lang_code == "my":
+                            CONDENSED_SEC1 += "- MALAYSIA MARKET: MUST use a Malay male presenter with modest clothing (clean long-sleeve shirt, dark trousers, neat appearance). NO female models.\n"
+                        CONDENSED_SEC1 += "\n"
                         # Thay thế SECTION 1 gốc bằng phiên bản rút gọn
                         api_prompt = re.sub(
                             r'=== SECTION 1:.*?=== SECTION 2:',
@@ -8108,36 +8077,17 @@ class App(ctk.CTk):
                     _tvc = _tvc_lang_map.get(lang_code, _tvc_lang_map["en"])
                     # Rút gọn tên SP (tối đa 80 ký tự)
                     short_name = product_name[:80].strip()
-                    # Malaysia: 3 phương án an toàn
+                    # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
                     if lang_code == "my":
-                        _my_roll = random.random()
-                        if _my_roll < 0.4:
-                            tvc_prompt = (
-                                f'Product showcase video of "{short_name}". Clean white/marble background, '
-                                f'soft studio lighting, smooth camera rotation, close-up shots from multiple angles. '
-                                f'Professional e-commerce style. No human model. No text on screen. '
-                                f'The product is accurately sized.'
-                            )
-                        elif _my_roll < 0.7:
-                            tvc_prompt = (
-                                f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
-                                f'A Malay male model, modest clothing, about 25 years old, holds the product and introduces its key benefits. '
-                                f'He states the benefits right away without any introduction. '
-                                f'He speaks {_tvc["language"]}; no text is displayed in the video. '
-                                f'The product is accurately sized. '
-                                f'The product price is not mentioned in the video.'
-                            )
-                        else:
-                            tvc_prompt = (
-                                f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
-                                f'A Malay hijabi woman, wearing hijab and modest long-sleeve clothing, no skin showing, smiling, about 25 years old, '
-                                f'holds the product and introduces its key benefits. '
-                                f'She states the benefits right away without any introduction. '
-                                f'She speaks {_tvc["language"]}; no text is displayed in the video. '
-                                f'The product is accurately sized. '
-                                f'Her outfit is modest and fully covering. '
-                                f'The product price is not mentioned in the video.'
-                            )
+                        tvc_prompt = (
+                            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
+                            f'A handsome Malay male model, modest clothing (clean long-sleeve shirt, dark trousers), about 25 years old, '
+                            f'holds the product and introduces its key benefits. '
+                            f'He states the benefits right away without any introduction. '
+                            f'He speaks {_tvc["language"]}; no text is displayed in the video. '
+                            f'The product is accurately sized. '
+                            f'The product price is not mentioned in the video.'
+                        )
                     else:
                         tvc_prompt = (
                             f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
@@ -8149,7 +8099,7 @@ class App(ctk.CTk):
                             f'The product price is not mentioned in the video.'
                         )
                     prompts = [tvc_prompt]
-                    self._sv_log_msg(f"  📺 TVC 8s: 1 prompt cố định (SP: {short_name[:40]}...)")
+                    self._sv_log_msg(f"  📺 TVC 8s: 1 prompt cố định (Mẫu Nam - SP: {short_name[:40]}...)")
                     n_segments = 1
                 else:
                     # === CHẾ ĐỘ 16s/24s: AI hoặc Template ===
@@ -8682,6 +8632,10 @@ class App(ctk.CTk):
         self._sa_shopapi_engine = ctk.CTkOptionMenu(api_row, values=["8s (Veo3 / 500đ)", "10s (Seedance / 1.000đ)"], width=190)
         self._sa_shopapi_engine.pack(side="left", padx=4)
         self._sa_shopapi_engine.set(self.settings.get("sa_shopapi_engine", self.settings.get("sv_shopapi_engine", "8s (Veo3 / 500đ)")))
+        ctk.CTkLabel(api_row, text="Luồng:", font=("", 12)).pack(side="left", padx=(12, 0))
+        self._sa_threads = ctk.CTkEntry(api_row, width=50, font=("", 11))
+        self._sa_threads.pack(side="left", padx=4)
+        self._sa_threads.insert(0, self.settings.get("sa_threads", "16"))
 
         # --- Cài đặt Video ---
         cfg = ctk.CTkFrame(f, fg_color=CARD, corner_radius=10); cfg.pack(fill="x", padx=12, pady=4)
@@ -8959,7 +8913,7 @@ class App(ctk.CTk):
         threading.Thread(target=_do, daemon=True).start()
 
     def _sa_release_jobs(self):
-        """Giải phóng SP kẹt (processing) cho tab ShopAPI."""
+        """Giải phóng SP kẹt (processing) cho tab ShopAPI và làm sạch danh sách SP."""
         client_id = self._sa_client_entry.get().strip()
         if not client_id:
             messagebox.showwarning("Thiếu", "Chưa có Client ID."); return
@@ -8967,10 +8921,34 @@ class App(ctk.CTk):
         if self._sa_cached_url and not (self._sa_cached_url.startswith("http://") or self._sa_cached_url.startswith("https://")):
             self._sa_cached_url = "http://" + self._sa_cached_url
         self._sa_cached_apikey = self._sa_apikey.get().strip()
+        self._sa_log_msg(f"🔄 Đang giải phóng SP kẹt của client '{client_id}'...")
+
         def _do():
             try:
-                self._sa_api_call("POST", "/api/thinaptm/release-jobs", {"clientId": client_id})
-                self._sa_log_msg(f"✅ Đã giải phóng SP kẹt cho client: {client_id}")
+                # 1. Giải phóng SP của client này
+                r1 = self._sa_api_call("POST", "/api/thinaptm/release-jobs", {"clientId": client_id})
+                released1 = r1.get("released", 0) if isinstance(r1, dict) else 0
+                # 2. Giải phóng SP kẹt > 2h của tất cả client
+                try:
+                    r2 = self._sa_api_call("POST", "/api/thinaptm/auto-release-stuck", {"hours": 2})
+                    released2 = r2.get("released", 0) if isinstance(r2, dict) else 0
+                except Exception:
+                    released2 = 0
+                total_released = released1 + released2
+                self._sa_log_msg(f"✅ Đã giải phóng {total_released} SP kẹt (Client: {released1}, Kẹt >2h: {released2})")
+
+                # Xóa danh sách SP cục bộ và xóa sạch giao diện textbox
+                self._sa_claimed_products = []
+                self._sa_video_done_count = 0
+
+                def _clear_ui():
+                    self._sa_products_text.configure(state="normal")
+                    self._sa_products_text.delete("1.0", "end")
+                    self._sa_list_count.configure(text="0 SP")
+                    self._sa_video_done_lbl.configure(text="")
+                    self._sa_progress.set(0)
+                    self._sa_btn_claim.configure(state="normal", text="📥 Nhận SP")
+                self.after(0, _clear_ui)
             except Exception as e:
                 self._sa_log_msg(f"❌ Lỗi giải phóng: {e}")
         threading.Thread(target=_do, daemon=True).start()
@@ -9094,20 +9072,24 @@ class App(ctk.CTk):
                         vc = cap.get("video")
                         if isinstance(vc, dict):
                             a = vc.get("available") or (vc.get("capacity", 0) - vc.get("running", 0))
-                            if a and a > 0: return max(1, min(int(a), 16))
+                            if a and a > 0: return max(1, int(a))
                 except: pass
                 try:
                     me = shopapi_client.request("GET", "/v1/me")
                     lim = me.get("limits", {})
                     d = (lim.get("concurrent_jobs_detail") or {}).get("video") or {}
                     c = int(d.get("capacity") or 0); r = int(d.get("running") or 0)
-                    if c > 0: return max(1, min(c - r, 16))
-                    return max(1, min(int((lim.get("concurrent_jobs") or {}).get("video") or 4), 16))
+                    if c > 0: return max(1, c - r)
+                    return max(1, int((lim.get("concurrent_jobs") or {}).get("video") or 4))
                 except: return 4
 
             dyn_cap = _get_cap()
-            n_workers = max(1, min(dyn_cap, total))
-            self._sa_log_msg(f"🏭 Sức chứa: {dyn_cap} → {n_workers} luồng")
+            try:
+                user_threads = int(self._sa_threads.get().strip() or "16")
+            except:
+                user_threads = 16
+            n_workers = max(1, min(user_threads, dyn_cap, total))
+            self._sa_log_msg(f"🏭 Sức chứa API: {dyn_cap} | Cài đặt: {user_threads} → {n_workers} luồng")
             self._sa_log_msg(f"📋 {total} SP — bắt đầu tạo video...")
 
             done_count = [0]
@@ -9146,17 +9128,19 @@ class App(ctk.CTk):
                 return "error", "Max retries"
 
             def poll_job_until_done(job_id):
-                poll_interval = 30.0
+                poll_interval = 6.0
+                max_timeout = 300  # 5 phút tối đa
                 start = time.time()
-                while time.time() - start < 600:
+                while time.time() - start < max_timeout:
                     if self._sa_stop_flag: return "stopped", None
-                    time.sleep(poll_interval)
+                    # Thêm random jitter 0.5s - 2.5s để phân tán request, tránh 50 luồng dồn vào cùng 1 mini-giây
+                    import random as _rnd_poll
+                    time.sleep(poll_interval + _rnd_poll.uniform(0.5, 2.5))
                     try:
                         data = shopapi_client.jobs.retrieve(job_id)
                         status = (data.get("status") or "").lower()
                     except Exception as e:
-                        self._sa_log_msg(f"  ⚠ Poll lỗi: {e}")
-                        poll_interval = min(60, poll_interval * 1.5); continue
+                        poll_interval = min(15, poll_interval + 2); continue
                     if status == "succeeded":
                         return "succeeded", data
                     elif status in ("failed", "cancelled"):
@@ -9181,7 +9165,12 @@ class App(ctk.CTk):
                             self._sa_log_msg(f"  ❌ Lỗi [retryable=False]: {err_msg[:80]}")
                             return "fail_permanent", err_msg
                     else:
-                        poll_interval = min(60.0, poll_interval * 1.5)
+                        # pending/processing — tăng nhẹ interval, tối đa 15s
+                        poll_interval = min(15.0, poll_interval + 1.5)
+                # Timeout
+                elapsed = int(time.time() - start)
+                self._sa_log_msg(f"  ⏰ Timeout {elapsed}s cho job {job_id[:16]}... bỏ qua")
+                return "retry_temporary", f"Timeout {elapsed}s"
 
             def process_one(prod):
                 idx = prod["_idx"]
@@ -9219,18 +9208,12 @@ class App(ctk.CTk):
                     _tvc_lang_map = {"en": {"nationality": "American", "language": "English"}, "vi": {"nationality": "Việt Nam", "language": "tiếng Việt"}, "id": {"nationality": "Indonesian", "language": "tiếng Indonesia"}, "my": {"nationality": "Malaysian", "language": "tiếng Malaysia"}, "ph": {"nationality": "Filipino", "language": "Filipino"}}
                     _tvc = _tvc_lang_map.get(lang_code, _tvc_lang_map["en"])
                     short_name = product_name[:80].strip()
-                    # Malaysia: 3 phương án an toàn
+                    # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
                     if lang_code == "my":
-                        _my_roll = random.random()
-                        if _my_roll < 0.4:
-                            prompts = [f'Product showcase video of "{short_name}". Clean white/marble background, soft studio lighting, smooth camera rotation, close-up shots from multiple angles. Professional e-commerce style. No human model. No text on screen. The product is accurately sized.']
-                        elif _my_roll < 0.7:
-                            prompts = [f'Create a product advertisement video (TVC) reviewing the product "{short_name}". A Malay male model, modest clothing, about 25 years old, holds the product and introduces its key benefits. He states the benefits right away without any introduction. He speaks {_tvc["language"]}; no text is displayed in the video. The product is accurately sized. The product price is not mentioned in the video.']
-                        else:
-                            prompts = [f'Create a product advertisement video (TVC) reviewing the product "{short_name}". A Malay hijabi woman, wearing hijab and modest long-sleeve clothing, no skin showing, smiling, about 25 years old, holds the product and introduces its key benefits. She states the benefits right away without any introduction. She speaks {_tvc["language"]}; no text is displayed in the video. The product is accurately sized. Her outfit is modest and fully covering. The product price is not mentioned in the video.']
+                        prompts = [f'Create a product advertisement video (TVC) reviewing the product "{short_name}". A handsome Malay male model, modest clothing (clean long-sleeve shirt, dark trousers), about 25 years old, holds the product and introduces its key benefits. He states the benefits right away without any introduction. He speaks {_tvc["language"]}; no text is displayed in the video. The product is accurately sized. The product price is not mentioned in the video.']
                     else:
                         prompts = [f'Create a product advertisement video (TVC) reviewing the product "{short_name}". A beautiful {_tvc["nationality"]} woman, about 20 years old, holds the product and introduces its key benefits. She states the benefits right away without any introduction. She speaks {_tvc["language"]}; no text is displayed in the video. The product is accurately sized. Her outfit is modest and appropriate, not revealing or offensive. The product price is not mentioned in the video.']
-                    self._sa_log_msg(f"  📺 TVC 8s: 1 prompt")
+                    self._sa_log_msg(f"  📺 TVC 8s: 1 prompt (Mẫu Nam)")
                 else:
                     prompts = None
                     if ai_mode == "Gemini":
@@ -9277,7 +9260,10 @@ class App(ctk.CTk):
                     import re
                     api_prompt = prompt
                     if len(api_prompt) > 4900:
-                        CONDENSED = "=== SECTION 1: RULES ===\n- Full-frame 9:16 vertical video, edge-to-edge, NO borders/bars/margins.\n- Photorealistic live-action only. NO cartoon/anime/CGI.\n- NO text/subtitles/watermarks on screen.\n- Product must match reference image exactly.\n- Realistic product size. NO oversized items.\n- Presenter has exactly 2 hands, 5 fingers each. NO extra limbs.\n- No anatomical anomalies, no extra arms, no third hand, no weird deformations.\n- Neutral color grading, no morphing or identity drift.\n\n"
+                        condensed_extra = ""
+                        if lang_code == "my":
+                            condensed_extra = "- MALAYSIA MARKET: MUST use a Malay male presenter with modest clothing (clean long-sleeve shirt, dark trousers, neat appearance). NO female models.\n"
+                        CONDENSED = "=== SECTION 1: RULES ===\n- Full-frame 9:16 vertical video, edge-to-edge, NO borders/bars/margins.\n- Photorealistic live-action only. NO cartoon/anime/CGI.\n- NO text/subtitles/watermarks on screen.\n- Product must match reference image exactly.\n- Realistic product size. NO oversized items.\n- Presenter has exactly 2 hands, 5 fingers each. NO extra limbs.\n- No anatomical anomalies, no extra arms, no third hand, no weird deformations.\n- Neutral color grading, no morphing or identity drift.\n" + condensed_extra + "\n"
                         api_prompt = re.sub(r'=== SECTION 1:.*?=== SECTION 2:', CONDENSED + '=== SECTION 2:', api_prompt, count=1, flags=re.DOTALL)
                         if len(api_prompt) > 4900:
                             api_prompt = re.sub(r'^\[CONTENT FORMAT[^\]]*\]\s*', '', api_prompt)
@@ -9399,7 +9385,9 @@ class App(ctk.CTk):
                 return ("success", out_path)
 
             # Worker loop
-            def sa_worker():
+            def sa_worker(worker_id=0):
+                # Giãn cách khởi động 0.06s/luồng để 50 luồng không gửi request cùng 1 micro-giây
+                time.sleep(worker_id * 0.06)
                 while not self._sa_stop_flag:
                     try: prod = jobq.get(timeout=2)
                     except queue.Empty: break
@@ -9427,7 +9415,7 @@ class App(ctk.CTk):
                         except: pass
 
             with ThreadPoolExecutor(max_workers=n_workers) as executor:
-                futures = [executor.submit(sa_worker) for _ in range(n_workers)]
+                futures = [executor.submit(sa_worker, wid) for wid in range(n_workers)]
                 for fut in futures: fut.result()
 
             # Release remaining
@@ -9560,6 +9548,7 @@ class App(ctk.CTk):
                     s.update({
                         "sa_shopapi_key": self._sa_shopapi_key.get().strip(),
                         "sa_shopapi_engine": self._sa_shopapi_engine.get(),
+                        "sa_threads": self._sa_threads.get().strip(),
                         "sa_aspect": self._sa_aspect.get(),
                         "sa_scene": self._sa_scene.get(),
                         "sa_duration": self._sa_duration.get(),

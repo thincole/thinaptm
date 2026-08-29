@@ -766,14 +766,26 @@ def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", revi
                 )
                 prompt = _re.sub(r'=== SECTION 3:.*?=== SECTION 4:', product_only_sec3 + '=== SECTION 4:', prompt, count=1, flags=_re.DOTALL)
             elif _my_nf_style == "male":
-                prompt = prompt.replace("A 22-year-old Malaysian woman", "A Malay male model, modest clothing, approximately 25-30 years old")
+                prompt = prompt.replace("A 22-year-old Malaysian woman", "A 25-year-old Malay male model, modest clothing")
                 prompt = prompt.replace("her identity", "his identity")
                 prompt = prompt.replace("her outfit", "his outfit")
                 prompt = prompt.replace("her face", "his face")
+                prompt = prompt.replace("her hairstyle", "his hairstyle")
+                prompt = prompt.replace("her clothing", "his clothing")
+                prompt = prompt.replace("Keep her seated", "Keep him seated")
+                prompt = prompt.replace("Do not show her", "Do not show him")
+                prompt = prompt.replace("She states", "He states")
+                prompt = prompt.replace("She speaks", "He speaks")
+                prompt = prompt.replace("she is", "he is")
+                prompt = prompt.replace("She is", "He is")
+                prompt = prompt.replace("she ", "he ")
+                prompt = prompt.replace("She ", "He ")
+                prompt = prompt.replace("her ", "his ")
+                prompt = prompt.replace("Her ", "His ")
             elif _my_nf_style == "hijabi":
                 prompt = prompt.replace(
                     "A 22-year-old Malaysian woman with a bright, cheerful face and natural beauty",
-                    "A Malay hijabi woman, wearing hijab and modest long-sleeve clothing, no skin showing, smiling, approximately 22-28 years old"
+                    "A Malay hijabi woman, wearing hijab that fully covers ALL hair neck and chest (NO hair visible at all), modest long-sleeve clothing covering arms to wrists, long pants/skirt, no skin showing except face and hands, smiling, approximately 22-28 years old"
                 )
 
         target_style = review_style if review_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN) else content_style
@@ -848,24 +860,29 @@ _MY_PRODUCT_ONLY_CHARACTER = (
     "- Show the product '{name}' on a clean white/marble background with soft studio lighting.\n"
     "- Camera smoothly rotates around the product, showing close-up details from multiple angles.\n"
 )
-# Style 2: Male model
+# Style 2: Male model (100% cho thị trường Malaysia)
 _MY_MALE_HAIR_POOL = [
-    "short neat black hair with clean side part",
-    "medium-length wavy dark hair, well-groomed",
-    "short cropped hair with subtle fade",
+    "short neat black hair with clean side part, well-groomed",
+    "medium-length wavy dark hair, well-groomed and professional",
+    "short cropped hair with subtle fade, clean and tidy",
+    "neatly styled dark hair, professional and fresh look",
+    "short classic taper hairstyle, dark hair, very neat and clean",
 ]
 _MY_MALE_OUTFIT_POOL = [
     "a clean white long-sleeve button-down shirt with dark trousers",
-    "a navy blue polo shirt with khaki pants",
-    "a light gray kurta with dark pants — modest and professional",
+    "a navy blue long-sleeve polo shirt with beige chinos",
+    "a smart casual light blue long-sleeve oxford shirt with dark pants",
+    "a modern olive green long-sleeve shirt with dark trousers",
+    "a minimalist charcoal gray long-sleeve shirt with khaki pants",
+    "a light gray modest kurta-style long-sleeve shirt with dark trousers",
 ]
-# Style 3: Female hijabi model
+# Style 3: Female hijabi model (dự phòng)
 _MY_HIJAB_HAIR_POOL = [
-    "wearing a soft cream-colored hijab neatly draped",
-    "wearing an elegant pastel blue hijab with clean folds",
-    "wearing a stylish dusty rose hijab with neat pleats",
-    "wearing a classic black hijab with simple elegant style",
-    "wearing a sage green hijab with soft draping",
+    "wearing a soft cream-colored hijab that fully covers ALL hair neck and chest (NO hair visible at all), neatly draped",
+    "wearing an elegant pastel blue hijab that fully covers ALL hair neck and chest (NO hair visible at all), with clean folds",
+    "wearing a stylish dusty rose hijab that fully covers ALL hair neck and chest (NO hair visible at all), with neat pleats",
+    "wearing a classic black hijab that fully covers ALL hair neck and chest (NO hair visible at all), simple elegant style",
+    "wearing a sage green hijab that fully covers ALL hair neck and chest (NO hair visible at all), with soft draping",
 ]
 _MY_HIJAB_OUTFIT_POOL = [
     "a modest long-sleeve white blouse with high neckline and long dark skirt",
@@ -876,15 +893,8 @@ _MY_HIJAB_OUTFIT_POOL = [
 ]
 
 def _get_my_character_style():
-    """Random chọn 1 trong 3 phương án an toàn cho Malaysia."""
-    # Tỉ lệ: 40% product-only, 30% male, 30% hijabi
-    roll = random.random()
-    if roll < 0.4:
-        return "product_only"
-    elif roll < 0.7:
-        return "male"
-    else:
-        return "hijabi"
+    """100% Mẫu Nam (Male Model) an toàn tuyệt đối cho thị trường Malaysia."""
+    return "male"
 
 _CONT_FALLBACK_EN = (
     "=== SECTION 1: GENERAL RULES & NEGATIVE CONSTRAINTS ===\n"
@@ -1237,11 +1247,23 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
                 prompt = prompt.replace("her identity", "his identity")
                 prompt = prompt.replace("her outfit", "his outfit")
                 prompt = prompt.replace("her face", "his face")
+                prompt = prompt.replace("her hairstyle", "his hairstyle")
+                prompt = prompt.replace("her clothing", "his clothing")
+                prompt = prompt.replace("Keep her seated", "Keep him seated")
+                prompt = prompt.replace("Do not show her", "Do not show him")
+                prompt = prompt.replace("She states", "He states")
+                prompt = prompt.replace("She speaks", "He speaks")
+                prompt = prompt.replace("she is", "he is")
+                prompt = prompt.replace("She is", "He is")
+                prompt = prompt.replace("she ", "he ")
+                prompt = prompt.replace("She ", "He ")
+                prompt = prompt.replace("her ", "his ")
+                prompt = prompt.replace("Her ", "His ")
             elif _my_style == "hijabi":
                 # Thay description → Hijabi Malay woman
                 prompt = prompt.replace(
                     "A beautiful Malaysian woman, approximately 20-22 years old with a natural, youthful appearance",
-                    "A Malay hijabi woman, wearing hijab and modest long-sleeve clothing, no skin showing, smiling, approximately 22-28 years old"
+                    "A Malay hijabi woman, wearing hijab that fully covers ALL hair neck and chest (NO hair visible at all), modest long-sleeve clothing covering arms to wrists, long pants/skirt, no skin showing except face and hands, smiling, approximately 22-28 years old"
                 )
 
         target_style = review_style if review_style in (CONTENT_MAP_VI if lang == "vi" else CONTENT_MAP_EN) else content_style

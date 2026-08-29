@@ -104,7 +104,7 @@ VOICE_DESC = ""
 VOICE_PRESETS = {
     "vi": "Narrated by a young Vietnamese woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in Vietnamese",
     "id": "Narrated by a young Indonesian woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in Bahasa Indonesia",
-    "my": "Narrated by a young Malaysian woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in Bahasa Melayu",
+    "my": "Narrated by a young Malaysian man, approximately 25 years old, with a clear, engaging, and authoritative voice speaking in Bahasa Melayu",
     "ph": "Narrated by a young Filipino woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in Filipino (Tagalog)",
     "en": "Narrated by a young woman, approximately 20 years old, with a deep, powerful, and authoritative voice speaking in clear, natural English",
 }
