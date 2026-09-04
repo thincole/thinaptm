@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.15"
+APP_VERSION = "ThinAPTM 1.2.16"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -133,6 +133,10 @@ AUTO_RETRY_ROUNDS = 2      # sau khi chạy xong, TỰ retry các job lỗi thê
 MAX_REWRITES = 3           # prompt vi phạm -> nhờ Gemini viết lại tối đa bao nhiêu lần trước khi bỏ
 # LƯU Ý: model lite (t2v_lite / r2v_lite) MIỄN PHÍ -> không tốn credit -> KHÔNG cách ly theo credit.
 # Account chỉ bị throttle (giới hạn tốc độ) và tự hồi; AIMD tự giảm tốc là đủ.
+UPLOAD_MIN_THREADS = 2          # Luồng upload tối thiểu (sàn)
+UPLOAD_MAX_THREADS = 4          # Luồng upload tối đa (trần)
+UPLOAD_UP_AFTER = 8             # Tăng +1 luồng sau 8 video thành công liên tiếp
+
 
 
 def _dur_label(secs):
@@ -365,9 +369,10 @@ class AccountState:
         self._circuit_broken = False       # True khi bị ngắt mạch
         # --- Proxy health tracking ---
         self.proxy_fail_streak = 0         # số lần proxy fail liên tiếp (DNS/connection)
-        # --- Upload Rate Limit & Luồng Upload riêng của từng tài khoản ---
-        self.upload_threads = int(acc.get("upload_threads", 4)) # Mặc định 4 luồng/TK
+        # --- Upload Rate Limit & Luồng Upload thông minh (Mặc định 2, Min 2, Max 4) ---
+        self.upload_threads = max(UPLOAD_MIN_THREADS, min(UPLOAD_MAX_THREADS, int(acc.get("upload_threads", UPLOAD_MIN_THREADS))))
         self.upload_inflight = 0
+        self._video_ok_streak = 0
         self._upload_gate = threading.Condition()
         self.last_upload_ts = 0.0          # thời điểm upload gần nhất của tài khoản này
         self.upload_lock = threading.Lock() # khóa giãn cách 4s giữa các lần upload của cùng 1 tài khoản (Rule #2)
@@ -387,11 +392,12 @@ class AccountState:
 
     def get_current_max_busy(self):
         """Khởi động mềm (Warm-up): TK mới chỉ chạy 1-2 video thăm dò để làm ấm phiên.
-        Khi có 1 video thành công (wins >= 1) -> tự động mở toàn bộ max_busy."""
+        Khi có 1 video thành công (wins >= 1) -> tự động mở theo upload_threads + 1."""
+        target = self.upload_threads + 1
         if not self.is_warmed_up and self.wins == 0:
-            return min(2, self.max_busy)
+            return min(2, target)
         self.is_warmed_up = True
-        return self.max_busy
+        return target
 
     def busy_inc(self):
         with self.blk: self.busy += 1
@@ -484,11 +490,21 @@ class AccountState:
         self.rest_reason = reason
 
     def on_upload_throttle(self):
-        """Upload bị 429 → tăng streak, nghỉ ngắn (15-90s).
-        Upload 429 thường do IP → đã xoay proxy → chỉ cần nghỉ ngắn.
-        Trả số giây nghỉ."""
+        """Upload bị 429 → tăng streak lỗi. Dính 2 lần liên tiếp mới hạ về sàn UPLOAD_MIN_THREADS (2 luồng)."""
         self.upload_throttle_streak += 1
         n = self.upload_throttle_streak
+        with self._upload_gate:
+            self._video_ok_streak = 0
+            if n >= 2 and self.upload_threads > UPLOAD_MIN_THREADS:
+                self.upload_threads = UPLOAD_MIN_THREADS
+                self.acc["upload_threads"] = self.upload_threads
+                calc_rate = max(2, min(20, self.upload_threads + 3))
+                self.max_busy = calc_rate
+                with self._gate:
+                    self._submit_max = float(calc_rate)
+                    self.submit_limit = float(calc_rate)
+                    self._gate.notify_all()
+                self._upload_gate.notify_all()
         secs = min(15.0 * (1.5 ** (n - 1)), 90.0)  # 15, 22, 34, 51, 76, 90 (max 90s)
         self.rest(secs, "throttle")
         return secs
@@ -496,6 +512,24 @@ class AccountState:
     def on_upload_ok(self):
         """Upload thành công → reset streak."""
         self.upload_throttle_streak = 0
+
+    def on_video_ok(self):
+        """Khi 1 video tạo thành công -> tăng streak, đủ UPLOAD_UP_AFTER (8 video) thì tăng +1 luồng upload (tối đa 4)."""
+        with self._upload_gate:
+            self._video_ok_streak += 1
+            if self._video_ok_streak >= UPLOAD_UP_AFTER and self.upload_threads < UPLOAD_MAX_THREADS:
+                self.upload_threads += 1
+                self._video_ok_streak = 0
+                self.acc["upload_threads"] = self.upload_threads
+                calc_rate = max(2, min(20, self.upload_threads + 3))
+                self.max_busy = calc_rate
+                with self._gate:
+                    self._submit_max = float(calc_rate)
+                    self.submit_limit = float(calc_rate)
+                    self._gate.notify_all()
+                self._upload_gate.notify_all()
+                return True
+        return False
 
     def acquire_upload(self, stop_check=lambda: False):
         """Giới hạn số luồng upload đồng thời của riêng tài khoản này."""
@@ -3492,6 +3526,8 @@ class App(ctk.CTk):
                         st.busy_dec()
                     if outcome == "success":
                         job["status"] = "xong"; st.wins += 1; st.clear_rest()
+                        if st.on_video_ok():
+                            self._log(f"  ⚡ [{st.email[:12]}] 8 video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
                         ts_deque = getattr(self, "_done_timestamps", None)
                         if ts_deque is not None: ts_deque.append(time.time())
                     elif outcome == "retry_soft":
@@ -5472,6 +5508,8 @@ class App(ctk.CTk):
                     if outcome == "success":
                         prod["_status"] = "success"
                         st.wins += 1; st.clear_rest()
+                        if st.on_video_ok():
+                            self._sp_log_msg(f"  ⚡ [{st.email[:12]}] 8 video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
                         self._sp_update_line_status(line_idx, "success")
                         ts_deque = getattr(self, "_sp_done_timestamps", None)
                         if ts_deque is not None: ts_deque.append(time.time())
@@ -7956,7 +7994,7 @@ class App(ctk.CTk):
             self._sv_video_done_count = 0
             self.after(0, lambda: self._sv_video_done_lbl.configure(text=""))
             error_count = [0]
-            n_upload_threads = max(4, sum(getattr(s, "upload_threads", 4) for s in states))
+            n_upload_threads = max(8, len(states) * UPLOAD_MAX_THREADS)
             upload_sem = threading.Semaphore(n_upload_threads)
             self._sv_log_msg(f"📤 Khởi tạo pool upload ({len(states)} TK — cài đặt luồng upload riêng biệt từng TK trong bảng Pool)")
             # Tự động tối ưu số luồng ghép video (FFmpeg) đồng thời dựa trên số nhân CPU của máy khách (14 luồng cho 56 nhân)
@@ -8414,6 +8452,8 @@ class App(ctk.CTk):
                 # Update trạng thái
                 self._sv_last_video_time = time.time()
                 st.wins += 1
+                if st.on_video_ok():
+                    self._sv_log_msg(f"  ⚡ [{st.email[:12]}] 8 video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
                 prod["_status"] = "success"
                 self._sv_update_line_status(idx, "success")
                 with results_lock:
@@ -8503,12 +8543,13 @@ class App(ctk.CTk):
                             pass
 
             # Spawn workers — Khởi động mềm & So le 0.8s giữa các TK để chống Thundering Herd (429 spam)
-            total_workers = sum(st.max_busy for st in states)
+            max_workers_per_acc = UPLOAD_MAX_THREADS + 1
+            total_workers = len(states) * max_workers_per_acc
             with ThreadPoolExecutor(max_workers=total_workers) as executor:
                 futures = []
                 for acc_idx, st in enumerate(states):
                     stagger_delay = acc_idx * 0.8
-                    for _ in range(st.max_busy):
+                    for _ in range(max_workers_per_acc):
                         futures.append(executor.submit(worker, st, jobq, stagger_delay))
                 for fut in futures:
                     fut.result()
