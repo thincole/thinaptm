@@ -1,6 +1,8 @@
 # Private & Configs
 accounts.json
 settings.json
+uploaded_image_cache.json
+*.tmp
 
 # Logs & Runtime
 *.log

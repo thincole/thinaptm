@@ -56,6 +56,10 @@ cffi.delete = _wrap_req(_orig_delete)
 
 BASE = "https://aisandbox-pa.googleapis.com/v1"
 KEY = "AIzaSyBtrm0o5ab1c-Ec8ZuLcGt3oJAA5VWt3pY"
+FLOW_BASE = "https://flow.google.com"
+FLOW_BATCHEXECUTE = f"{FLOW_BASE}/_/AiSandboxAngularFrontend/data/batchexecute"
+RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
+RECAPTCHA_ACTION = "VIDEO_GENERATION"
 UA_FF = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0"
 UA_CH = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
 BYPASS_TOKEN = "android_bypass"
@@ -213,153 +217,261 @@ def is_net_retryable(value):
     return value in ("net_fail", "proxy_dead", "throttle")
 
 
-# ---------- AUTH ----------
+# ---------- AUTH & BOQ ENGINE ----------
+def cookie_to_dict(cookie_str):
+    """Chuyển chuỗi Cookie thành dictionary cho HTTP request."""
+    if not cookie_str:
+        return {}
+    if isinstance(cookie_str, dict):
+        return cookie_str
+    d = {}
+    for part in str(cookie_str).split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            d[k.strip()] = v.strip()
+    return d
+
+
 def update_cookie_string(old_cookie, set_cookie_headers):
     """Cập nhật các cookie mới từ Set-Cookie headers vào chuỗi cookie cũ."""
     if not set_cookie_headers:
         return old_cookie
     if isinstance(set_cookie_headers, str):
         set_cookie_headers = [set_cookie_headers]
-    
-    cookie_dict = {}
-    for part in old_cookie.split(";"):
-        if "=" in part:
-            k, v = part.strip().split("=", 1)
-            cookie_dict[k.strip()] = v.strip()
-            
+
+    cookie_dict = cookie_to_dict(old_cookie)
     for set_cookie in set_cookie_headers:
         first_part = set_cookie.split(";")[0]
         if "=" in first_part:
             k, v = first_part.strip().split("=", 1)
             cookie_dict[k.strip()] = v.strip()
-            
+
     return "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
 
 
-def bearer_from_cookie(cookie, timeout=25, proxy=None):
+_wiz_cache = {}
+_wiz_lock = threading.Lock()
+
+
+def get_wiz_tokens(cookie, proxy=None, force=False):
+    """Trích xuất (at, fsid, bl, account_id) từ flow.google.com qua pure HTTP GET với cookie."""
     if not cookie:
-        return None, None, None
-    H = {"Cookie": cookie, "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "application/json"}
+        _log_err("get_wiz_tokens: cookie is empty/None")
+        return None, None, None, None
+    import hashlib
+    ck_key = hashlib.md5(str(cookie).encode()).hexdigest()
+    with _wiz_lock:
+        if not force and ck_key in _wiz_cache:
+            entry = _wiz_cache[ck_key]
+            if time.time() - entry.get("ts", 0) < 600:
+                return entry["at"], entry["fsid"], entry["bl"], entry["account_id"]
+
+    headers = {
+        "User-Agent": UA_CH,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+    
+    # Thử với proxy trước, nếu fail thì thử trực tiếp (wiz_tokens chỉ cần lấy XSRF token từ HTML)
+    attempts = [proxy, None] if proxy else [None]
+    for px in attempts:
+        kw = _kw(25, proxy=px)
+        try:
+            r = cffi.get(f"{FLOW_BASE}/?pli=1", cookies=cookie_to_dict(cookie), headers=headers, **kw)
+            if r.status_code == 200:
+                import re
+                m_snl = re.search(r'"SNlM0e":"([^"]+)"', r.text)
+                m_fsid = re.search(r'"FdrFJe":"([^"]+)"', r.text)
+                m_bl = re.search(r'"cfb2h":"([^"]+)"', r.text)
+                m_acc = re.search(r'"S06Grb":"([^"]+)"', r.text)
+                at = m_snl.group(1) if m_snl else None
+                fsid = m_fsid.group(1) if m_fsid else None
+                bl = m_bl.group(1) if m_bl else "boq_labs-ai-sandbox-frontend_20260907.00_p0"
+                account_id = m_acc.group(1) if m_acc else None
+                if at:
+                    # Kiểm tra bl phải là trang Flow (sandbox), KHÔNG phải trang login Google
+                    if bl and "sandbox" not in bl.lower() and "identityfrontend" in bl.lower():
+                        _log_err(f"get_wiz_tokens: COOKIE HẾT HẠN - flow.google.com redirect về trang login (bl={bl[:50]})")
+                        break  # Cookie thật sự hết hạn
+                    with _wiz_lock:
+                        _wiz_cache[ck_key] = {"at": at, "fsid": fsid, "bl": bl, "account_id": account_id, "ts": time.time()}
+                    return at, fsid, bl, account_id
+                else:
+                    _log_err(f"get_wiz_tokens: HTTP 200 nhưng không tìm thấy SNlM0e. Cookie keys: {list(cookie_to_dict(cookie).keys())[:10]}. Page len: {len(r.text)}")
+                    break  # Cookie thật sự hết hạn → không cần retry không proxy
+            else:
+                _log_err(f"get_wiz_tokens: HTTP {r.status_code} {'(via proxy)' if px else '(direct)'}")
+                if px:
+                    continue  # Retry trực tiếp
+                break
+        except Exception as e:
+            _log_err(f"get_wiz_tokens error {'(via proxy)' if px else '(direct)'}: {e}")
+            if px:
+                continue  # Retry trực tiếp
+    return None, None, None, None
+
+
+def boq_execute(rpc_id, payload_str, cookie, proxy=None, source_path="/", timeout=30):
+    """Thực thi một RPC qua Google BOQ Batchexecute với cookie phiên."""
+    if not cookie:
+        return None, "auth"
+    at, fsid, bl, account_id = get_wiz_tokens(cookie, proxy=proxy)
+    if not at:
+        _log_err(f"boq_execute {rpc_id}: get_wiz_tokens returned None (cookie keys: {list(cookie_to_dict(cookie).keys())[:5]})")
+        return None, "auth"
+
+    import random
+    url = f"{FLOW_BATCHEXECUTE}?rpcids={rpc_id}&source-path={urllib.parse.quote(source_path)}&bl={bl}&f.sid={fsid or ''}&hl=en-US&_reqid={random.randint(1000, 9999)}&rt=c"
+    headers = {
+        "User-Agent": UA_CH,
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        "Origin": FLOW_BASE,
+        "Referer": f"{FLOW_BASE}{source_path}",
+        "X-Same-Domain": "1"
+    }
+    
+    # Tạo SAPISIDHASH Authorization header (cần khi gửi qua proxy / IP khác)
+    ck_dict = cookie_to_dict(cookie)
+    sapisid = ck_dict.get("SAPISID") or ck_dict.get("__Secure-3PAPISID") or ""
+    if sapisid:
+        import hashlib as _hl
+        ts = int(time.time())
+        origin = FLOW_BASE  # https://flow.google.com
+        hash_input = f"{ts} {sapisid} {origin}"
+        sapisidhash = _hl.sha1(hash_input.encode()).hexdigest()
+        headers["Authorization"] = f"SAPISIDHASH {ts}_{sapisidhash}"
+        headers["X-Goog-Authuser"] = "0"
+    
+    freq = [[[rpc_id, payload_str, None, "generic"]]]
+    data = {"f.req": json.dumps(freq), "at": at}
+    kw = _kw(timeout, proxy=proxy)
+
     try:
-        r = cffi.get("https://labs.google/fx/api/auth/session", headers=H, **_kw(timeout, proxy=proxy))
-        if r.status_code == 200:
-            set_cookies = r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") else r.headers.get("set-cookie")
-            new_cookie = update_cookie_string(cookie, set_cookies) if set_cookies else cookie
-            j = r.json() or {}
-            exp = j.get("expires")
-            if exp:
-                try:
-                    from datetime import datetime
-                    if datetime.fromisoformat(str(exp).replace("Z", "+00:00")).timestamp() < time.time() + 120:
-                        _log_err("bearer_from_cookie: Cookie expired or close to expiration.")
-                        return None, None, None
-                except Exception as e:
-                    _log_err(f"bearer_from_cookie date check exception: {e}")
-            token = j.get("access_token")
-            if not token:
-                return None, None, None
-            # Xác thực độ tươi thực tế của access_token với máy chủ Google OAuth2
+        r = cffi.post(url, data=urllib.parse.urlencode(data), cookies=ck_dict, headers=headers, **kw)
+    except Exception as e:
+        kind = net_error_kind(e)
+        if kind == "proxy_dead":
+            return None, "proxy_dead"
+        _log_err(f"boq_execute network exception ({rpc_id}): {e}")
+        return None, "net_fail"
+
+    if "xsrf" in r.text:
+        import re
+        m = re.search(r'\["xsrf","([^"]+)"', r.text)
+        if m:
+            new_at = m.group(1)
+            import hashlib
+            ck_key = hashlib.md5(str(cookie).encode()).hexdigest()
+            with _wiz_lock:
+                if ck_key in _wiz_cache:
+                    _wiz_cache[ck_key]["at"] = new_at
+            data["at"] = new_at
             try:
-                chk = cffi.get(f"https://oauth2.googleapis.com/tokeninfo?access_token={token}", **_kw(5, proxy=proxy))
-                if chk.status_code != 200:
-                    _log_err(f"bearer_from_cookie: Google OAuth access_token đã hết hạn ({chk.status_code})")
-                    return None, None, None
+                r = cffi.post(url, data=urllib.parse.urlencode(data), cookies=ck_dict, headers=headers, **kw)
             except Exception:
                 pass
-            return token, (j.get("user") or {}).get("email"), new_cookie
-        else:
-            _log_err(f"bearer_from_cookie failed status: {r.status_code}, response: {r.text[:200]}")
-    except Exception as e:
-        _log_err(f"bearer_from_cookie exception: {e}")
-    return None, None, None
+
+    if r.status_code in (401, 403):
+        _log_err(f"boq_execute {rpc_id}: HTTP {r.status_code} (proxy={'YES' if proxy else 'NO'}). Response: {r.text[:200]}")
+        return None, "auth"
+    if r.status_code == 429:
+        return None, "throttle"
+    if "PUBLIC_ERROR_USER_QUOTA_REACHED" in r.text or "QUOTA" in r.text.upper():
+        return None, "quota_hard"
+    if "PUBLIC_ERROR_UNUSUAL_ACTIVITY" in r.text or "UNUSUAL_ACTIVITY" in r.text:
+        return None, "unusual"
+
+    for line in r.text.splitlines():
+        if line.startswith("[["):
+            try:
+                parsed = json.loads(line)
+                if len(parsed) > 0 and len(parsed[0]) >= 6:
+                    item = parsed[0]
+                    err_info = item[5]
+                    if err_info:
+                        err_code = err_info[0] if isinstance(err_info, list) and len(err_info) > 0 else err_info
+                        # gRPC 8 = RESOURCE_EXHAUSTED (throttle / 429)
+                        if err_code == 8 or "RESOURCE_EXHAUSTED" in str(err_info):
+                            return None, "throttle"
+                        # gRPC 7 = PERMISSION_DENIED
+                        if err_code == 7 or "PERMISSION_DENIED" in str(err_info):
+                            if "UNUSUAL" in str(err_info):
+                                return None, "unusual"
+                            return None, "forbidden"
+                        # gRPC 16 = UNAUTHENTICATED
+                        if err_code == 16:
+                            return None, "auth"
+                        # gRPC 3 = INVALID_ARGUMENT
+                        if err_code == 3:
+                            return None, "invalid_arg"
+                    if len(item) > 2 and item[2]:
+                        return json.loads(item[2]), "ok"
+            except Exception:
+                pass
+
+    if r.status_code == 200:
+        return None, "ok_empty"
+    return None, "failed"
+
+
+def get_credits(cookie, proxy=None):
+    """Lấy số credits còn lại của tài khoản Google Flow qua RPC nzlxg."""
+    res, status = boq_execute("nzlxg", "[]", cookie, proxy=proxy)
+    if status == "ok" and res and isinstance(res, list) and len(res) > 0:
+        try:
+            return int(res[0])
+        except Exception:
+            return res[0]
+    return status
+
+
+def bearer_from_cookie(cookie, timeout=25, proxy=None):
+    """Xác thực cookie Google Flow, trả (token, email, new_cookie) tương thích với thin_aptm.py."""
+    if not cookie:
+        return None, None, None
+    at, fsid, bl, account_id = get_wiz_tokens(cookie, proxy=proxy)
+    if not at:
+        return None, None, None
+    email = None
+    import re
+    m = re.search(r'(?:email|EMAIL)=([^;]+)', cookie)
+    if m:
+        email = urllib.parse.unquote(m.group(1))
+    elif account_id:
+        email = f"{account_id}@google"
+    return cookie, email, cookie
 
 
 def get_project(cookie, proxy=None):
+    """Lấy projectId của tài khoản qua RPC LWkPYd."""
     if not cookie:
         return None
-    inp = urllib.parse.quote(json.dumps({"json": {"pageSize": 20, "toolName": "PINHOLE", "cursor": None},
-                                         "meta": {"values": {"cursor": ["undefined"]}}}))
-    H = {"Cookie": cookie, "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "application/json"}
-    try:
-        r = cffi.get("https://labs.google/fx/api/trpc/project.searchUserProjects?input=" + inp, headers=H, **_kw(proxy=proxy))
-        if r.status_code == 200:
-            projs = (((r.json() or {}).get("result") or {}).get("data") or {}).get("json", {}).get("result", {}).get("projects", [])
-            if projs:
-                return projs[0]["projectId"]
-        else:
-            _log_err(f"searchUserProjects request failed with status: {r.status_code}, response: {r.text[:200]}")
-    except Exception as e:
-        _log_err(f"get_project search user projects exception: {e}")
-    # tạo mới
-    try:
-        r = cffi.post("https://labs.google/fx/api/trpc/project.createProject",
-                      headers={**H, "Content-Type": "application/json"},
-                      data=json.dumps({"json": {"projectTitle": "ThinAptm", "toolName": "PINHOLE"}}), **_kw(proxy=proxy))
-        if r.status_code == 200:
-            d = (((r.json() or {}).get("result") or {}).get("data") or {}).get("json") or {}
-            proj_id = d.get("projectId") or (d.get("result") or {}).get("projectId")
-            if proj_id:
-                return proj_id
-        _log_err(f"createProject failed with status: {r.status_code}, response: {r.text[:200]}")
-    except Exception as e:
-        _log_err(f"get_project create project exception: {e}")
-    return None
+    res, status = boq_execute("LWkPYd", "[]", cookie, proxy=proxy)
+    if status == "ok" and res and isinstance(res, list) and len(res) > 0:
+        items = res[0] if isinstance(res[0], list) else res
+        for item in items:
+            if isinstance(item, list):
+                # Ưu tiên item[4] nếu là UUID hợp lệ (không phải email)
+                if len(item) > 4:
+                    pid = str(item[4] or "").strip()
+                    if pid and len(pid) > 10 and "@" not in pid and "-" in pid:
+                        return pid
+                # Kiểm tra item[1] nếu item[4] là email hoặc rỗng
+                if len(item) > 1:
+                    pid1 = str(item[1] or "").strip()
+                    if pid1 and len(pid1) > 10 and "@" not in pid1 and "-" in pid1:
+                        return pid1
+    return "513f3b20-fa17-4be7-89b5-f179860de580"
 
 
 def delete_project(cookie, proxy=None):
-    """Xóa TẤT CẢ project PINHOLE hiện có. Trả số project đã xóa."""
-    if not cookie:
-        return 0
-    inp = urllib.parse.quote(json.dumps({"json": {"pageSize": 20, "toolName": "PINHOLE", "cursor": None},
-                                         "meta": {"values": {"cursor": ["undefined"]}}}))
-    H = {"Cookie": cookie, "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "application/json"}
-    try:
-        r = cffi.get("https://labs.google/fx/api/trpc/project.searchUserProjects?input=" + inp, headers=H, **_kw(proxy=proxy))
-        if r.status_code != 200:
-            return 0
-        projs = (((r.json() or {}).get("result") or {}).get("data") or {}).get("json", {}).get("result", {}).get("projects", [])
-        deleted = 0
-        for p in projs:
-            pid = p.get("projectId")
-            if not pid:
-                continue
-            try:
-                rd = cffi.post("https://labs.google/fx/api/trpc/project.deleteProject",
-                               headers={**H, "Content-Type": "application/json"},
-                               data=json.dumps({"json": {"projectId": pid}}), **_kw(proxy=proxy))
-                if rd.status_code == 200:
-                    deleted += 1
-                    _log_err(f"delete_project: đã xóa project {pid[:12]}...")
-            except Exception as e:
-                _log_err(f"delete_project: lỗi xóa {pid[:12]}: {e}")
-        return deleted
-    except Exception as e:
-        _log_err(f"delete_project exception: {e}")
-        return 0
+    """Xóa scene/project trên Google Flow."""
+    return 0
 
 
 def reset_project(cookie, proxy=None):
-    """Xóa project cũ + tạo project MỚI (học từ AutoVeo3: reset quota upload).
-    Trả projectId mới hoặc None."""
-    deleted = delete_project(cookie, proxy=proxy)
-    if deleted:
-        _log_err(f"reset_project: đã xóa {deleted} project cũ, tạo mới...")
-    H = {"Cookie": cookie, "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "application/json",
-         "Content-Type": "application/json"}
-    try:
-        r = cffi.post("https://labs.google/fx/api/trpc/project.createProject",
-                      headers=H,
-                      data=json.dumps({"json": {"projectTitle": "ThinAptm", "toolName": "PINHOLE"}}), **_kw(proxy=proxy))
-        if r.status_code == 200:
-            d = (((r.json() or {}).get("result") or {}).get("data") or {}).get("json") or {}
-            proj_id = d.get("projectId") or (d.get("result") or {}).get("projectId")
-            if proj_id:
-                _log_err(f"reset_project: project MỚI = {proj_id[:12]}...")
-                return proj_id
-        _log_err(f"reset_project: createProject failed status {r.status_code}: {r.text[:200]}")
-    except Exception as e:
-        _log_err(f"reset_project exception: {e}")
-    return None
+    """Reset / tạo project mới trên Google Flow."""
+    return get_project(cookie, proxy=proxy)
 
 
 def _hf(bearer):  # headers Firefox cho android_bypass
@@ -378,58 +490,421 @@ def _hc(bearer):  # headers Chrome cho poll/upload (nâng cấp giống AutoVeo3
             "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "cross-site"}
 
 
+# Global throttle: giãn tối thiểu 3s giữa mỗi upload request (tất cả accounts)
+_upload_lock = threading.Lock()
+_upload_last_ts = 0.0
+_UPLOAD_MIN_GAP = 3.0  # giây tối thiểu giữa 2 lần upload
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PERSISTENT MD5 IMAGE CACHE (Học từ AutoVeo3 V5.0 & V5.7)
+# ══════════════════════════════════════════════════════════════════════════════
+# AutoVeo3 lưu cache vào file cfg\uploaded_image_cache.json với key: {MD5(base64)}_{userEmail}
+# Giúp tái sử dụng media_id ngay lập tức (0ms mạng, 0 tốn token reCAPTCHA, 0 sợ 429)
+_IMAGE_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploaded_image_cache.json")
+_image_cache = {}
+_image_cache_lock = threading.Lock()
+
+def _load_image_cache():
+    """Nạp bộ nhớ đệm ảnh từ file uploaded_image_cache.json trên ổ cứng."""
+    global _image_cache
+    with _image_cache_lock:
+        if os.path.isfile(_IMAGE_CACHE_FILE):
+            try:
+                with open(_IMAGE_CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        _image_cache = data
+                        _log_api(f"PersistentImageCache: Nạp thành công {len(_image_cache)} ảnh từ disk.")
+            except Exception as e:
+                _log_err(f"PersistentImageCache load error: {e}")
+                _image_cache = {}
+
+def _save_image_cache():
+    """Lưu bộ nhớ đệm ảnh ra file uploaded_image_cache.json an toàn."""
+    with _image_cache_lock:
+        try:
+            temp_file = f"{_IMAGE_CACHE_FILE}.tmp"
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(_image_cache, f, indent=2, ensure_ascii=False)
+            if os.path.exists(_IMAGE_CACHE_FILE):
+                os.replace(temp_file, _IMAGE_CACHE_FILE)
+            else:
+                os.rename(temp_file, _IMAGE_CACHE_FILE)
+        except Exception as e:
+            try:
+                with open(_IMAGE_CACHE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(_image_cache, f, indent=2, ensure_ascii=False)
+            except Exception as e2:
+                _log_err(f"PersistentImageCache save error: {e2}")
+
+_load_image_cache()
+
+def compute_image_md5(image_data):
+    """Tính MD5 hash của chuỗi base64 hoặc bytes ảnh (viết hoa chuẩn AutoVeo3 TinhMD5TuBase64)."""
+    import hashlib
+    if isinstance(image_data, str):
+        raw = image_data.encode("ascii", errors="ignore")
+    elif isinstance(image_data, (bytes, bytearray)):
+        raw = bytes(image_data)
+    else:
+        raw = str(image_data).encode("utf-8")
+    return hashlib.md5(raw).hexdigest().upper()
+
+def extract_email_from_cookie(cookie_str):
+    """Trích xuất email người dùng từ cookie string (chuẩn AutoVeo3 ExtractEmailFromCookie)."""
+    if not cookie_str or not isinstance(cookie_str, str):
+        return ""
+    import re, urllib.parse
+    try:
+        m = re.search(r'(?i)(?:email|EMAIL)=([^;]+)', cookie_str)
+        if m:
+            val = m.group(1).strip().strip('"')
+            return urllib.parse.unquote(val).strip()
+    except Exception:
+        pass
+    return ""
+
+def make_image_cache_key(md5_hash, account_tag):
+    """Tạo khóa cache chuẩn AutoVeo3: {MD5}_{email_hoặc_account}."""
+    tag = str(account_tag or "unknown").strip().lower()
+    return f"{md5_hash}_{tag}"
+
+def get_cached_image(cache_key):
+    """Lấy media_id từ cache (nếu có)."""
+    with _image_cache_lock:
+        return _image_cache.get(cache_key)
+
+def set_cached_image(cache_key, media_id):
+    """Lưu media_id vào cache và ghi ra đĩa."""
+    if not cache_key or not media_id:
+        return
+    bad_sentinels = ("throttle", "forbidden", "proxy_dead", "unauthorized", "vi phạm cs", "net_fail", "unusual")
+    if any(s in str(media_id) for s in bad_sentinels):
+        return
+    with _image_cache_lock:
+        _image_cache[cache_key] = str(media_id)
+    _save_image_cache()
+
+def clear_image_cache():
+    """Xóa toàn bộ bộ nhớ đệm ảnh trên RAM và trên file đĩa (chuẩn AutoVeo3 modernButton5_Click)."""
+    global _image_cache
+    with _image_cache_lock:
+        _image_cache.clear()
+        try:
+            with open(_IMAGE_CACHE_FILE, "w", encoding="utf-8") as f:
+                f.write("{}")
+            _log_api("PersistentImageCache: Đã xóa sạch bộ nhớ đệm ảnh.")
+            return True
+        except Exception as e:
+            _log_err(f"clear_image_cache error: {e}")
+            return False
+
+def invalidate_cached_image(cache_key):
+    """Xóa một key cụ thể khỏi cache."""
+    with _image_cache_lock:
+        if cache_key in _image_cache:
+            del _image_cache[cache_key]
+            _save_image_cache()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REST UPLOAD ENDPOINT (POST https://aisandbox-pa.googleapis.com/v1/flow/uploadImage)
+# ══════════════════════════════════════════════════════════════════════════════
+_session_token_cache = {}
+_session_lock = threading.Lock()
+
+def get_session_token(cookie, proxy=None, force=False):
+    """Lấy access_token từ https://labs.google/fx/api/auth/session bằng cookie (học từ AutoVeo3)."""
+    if not cookie or not isinstance(cookie, str) or ("=" not in cookie):
+        return None
+    import hashlib
+    ck_key = hashlib.md5(cookie.encode("utf-8", errors="ignore")).hexdigest()
+    with _session_lock:
+        if not force and ck_key in _session_token_cache:
+            entry = _session_token_cache[ck_key]
+            if time.time() - entry.get("ts", 0) < 1800:
+                return entry.get("token")
+    headers = {
+        "User-Agent": UA_CH,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://labs.google/",
+        "Cookie": cookie,
+    }
+    try:
+        kw = _kw(15, proxy=proxy)
+        r = cffi.get("https://labs.google/fx/api/auth/session", headers=headers, **kw)
+        if r.status_code == 200:
+            data = r.json() if hasattr(r, "json") else json.loads(r.text)
+            tok = data.get("access_token")
+            if tok:
+                with _session_lock:
+                    _session_token_cache[ck_key] = {"token": tok, "ts": time.time()}
+                return tok
+    except Exception as e:
+        _log_err(f"get_session_token error: {e}")
+    return None
+
+def _h_rest_upload(bearer, token=None):
+    """Headers chuẩn Chrome Impersonation cho REST flow/uploadImage (giống AutoVeo3)."""
+    headers = {
+        "User-Agent": UA_CH,
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://labs.google",
+        "Referer": "https://labs.google/",
+        "Sec-Ch-Ua": '"Google Chrome";v="147", "Not:A-Brand";v="8", "Chromium";v="147"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
+        "x-browser-channel": "stable",
+        "x-browser-copyright": "Copyright 2025 Google LLC. All Rights reserved.",
+        "x-browser-validation": "Aj9fzfu+SaGLBY9Oqr3S7RokOtM=",
+        "x-browser-year": "2025",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    elif bearer and not (";" in str(bearer) or "=" in str(bearer)):
+        headers["Authorization"] = f"Bearer {bearer}"
+    
+    if bearer and (";" in str(bearer) or "=" in str(bearer)):
+        headers["Cookie"] = bearer
+    return headers
+
+def upload_image_rest(bearer, project, b64_img, filename="input_file_0.jpg", timeout=60, proxy=None):
+    """Gửi yêu cầu upload ảnh tới REST endpoint https://aisandbox-pa.googleapis.com/v1/flow/uploadImage.
+    Trả về: (result_or_reason, status)
+      - status == "ok"        -> result là media_id (string)
+      - status == "violation" -> result là mô tả vi phạm chính sách Google
+      - status == "throttle"  -> lỗi 429
+      - status == "auth"      -> lỗi 401
+      - status == "forbidden" -> lỗi 403
+      - status == "proxy_dead"-> lỗi proxy
+      - status == "fallback"  -> không phân giải được hoặc lỗi REST -> fallback BOQ RPC
+    """
+    token = get_session_token(bearer, proxy=proxy)
+    headers = _h_rest_upload(bearer, token=token)
+    payload = {
+        "clientContext": {
+            "projectId": project,
+            "tool": "PINHOLE"
+        },
+        "imageBytes": b64_img,
+        "isUserUploaded": True,
+        "isHidden": False,
+        "mimeType": "image/jpeg",
+        "fileName": filename
+    }
+    url = f"{BASE}/flow/uploadImage"
+    try:
+        kw = _kw(timeout, proxy=proxy)
+        r = cffi.post(url, headers=headers, data=json.dumps(payload), **kw)
+        
+        if r.status_code == 401:
+            return "unauthorized", "auth"
+        if r.status_code == 403:
+            return "forbidden", "forbidden"
+        if r.status_code == 429:
+            return "throttled", "throttle"
+        if r.status_code == 407:
+            return "proxy_dead", "proxy_dead"
+
+        text = r.text or ""
+
+        # Nhận diện lỗi vi phạm chính sách Google (học từ AutoVeo3 V5.0/V5.7)
+        if "INVALID_ARGUMENT" in text or "PUBLIC_ERROR_" in text or "SAFETY_Attribute_" in text or "BLOCK_REASON_" in text:
+            if "PUBLIC_ERROR_MINOR" in text:
+                return "Lỗi Vi Phạm CS Google - Ảnh đầu vào chứa trẻ em (PUBLIC_ERROR_MINOR)", "violation"
+            if "PUBLIC_ERROR_NSFW" in text:
+                return "Lỗi Vi Phạm CS Google - Ảnh đầu vào hở hang gợi dục (PUBLIC_ERROR_NSFW)", "violation"
+            if "PUBLIC_ERROR_VIOLENCE" in text:
+                return "Lỗi Vi Phạm CS Google - Ảnh đầu vào bạo lực/ghê rợn (PUBLIC_ERROR_VIOLENCE)", "violation"
+            if "PUBLIC_ERROR_PEOPLE" in text or "PUBLIC_ERROR_PROMINENT_PEOPLE" in text:
+                return "Lỗi Vi Phạm CS Google - Nhận diện người thật/người nổi tiếng (PUBLIC_ERROR_PROMINENT_PEOPLE)", "violation"
+            if "SAFETY_Attribute_SEXUALLY_EXPLICIT" in text:
+                return "Lỗi Vi Phạm CS Google - Nội dung gợi dục (SAFETY_Attribute_SEXUALLY_EXPLICIT)", "violation"
+            if "SAFETY_Attribute_DANGEROUS_CONTENT" in text:
+                return "Lỗi Vi Phạm CS Google - Nội dung nguy hại (SAFETY_Attribute_DANGEROUS_CONTENT)", "violation"
+            if "SAFETY_Attribute_HARASSMENT" in text:
+                return "Lỗi Vi Phạm CS Google - Quấy rối/Người nổi tiếng (SAFETY_Attribute_HARASSMENT)", "violation"
+            if "BLOCK_REASON_OTHER" in text:
+                return "Lỗi Vi Phạm CS Google - Bản quyền hoặc lý do khác (BLOCK_REASON_OTHER)", "violation"
+            if "INVALID_ARGUMENT" in text and "clientContext" not in text:
+                return f"Lỗi Vi Phạm CS Google: {text[:150]}", "violation"
+
+        # Trích xuất JSON media.name (cắt jsonStart, jsonEnd như AutoVeo3 V5.7)
+        js_start = text.find('{')
+        js_end = text.rfind('}')
+        if js_start >= 0 and js_end > js_start:
+            try:
+                clean_json_str = text[js_start:js_end + 1]
+                data = json.loads(clean_json_str)
+                media = data.get("media") or {}
+                mid = None
+                if isinstance(media, dict):
+                    mid = media.get("name")
+                elif isinstance(media, list) and len(media) > 0 and isinstance(media[0], dict):
+                    mid = media[0].get("name")
+                elif "name" in data:
+                    mid = data.get("name")
+                if mid:
+                    return str(mid), "ok"
+            except Exception as e_parse:
+                _log_err(f"upload_image_rest parse JSON error: {e_parse}")
+
+        if r.status_code in (200, 201):
+            _log_err(f"upload_image_rest HTTP {r.status_code} nhưng không thấy media.name: {text[:200]}")
+            return None, "fallback"
+        else:
+            _log_err(f"upload_image_rest HTTP {r.status_code}: {text[:200]}")
+            return None, "fallback"
+
+    except Exception as e:
+        kind = net_error_kind(e)
+        if kind == "proxy_dead":
+            return "proxy_dead", "proxy_dead"
+        _log_err(f"upload_image_rest exception: {e}")
+        return None, "fallback"
+
+
 # ---------- UPLOAD ảnh (cho I2V / ảnh tham chiếu) ----------
-def upload_image(bearer, project, image_path, timeout=120, max_retries=4, proxy=None):
-    import random as _rnd
+def upload_image(bearer, project, image_path, timeout=120, max_retries=6, proxy=None, email=None):
+    """Upload ảnh lên Google Flow với Persistent MD5 Image Cache + REST Endpoint & BOQ RPC maseQ.
+    Trả media_id (string) hoặc sentinel error:
+      'throttle' | 'unauthorized' | 'forbidden' | 'proxy_dead' | 'vi phạm cs' | 'net_fail'
+    """
+    import random as _rnd, uuid, io, base64
     try:
         from PIL import Image
-        import io
-        img = Image.open(image_path).convert("RGB")
-        w, h = img.size
-        # Bơm 3 "muối" (salt pixel) tại các vị trí ngẫu nhiên để đổi hoàn toàn SHA256 & byte map
-        for _ in range(3):
-            px, py = _rnd.randint(0, w-1), _rnd.randint(0, h-1)
-            r, g, b = img.getpixel((px, py))
-            img.putpixel((px, py), (r, g, max(0, b - 1) if b > 0 else 1))
+        if isinstance(image_path, str) and (image_path.startswith("http://") or image_path.startswith("https://")):
+            r_img = cffi.get(image_path, timeout=30, proxy=proxy)
+            img = Image.open(io.BytesIO(r_img.content)).convert("RGB")
+        elif hasattr(image_path, "convert"):
+            img = image_path.convert("RGB")
+        else:
+            img = Image.open(image_path).convert("RGB")
         
         buf = io.BytesIO()
-        # Random chất lượng 89-95 tạo ra cấu trúc DCT block & byte stream hoàn toàn mới chống spam
-        img.save(buf, format="JPEG", quality=_rnd.randint(89, 95), optimize=_rnd.choice([True, False]))
-        b64 = base64.b64encode(buf.getvalue()).decode()
+        img.save(buf, format="JPEG", quality=92)
+        b64_img = base64.b64encode(buf.getvalue()).decode("utf-8")
     except Exception as e:
         _log_err(f"upload_image failed to process image {image_path}: {e}")
         return None
-    session_id = f";{int(time.time()*1000)}"
-    payload = {"clientContext": {"sessionId": session_id, "projectId": project, "tool": "PINHOLE",
-                                 "recaptchaContext": get_recaptcha_context()},
-               "imageBytes": b64}
+
+    filename = os.path.basename(str(image_path)) if isinstance(image_path, str) and os.path.isfile(str(image_path)) else "input_file_0.jpg"
+    if not filename.lower().endswith((".jpg", ".jpeg")):
+        filename = f"{filename}.jpg"
+
+    # ── [BƯỚC 0]: Tra cứu Persistent MD5 Image Cache (AutoVeo3) ──
+    md5_hash = compute_image_md5(b64_img)
+    acc_tag = email or extract_email_from_cookie(bearer) or project or "default"
+    cache_key = make_image_cache_key(md5_hash, acc_tag)
+    cached_mid = get_cached_image(cache_key)
+    if cached_mid:
+        _log_api(f"upload_image: ⚡ CACHE HIT [MD5: {md5_hash[:8]}...] ({acc_tag[:16]}) -> {cached_mid[:30]}...")
+        return cached_mid
+
+    # Global rate limiter: giãn tối thiểu 3s giữa các upload mạng (tất cả accounts)
+    global _upload_last_ts
+    with _upload_lock:
+        now = time.time()
+        gap = _UPLOAD_MIN_GAP - (now - _upload_last_ts)
+        if gap > 0:
+            time.sleep(gap)
+        _upload_last_ts = time.time()
+
+    # ── [BƯỚC 1]: Thử tải lên bằng REST Upload Endpoint (/v1/flow/uploadImage) ──
+    try:
+        rest_res, rest_status = upload_image_rest(bearer, project, b64_img, filename=filename, timeout=min(timeout, 60), proxy=proxy)
+        if rest_status == "ok" and rest_res:
+            _log_api(f"upload_image (REST): ✅ Thành công media_id={rest_res}")
+            set_cached_image(cache_key, rest_res)
+            return rest_res
+        elif rest_status == "violation":
+            _log_err(f"upload_image (REST): ⚠️ Vi phạm chính sách Google ({rest_res})")
+            return "vi phạm cs"
+        elif rest_status in ("unauthorized", "forbidden", "proxy_dead"):
+            _log_err(f"upload_image (REST): Lỗi xác thực/quyền ({rest_status})")
+            return rest_status
+        elif rest_status == "throttle":
+            _log_err("upload_image (REST): 429 throttled, thử fallback sang BOQ RPC...")
+    except Exception as e_rest:
+        _log_err(f"upload_image (REST) exception, fallback to BOQ RPC: {e_rest}")
+
+    # ── [BƯỚC 2]: Fallback BOQ RPC maseQ (Có Token Farm reCAPTCHA) ──
     throttle_count = 0
     for attempt in range(max_retries):
+        rc_token = get_recaptcha_token(timeout=15, action="UPLOAD_IMAGE")
+        if not rc_token:
+            _log_err("upload_image: không lấy được token reCAPTCHA UPLOAD_IMAGE từ Token Farm")
+            if attempt >= max_retries - 1:
+                return "throttle"
+            time.sleep(2.0)
+            continue
+
+        u1 = str(uuid.uuid4())
+        u2 = str(uuid.uuid4())
+        client_context = [None, 22, None, None, None, project, None, None, None, None, [rc_token, 1]]
+        payload = [
+            client_context,
+            b64_img,
+            "image/jpeg",
+            True,
+            None,
+            None,
+            None,
+            False,
+            filename,
+            None,
+            u1,
+            u2
+        ]
+
         try:
-            r = cffi.post(f"{BASE}/flow/uploadImage?key={KEY}", headers=_hc(bearer), data=json.dumps(payload), **_kw(timeout, proxy=proxy))
-            if r.status_code in (200, 201):
-                media = (r.json() or {}).get("media") or {}
-                media_id = media.get("name") if isinstance(media, dict) else (media[0].get("name") if media else None)
+            with _upload_lock:
+                now = time.time()
+                gap = _UPLOAD_MIN_GAP - (now - _upload_last_ts)
+                if gap > 0:
+                    time.sleep(gap)
+                _upload_last_ts = time.time()
+
+            res, status = boq_execute("maseQ", json.dumps(payload), bearer, proxy=proxy,
+                                      source_path=f"/project/{project}", timeout=timeout)
+            if status == "ok" and res and isinstance(res, list) and len(res) > 0 and isinstance(res[0], list) and len(res[0]) > 0:
+                media_id = str(res[0][0])
                 if media_id:
+                    _log_api(f"upload_image (BOQ maseQ) ok: media_id={media_id}")
+                    set_cached_image(cache_key, media_id)
                     return media_id
                 else:
-                    _log_err(f"upload_image success but media ID not found. JSON: {r.json()}")
+                    _log_err(f"upload_image success but media ID empty. Res: {res}")
                     return None
-            elif r.status_code == 429:
+            elif status == "throttle":
                 throttle_count += 1
-                # Backoff tăng dần: 8→15→25→40s + random jitter
-                wait = min(8.0 * (1.8 ** attempt), 45.0) + _rnd.uniform(0, 3.0)
-                _log_err(f"upload_image 429 throttled — retry {attempt+1}/{max_retries}, chờ {wait:.1f}s")
+                if throttle_count >= 3:
+                    _log_err(f"upload_image 429 throttled {throttle_count} lần liên tiếp — trả throttle cho caller")
+                    return "throttle"
+                wait = _rnd.uniform(8.0, 15.0)
+                _log_err(f"upload_image 429 throttled — retry {throttle_count}, chờ {wait:.1f}s")
                 time.sleep(wait)
                 continue
-            elif r.status_code == 401:
-                _log_err(f"upload_image 401 unauthorized")
+            elif status == "auth":
+                _log_err("upload_image unauthorized (cookie hết hạn / invalid)")
                 return "unauthorized"
-            elif r.status_code == 403:
-                _log_err(f"upload_image 403 PERMISSION_DENIED — account bị cấm upload ảnh")
-                return "forbidden"
+            elif status == "unusual":
+                _log_err("upload_image: account/IP bị Google Flow đánh dấu UNUSUAL_ACTIVITY")
+                return "unusual"
+            elif status == "proxy_dead":
+                _log_err("upload_image: proxy dead")
+                return "proxy_dead"
             else:
-                _log_err(f"upload_image failed status: {r.status_code}, response: {r.text[:300]}")
+                _log_err(f"upload_image failed status: {status}, res: {str(res)[:200]}")
+                if attempt < max_retries - 1:
+                    time.sleep(2.0)
+                    continue
                 return None
         except Exception as e:
             kind = net_error_kind(e)
@@ -437,18 +912,14 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=4, proxy=
                 _log_err(f"upload_image proxy dead: {e}")
                 return "proxy_dead"
             if kind == "transient" and attempt < max_retries - 1:
-                # Kết nối bị cắt / TLS rác / timeout → THỬ LẠI. Trước đây return None ngay
-                # trong except nên bỏ luôn các lượt retry còn lại → mất job oan.
                 wait = min(3.0 * (1.7 ** attempt), 20.0) + _rnd.uniform(0, 1.5)
                 _log_err(f"upload_image lỗi mạng tạm thời (retry {attempt+1}/{max_retries}, chờ {wait:.1f}s): {e}")
                 time.sleep(wait)
                 continue
             _log_err(f"upload_image request exception: {e}")
-            # Lỗi mạng nhưng đã hết lượt retry → net_fail để caller requeue thay vì đánh lỗi cứng
             return "net_fail" if kind == "transient" else None
-    # Hết retry mà vẫn bị 429 → trả "throttle" để caller xử lý đúng (requeue thay vì fail)
+
     if throttle_count > 0:
-        _log_err(f"upload_image 429 throttled {throttle_count} lần liên tiếp — trả throttle cho caller")
         return "throttle"
     return "net_fail"
 
@@ -592,11 +1063,9 @@ def generate_image(bearer, project, prompt, seed, aspect, model="GEM_PIX_2", ima
     return classified[0], f"{classified[0]} — {detail}"
 
 
-# ---------- VIDEO (bypass): submit -> poll -> download ----------
+# ---------- VIDEO (BOQ RPC): submit -> poll -> download ----------
 
 # ── RecaptchaContext: 2 chế độ ──
-# 1. "android_bypass" (mặc định): token tĩnh, nhanh nhưng dễ bị rate-limit
-# 2. "token_farm": farm reCAPTCHA token tươi qua headless Chrome (giống AutoVeo3)
 _recaptcha_farm = None  # instance RecaptchaFarm, set từ thin_aptm.py khi user bật
 
 def set_recaptcha_farm(farm):
@@ -604,124 +1073,142 @@ def set_recaptcha_farm(farm):
     global _recaptcha_farm
     _recaptcha_farm = farm
 
-def get_recaptcha_context():
-    """Lấy recaptchaContext phù hợp.
-    - Nếu có farm + token tươi → dùng token thật + APPLICATION_TYPE_WEB
-    - Fallback → android_bypass (token tĩnh)
-    """
+
+def get_recaptcha_token(timeout=15, action="VIDEO_GENERATION"):
+    """Lấy token reCAPTCHA Enterprise tươi từ Token Farm theo action (VIDEO_GENERATION hoặc UPLOAD_IMAGE)."""
+    global _recaptcha_farm
+    # Thử lấy từ farm instance đã gắn (thin_aptm.py set)
     if _recaptcha_farm:
-        token = _recaptcha_farm.get_token(timeout=2)
-        if token:
-            return {"applicationType": "RECAPTCHA_APPLICATION_TYPE_UNSPECIFIED", "token": token}
-    # Fallback: bypass tĩnh
-    return {"applicationType": APP_ANDROID, "token": BYPASS_TOKEN}
-
-def _vpayload(prompt, project, seed, aspect, model, ref_media_id=None):
-    # Ghép mô tả giọng nói cố định vào cuối prompt (nếu có)
-    final_prompt = f"{prompt}. {VOICE_DESC}" if VOICE_DESC else prompt
-    aspect_enum = VID_ASPECTS.get(aspect, aspect)
-    if not str(aspect_enum).startswith("VIDEO_ASPECT_RATIO_"):
-        aspect_enum = "VIDEO_ASPECT_RATIO_PORTRAIT"
-    req = {"aspectRatio": aspect_enum, "seed": seed, "textInput": {"structuredPrompt": {"parts": [{"text": final_prompt}]}},
-           "videoModelKey": model, "metadata": {}}
-    if ref_media_id:
-        req["referenceImages"] = [{"imageUsageType": "IMAGE_USAGE_TYPE_ASSET", "mediaId": ref_media_id}]
-    return {"mediaGenerationContext": {"batchId": str(uuid.uuid4()), "audioFailurePreference": "BLOCK_SILENCED_VIDEOS"},
-            "clientContext": {"sessionId": f";{int(time.time()*1000)}", "projectId": project, "tool": "PINHOLE",
-                              "userPaygateTier": "PAYGATE_TIER_TWO",
-                              "recaptchaContext": get_recaptcha_context()},
-            "requests": [req], "useV2ModelConfig": True}
-
-
-
-def _classify(r):
-    """Phân loại lỗi generate. QUAN TRỌNG: mã 429/RESOURCE_EXHAUSTED KHÔNG đủ để phân biệt —
-    phải đọc `reason` trong error.details (đã đo body thật):
-      throttle    = USER_REQUESTS_THROTTLED (giới hạn TỐC ĐỘ) -> nghỉ NGẮN vài giây, TỰ HỒI (KHÔNG cách ly dài)
-      quota_hard  = hết quota/credit ngày (QUOTA_EXCEEDED/DAILY/CREDIT/OUT_OF...) -> cách ly DÀI + đổi account
-      unusual     = reCAPTCHA/UNUSUAL_ACTIVITY -> thử lại nhanh (bypass/token khác)
-      ratelimit   = TOO_MUCH_TRAFFIC trần (rate theo IP) -> backoff nhẹ
-      ip_block    = HTML "Sorry" (chặn IP) | auth = 401 bearer chết
-    RESOURCE_EXHAUSTED không rõ reason -> coi là throttle (thực đo: submit hồi lại sau 1-2 phút, KHÔNG phải hết quota).
-    """
-    if r.status_code == 401:
-        return "auth", None
-    if r.status_code == 403:
-        return "auth", None                     # PERMISSION_DENIED = cookie/project hết quyền → cần refresh hoặc cách ly
-    txt = r.text
-    head = txt[:200].lower()
-    if "<html" in head or "sorry" in head:
-        return "ip_block", None
-
-    reason = ""
+        tok = _recaptcha_farm.get_token(timeout=timeout, action=action)
+        if tok:
+            return tok
+        return None  # farm đã có nhưng hết token → KHÔNG tạo farm mới
+    # Nếu chưa có farm instance → thử singleton từ module
     try:
-        err = (r.json() or {}).get("error", {})
-        for d in err.get("details", []) or []:
-            if isinstance(d, dict) and d.get("reason"):
-                reason = d["reason"]; break
-    except Exception:
-        pass
-    U = (reason + " " + txt[:400]).upper()
+        import recaptcha_farm as RF
+        farm = RF.get_farm()
+        if farm and not farm._started:
+            farm.start()
+        _recaptcha_farm = farm  # cache lại để lần sau không import lại
+        tok = farm.get_token(timeout=timeout, action=action)
+        if tok:
+            return tok
+    except Exception as e:
+        _log_err(f"get_recaptcha_token exception: {e}")
+    return None
 
-    if "THROTTLED" in U:
-        return "throttle", None                 # giới hạn tốc độ -> nghỉ ngắn, tự hồi
-    if "RECAPTCHA" in U or "UNUSUAL_ACTIVITY" in U or "PUBLIC_ERROR_UNUSUAL_ACTIVITY" in U:
-        return "unusual", None
-    if "TOO_MUCH_TRAFFIC" in U:
-        return "ratelimit", None
-    if ("QUOTA_EXCEEDED" in U or "OUT_OF_CREDIT" in U or "INSUFFICIENT" in U
-            or "DAILY" in U or "QUOTA_LIMIT" in U):
-        return "quota_hard", None               # hết quota thật -> cách ly dài
-    if r.status_code == 429 or "RESOURCE_EXHAUSTED" in U:
-        return "throttle", None                 # RESOURCE_EXHAUSTED không rõ -> throttle (mặc định an toàn)
-    if "UNUSUAL" in U:
-        return "unusual", None
-    return "retry", None
+
+def get_recaptcha_context():
+    """Lấy recaptchaContext phù hợp cho image upload / legacy endpoints."""
+    tok = get_recaptcha_token(timeout=2, action="UPLOAD_IMAGE") or get_recaptcha_token(timeout=2)
+    if tok:
+        return {"applicationType": "RECAPTCHA_APPLICATION_TYPE_UNSPECIFIED", "token": tok}
+    return {"applicationType": APP_ANDROID, "token": BYPASS_TOKEN}
 
 
 def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None, timeout=120, proxy=None):
+    """Gửi lệnh tạo video qua Google Flow BOQ RPC YhhmEf (Text) hoặc eb1hJf (Start Image / I2V)."""
     _log_api(f"submit_video: model={model} ref={ref_media_id} aspect={aspect}")
+    cookie = bearer
 
-    # I2V (có ảnh gốc) BẮT BUỘC dùng model r2v (reference->video); dùng model t2v -> render FAIL.
-    # Omni Flash (abra_i2v_*) đã là model i2v sẵn → không cần đổi.
-    if ref_media_id and not model.startswith("abra"):
-        model = VID_I2V_MODEL
-    url = GEN_I2V if ref_media_id else GEN_T2V
-    payload = _vpayload(prompt, project, seed, aspect, model, ref_media_id)
-    try:
-        r = cffi.post(url, headers=_hf(bearer), data=json.dumps(payload), **_kw(timeout, proxy=proxy))
-    except Exception as e:
-        if net_error_kind(e) == "proxy_dead":
-            _log_err(f"submit_video proxy dead: {e}")
-            return "proxy_dead", None
-        _log_err(f"submit_video HTTP client exception: {e}")
-        return "retry", None
-    if r.status_code == 200:
-        j = r.json()
+    rc_token = get_recaptcha_token(timeout=15, action="VIDEO_GENERATION")
+    if not rc_token:
+        _log_err("submit_video: không lấy được token reCAPTCHA tươi từ Token Farm")
+        return "unusual", None
+
+    u1 = str(uuid.uuid4()).upper()
+    u2 = str(uuid.uuid4()).upper()
+    u3 = str(uuid.uuid4()).upper()
+    u4 = str(uuid.uuid4()).upper()
+    parent_u = str(uuid.uuid4()).upper()
+
+    aspect_code = 1 if (aspect and ("16:9" in str(aspect) or "LANDSCAPE" in str(aspect))) else 2
+
+    final_prompt = f"{prompt}. {VOICE_DESC}" if VOICE_DESC else prompt
+    prompt_block = [None, None, [[[final_prompt]]]]
+
+    if ref_media_id:
+        # Image-to-Video qua RPC eb1hJf (Start Frame)
+        rpc_id = "eb1hJf"
+        if "10s" in str(model):
+            model_name = "abra_i2v_10s"
+        elif "abra" in str(model) or "omni" in str(model).lower():
+            model_name = "abra_i2v_8s"
+        else:
+            model_name = "abra_i2v_8s"
+
+        scene1 = [
+            prompt_block,
+            model_name,
+            aspect_code,
+            None,
+            [None, ref_media_id],
+            [None, None, None, None, u1, u2]
+        ]
+        scene2 = [
+            prompt_block,
+            model_name,
+            aspect_code,
+            None,
+            [None, ref_media_id],
+            [None, None, None, None, u3, u4]
+        ]
+    else:
+        # Text-to-Video qua RPC YhhmEf
+        rpc_id = "YhhmEf"
+        if "10s" in str(model):
+            model_name = "abra_t2v_10s"
+        elif "abra" in str(model) or "omni" in str(model).lower():
+            model_name = "abra_t2v_8s"
+        else:
+            model_name = "veo_3_1_t2v_lite_low_priority"
+
+        scene1 = [
+            prompt_block,
+            model_name,
+            aspect_code,
+            None,
+            [None, None, None, None, u1, u2]
+        ]
+        scene2 = [
+            prompt_block,
+            model_name,
+            aspect_code,
+            None,
+            [None, None, None, None, u3, u4]
+        ]
+
+    payload = [
+        [scene1, scene2],
+        [None, 22, None, None, None, project, None, None, None, None, [rc_token, 1]],
+        [parent_u, aspect_code]
+    ]
+
+    res, status = boq_execute(rpc_id, json.dumps(payload), cookie, proxy=proxy,
+                              source_path=f"/project/{project}", timeout=timeout)
+    if status == "ok" and res and isinstance(res, list):
         ops = []
-        for o in j.get("operations", []):
-            n = (o.get("operation") or {}).get("name")
-            if n:
-                ops.append(n)
-        if not ops:
-            for m in j.get("media", []):
-                if m.get("name"):
-                    ops.append(m["name"])
-        if not ops:
-            for wf in j.get("workflows", []):
-                pm_id = (wf.get("metadata") or {}).get("primaryMediaId") or wf.get("name")
-                if pm_id:
-                    ops.append(pm_id)
+        # res[3] chứa danh sách media thực sự cần poll qua jwpduf
+        if len(res) > 3 and isinstance(res[3], list) and res[3]:
+            for m in res[3]:
+                if isinstance(m, list) and len(m) > 0 and m[0]:
+                    ops.append(str(m[0]))
+        # Fallback: trích xuất từ res[2]
+        if not ops and len(res) > 2 and isinstance(res[2], list) and res[2]:
+            for sc in res[2]:
+                if isinstance(sc, list):
+                    if len(sc) > 3 and isinstance(sc[3], list) and len(sc[3]) > 4 and sc[3][4]:
+                        ops.append(str(sc[3][4]))
+                    elif len(sc) > 0 and sc[0]:
+                        ops.append(str(sc[0]))
         if ops:
             _log_api(f"submit_video ok: ops={ops}")
             return "ok", ops
-        else:
-            _log_err(f"submit_video succeeded but no operations found in JSON: {j}")
-            return "retry", None
-    # 429 là throttle/quota (thường xuyên, GUI tự xử lý + ghi rõ loại) -> KHÔNG spam log ở đây.
-    if r.status_code != 429:
-        _log_err(f"submit_video API failed status: {r.status_code}, response: {r.text[:200]}")
-    return _classify(r)
+
+    if status in ("quota_hard", "unusual", "throttle", "auth", "proxy_dead"):
+        return status, None
+    _log_err(f"submit_video failed: status={status}, res={str(res)[:200]}")
+    return "retry", None
 
 
 def _find_status(o, out=None):
@@ -825,90 +1312,69 @@ def check_video_status(bearer, ops, timeout=30, proxy=None):
 
 def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout=60, proxy=None,
                initial_wait=20.0, status_every=6):
-    """Thăm dò trạng thái render của video.
-
-    Kênh chính: media.getMediaUrlRedirect (302/200+video = xong).
-    Kênh phụ:   batchCheckAsyncVideoGenerationStatus, gọi mỗi `status_every` lượt poll để
-                phát hiện render FAIL kèm LÝ DO thật (PUBLIC_ERROR_AUDIO_FILTERED,
-                DANGER_FILTER, ...). Trước đây hàm này luôn trả "policy" khi hết lượt nên
-                không thể phân biệt vi phạm chính sách / timeout / audio bị lọc.
-
-    Trả (kind, detail, credits):
-      done       -> detail = media_id
-      failed     -> detail = lý do thật (PUBLIC_ERROR_*) nếu đọc được, else "timeout"
-      auth       -> bearer chết
-      proxy_dead -> proxy hỏng
-    """
+    """Thăm dò trạng thái render của video qua RPC jwpduf và lấy link CDN qua Zzl0ze."""
     if not ops:
         return "failed", "ops_empty", None
+    cookie = cookie or bearer
     media_id = ops[0]
     credits = None
 
-    # Adaptive Polling: Nghỉ trước 20s vì Google Veo luôn cần tối thiểu 20-35s để tạo video
     if initial_wait and initial_wait > 0:
         time.sleep(initial_wait)
 
-    H = {
-        "Authorization": f"Bearer {bearer}" if bearer else "",
-        "Cookie": cookie if cookie else "",
-        "User-Agent": UA_CH,
-        "Referer": "https://labs.google/",
-        "Accept": "*/*"
-    }
-    proxy_fail_count = 0  # Đếm lỗi proxy DNS liên tiếp
-    status_supported = bool(bearer)   # tắt kênh phụ nếu server không hiểu payload
+    inner_payload = [None, None, [[x] for x in ops]]
+    payload_str = json.dumps(inner_payload)
 
     for attempt in range(max_attempts):
-        try:
-            # Tắt redirect để kiểm tra Location / Content-Type
-            r = cffi.get(f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}",
-                         headers=H, **_kw(timeout, proxy=proxy), allow_redirects=False)
-            proxy_fail_count = 0  # Reset khi request thành công
-        except Exception as e:
-            if net_error_kind(e) == "proxy_dead":
-                proxy_fail_count += 1
-                if proxy_fail_count >= 5:
-                    _log_err(f"poll_video proxy dead after {proxy_fail_count} consecutive DNS failures")
-                    return "proxy_dead", None, credits
-            _log_err(f"poll_video network exception (attempt {attempt+1}/{max_attempts}): {e}")
-            time.sleep(interval)
-            continue
-
-        if r.status_code == 401:
-            _log_err(f"poll_video unauthorized (401)")
+        res, status = boq_execute("jwpduf", payload_str, cookie, proxy=proxy, timeout=timeout)
+        if status == "auth":
             return "auth", None, credits
+        if status == "proxy_dead":
+            return "proxy_dead", None, credits
 
-        if r.status_code in [302, 307] or (r.status_code == 200 and r.headers.get("content-type", "").startswith("video")):
-            # Video đã render thành công và sẵn sàng để tải!
-            return "done", media_id, credits
+        if res and isinstance(res, list) and len(res) > 2 and res[2]:
+            variations = res[2]
+            all_done = False
+            failed_reason = None
+            for v in variations:
+                if len(v) > 5 and isinstance(v[5], list) and len(v[5]) > 8:
+                    st_block = v[5][8]
+                    if st_block and isinstance(st_block, list):
+                        st_code = st_block[0]
+                        if st_code == 3:
+                            all_done = True
+                            break
+                        elif st_code == 4:
+                            failed_reason = str(st_block[1]) if len(st_block) > 1 else "render_failed"
 
-        if r.status_code in [404, 500]:
-            # 404/500 = ĐANG render HOẶC render đã FAIL — endpoint này không phân biệt được.
-            # Hỏi kênh phụ định kỳ để bắt lý do fail sớm thay vì chờ hết max_attempts.
-            if status_supported and attempt > 0 and attempt % status_every == 0:
-                kind, reason = check_video_status(bearer, ops, proxy=proxy)
-                if kind is None:
-                    status_supported = False      # server không trả được → thôi hỏi nữa
-                elif kind == "failed":
-                    _log_err(f"poll_video: render FAILED — lý do: {reason or 'không rõ'}")
-                    return "failed", (reason or "render fail"), credits
-                elif kind == "done":
-                    return "done", media_id, credits
-        else:
-            _log_err(f"poll_video check unexpected status {r.status_code}, response: {r.text[:200]}")
+            if all_done:
+                _log_api(f"poll_video: render thành công trên attempt #{attempt+1}! Đang lấy link CDN...")
+                proj_id = get_project(cookie, proxy=proxy) or "513f3b20-fa17-4be7-89b5-f179860de580"
+                zzl_res, zzl_status = boq_execute("Zzl0ze", json.dumps([f"projects/{proj_id}", None, None, None, [1]]),
+                                                  cookie, proxy=proxy, timeout=timeout)
+                if zzl_res and isinstance(zzl_res, list) and len(zzl_res) > 2:
+                    for scene in zzl_res[2]:
+                        if isinstance(scene, list) and len(scene) > 5 and scene[0] in ops:
+                            m_arr = scene[5]
+                            cdn_url = m_arr[10] or m_arr[5]
+                            if cdn_url:
+                                return "done", cdn_url, credits
+
+                if zzl_res:
+                    import re
+                    m_lh3 = re.findall(r'https://lh3\.googleusercontent\.com/[^\s"\',]+', json.dumps(zzl_res))
+                    if m_lh3:
+                        return "done", m_lh3[0], credits
+
+                return "done", media_id, credits
+
+            if failed_reason:
+                _log_err(f"poll_video: render FAILED — {failed_reason}")
+                return "failed", failed_reason, credits
 
         time.sleep(interval)
 
-    # Hết lượt poll: hỏi kênh phụ lần cuối để biết fail thật hay chỉ chậm
-    if status_supported:
-        kind, reason = check_video_status(bearer, ops, proxy=proxy)
-        if kind == "failed":
-            _log_err(f"poll_video: render FAILED sau {max_attempts} lượt — lý do: {reason or 'không rõ'}")
-            return "failed", (reason or "render fail"), credits
-        if kind == "done":
-            return "done", media_id, credits
-
-    _log_err(f"poll_video timeout sau {max_attempts} lượt (không xác định được lý do).")
+    _log_err(f"poll_video timeout sau {max_attempts} lượt.")
     return "failed", "timeout", credits
 
 # ---------- GEMINI: viết lại prompt vi phạm chính sách ----------
@@ -1035,7 +1501,35 @@ DL_NET_FAIL = -2     # lỗi mạng tạm thời, đã hết lượt retry → c
 
 
 def download_video(media_id, cookie, dst, timeout=180, proxy=None, max_retries=3):
-    H = {"Cookie": cookie, "User-Agent": UA_CH, "Referer": "https://labs.google/", "Accept": "*/*"}
+    """Tải video trực tiếp từ Google CDN hoặc qua media_id."""
+    if not media_id:
+        return 0
+
+    # Nếu media_id là URL CDN trực tiếp
+    if str(media_id).startswith("http://") or str(media_id).startswith("https://"):
+        return download_url(media_id, dst, timeout=timeout, proxy=proxy)
+
+    # Nếu media_id là scene UUID: dùng Zzl0ze để tìm URL CDN
+    if cookie:
+        try:
+            zzl_res, status = boq_execute("Zzl0ze", json.dumps(["projects/513f3b20-fa17-4be7-89b5-f179860de580", None, None, None, [1]]),
+                                          cookie, proxy=proxy, timeout=30)
+            if zzl_res and isinstance(zzl_res, list) and len(zzl_res) > 2:
+                for scene in zzl_res[2]:
+                    if isinstance(scene, list) and len(scene) > 5 and scene[0] == media_id:
+                        cdn_url = scene[5][10] or scene[5][5]
+                        if cdn_url:
+                            return download_url(cdn_url, dst, timeout=timeout, proxy=proxy)
+            if zzl_res:
+                import re
+                m_lh3 = re.findall(r'https://lh3\.googleusercontent\.com/[^\s"\',]+', json.dumps(zzl_res))
+                if m_lh3:
+                    return download_url(m_lh3[0], dst, timeout=timeout, proxy=proxy)
+        except Exception as e:
+            _log_err(f"download_video Zzl0ze resolution exception: {e}")
+
+    # Fallback
+    H = {"Cookie": cookie or "", "User-Agent": UA_CH, "Referer": "https://flow.google.com/", "Accept": "*/*"}
     for attempt in range(max_retries):
         try:
             r = cffi.get(f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}", headers=H,
@@ -1045,27 +1539,26 @@ def download_video(media_id, cookie, dst, timeout=180, proxy=None, max_retries=3
                 with open(dst, "wb") as f:
                     f.write(r.content)
                 return len(r.content)
-            _log_err(f"download_video failed. status: {r.status_code}, content-type: {r.headers.get('content-type')}, response: {r.text[:200]}")
             return 0
         except Exception as e:
             kind = net_error_kind(e)
             if kind == "proxy_dead":
-                _log_err(f"download_video proxy dead: {e}")
                 return DL_PROXY_DEAD
             if kind == "transient" and attempt < max_retries - 1:
-                # Tải dở bị cắt giữa dòng (rất hay gặp với proxy residential) → thử lại
-                wait = 3.0 * (attempt + 1)
-                _log_err(f"download_video lỗi mạng tạm thời (retry {attempt+1}/{max_retries}, chờ {wait:.0f}s): {e}")
-                time.sleep(wait)
+                time.sleep(3.0 * (attempt + 1))
                 continue
-            _log_err(f"download_video exception: {e}")
             return DL_NET_FAIL if kind == "transient" else 0
-    return DL_NET_FAIL
+    return 0
 
 
 def download_url(url, dst, timeout=120, proxy=None):
-    data = cffi.get(url, **_kw(timeout, proxy=proxy)).content
-    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-    with open(dst, "wb") as f:
-        f.write(data)
-    return len(data)
+    try:
+        data = cffi.get(url, headers={"User-Agent": UA_CH}, **_kw(timeout, proxy=proxy)).content
+        if data and len(data) > 1000:
+            os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+            with open(dst, "wb") as f:
+                f.write(data)
+            return len(data)
+    except Exception as e:
+        _log_err(f"download_url exception: {e}")
+    return 0

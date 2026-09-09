@@ -7,10 +7,16 @@ Cần: DrissionPage, pyotp.
 """
 import time, os, random
 
-LABS = "https://labs.google/fx/tools/flow"
+LABS = "https://flow.google.com/?pli=1"
 # Dùng accounts.google.com cơ bản — Google tự redirect sang trang v3/signin mới nhất
 GOOGLE_SIGNIN = "https://accounts.google.com"
-_KEEP = ("next-auth", "__Secure", "__Host", "_ga", "email")
+_KEEP = (
+    "SID", "HSID", "SSID", "APISID", "SAPISID",
+    "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID", "__Secure-3PAPISID",
+    "__Secure-1PSIDTS", "__Secure-3PSIDTS", "SIDCC", "__Secure-1PSIDCC", "__Secure-3PSIDCC",
+    "OSID", "__Secure-OSID", "NID", "1P_JAR", "AEC",
+    "next-auth", "__Secure", "__Host", "email", "ACCOUNT_CHOOSER"
+)
 
 
 def get_chrome_path():
@@ -49,16 +55,27 @@ def _opts(profile_dir=None):
 
 
 def _labs_cookie(cks):
+    cks_sorted = sorted(
+        cks or [],
+        key=lambda c: 0 if "flow.google.com" in c.get("domain", "") else (1 if c.get("domain") == ".google.com" else 2)
+    )
     parts = []
-    for c in cks or []:
-        if "labs.google" in c.get("domain", "") and any(k in c.get("name", "") for k in _KEEP):
-            parts.append(f"{c.get('name')}={c.get('value','')}")
+    seen = set()
+    for c in cks_sorted:
+        domain = c.get("domain", "")
+        name = c.get("name", "")
+        if any(d in domain for d in ["flow.google.com", ".google.com", "google.com"]) and any(k in name for k in _KEEP):
+            if name not in seen:
+                seen.add(name)
+                parts.append(f"{name}={c.get('value','')}")
     return "; ".join(parts)
 
 
 def _is_cookie_valid(cookie):
-    """Xác minh cookie có thực sự lấy được Bearer token còn hạn từ Google Labs hay không."""
-    if not cookie or "next-auth.session-token" not in cookie:
+    """Xác minh cookie có thực sự hợp lệ với Google Flow hay không."""
+    if not cookie:
+        return False
+    if "SID=" not in cookie and "next-auth" not in cookie:
         return False
     try:
         import engine as E
@@ -67,6 +84,7 @@ def _is_cookie_valid(cookie):
         return bool(token)
     except Exception:
         return False
+
 
 
 def _totp_now(secret):
@@ -561,8 +579,8 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
                 break
             time.sleep(2)
 
-        # Nếu chưa ở labs, navigate đến
-        if "labs.google" not in page.url:
+        # Nếu chưa ở Flow, navigate đến
+        if "flow.google.com" not in page.url and "labs.google" not in page.url:
             log(f"  🌐 Navigate về Flow (URL hiện tại: {page.url[:80]})...")
             page.get(LABS)
             time.sleep(5)

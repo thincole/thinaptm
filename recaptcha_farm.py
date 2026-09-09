@@ -14,11 +14,13 @@ Nếu không lấy được token → caller tự fallback về "android_bypass"
 """
 import threading, time, queue, os, json
 
-# reCAPTCHA site key cho Google Labs Flow (public, nhúng trong page source labs.google)
+# reCAPTCHA site key cho Google Flow (nhúng trong page source flow.google.com: key xZbWve)
 # Đây là enterprise key, dùng với grecaptcha.enterprise.execute()
-RECAPTCHA_SITE_KEY = "6LfhM_ApAAAAADuqA_eP-MKgjABwMikSfOjQbpaK"
-RECAPTCHA_ACTION = "LABS_FLOW"
-LABS_URL = "https://labs.google/fx/tools/flow"
+RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
+RECAPTCHA_ACTION = "VIDEO_GENERATION"
+DEFAULT_PROJECT_ID = "513f3b20-fa17-4be7-89b5-f179860de580"
+FLOW_URL = f"https://flow.google.com/project/{DEFAULT_PROJECT_ID}"
+LABS_URL = FLOW_URL
 
 # Số token tồn kho tối đa (token hết hạn sau ~2 phút nên không nên giữ quá nhiều)
 MAX_QUEUE = 20
@@ -50,10 +52,20 @@ class RecaptchaFarm:
     Token được lưu vào queue thread-safe, kèm timestamp.
     """
     
-    def __init__(self, num_workers=3, log_func=None):
+    def __init__(self, num_workers=2, log_func=None, profile_dir=None):
         self.num_workers = num_workers
-        self._log = log_func or (lambda m: print(f"[RecaptchaFarm] {m}"))
-        self._queue = queue.Queue(maxsize=MAX_QUEUE)
+        self.profile_dir = profile_dir
+        def _safe_print(m):
+            try:
+                print(f"[RecaptchaFarm] {m}")
+            except Exception:
+                print(f"[RecaptchaFarm] {str(m).encode('ascii', 'replace').decode()}")
+        self._log = log_func or _safe_print
+        self._queues = {
+            "VIDEO_GENERATION": queue.Queue(maxsize=MAX_QUEUE),
+            "UPLOAD_IMAGE": queue.Queue(maxsize=MAX_QUEUE),
+        }
+        self._queue = self._queues["VIDEO_GENERATION"]
         self._stop = False
         self._workers = []
         self._started = False
@@ -71,7 +83,7 @@ class RecaptchaFarm:
         try:
             from DrissionPage import ChromiumOptions, ChromiumPage
         except ImportError:
-            self._log("❌ Thiếu DrissionPage — không thể farm token. Dùng android_bypass.")
+            self._log("❌ Thiếu DrissionPage — không thể farm token.")
             return False
         
         for i in range(self.num_workers):
@@ -79,7 +91,7 @@ class RecaptchaFarm:
                                  name=f"RecaptchaFarm-{i}")
             t.start()
             self._workers.append(t)
-            time.sleep(0.5)  # stagger khởi động để tránh dồn
+            time.sleep(0.5)
         
         self._started = True
         self._log(f"✅ Trại Token đã khởi động — {self.num_workers}/{self.num_workers} luồng sẵn sàng")
@@ -89,34 +101,37 @@ class RecaptchaFarm:
         """Dừng farm."""
         self._stop = True
         self._started = False
-        # Không join workers vì chúng là daemon threads
         self._log(f"⏹ Trại Token đã dừng. Tổng token đã farm: {self._total_farmed}")
     
-    def get_token(self, timeout=15):
-        """Lấy 1 token tươi từ queue. Trả token string hoặc None nếu timeout.
-        Tự bỏ token quá hạn."""
+    def get_token(self, timeout=15, action="VIDEO_GENERATION"):
+        """Lấy 1 token tươi từ queue cho action tương ứng (VIDEO_GENERATION hoặc UPLOAD_IMAGE).
+        Trả token string hoặc None nếu timeout. Tự bỏ token quá hạn."""
+        q = self._queues.get(action, self._queue)
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                token, ts = self._queue.get(timeout=min(2, deadline - time.time()))
-                # Kiểm tra token còn hạn không
-                if time.time() - ts < TOKEN_TTL:
-                    return token
-                # Token quá hạn → bỏ, lấy cái kế
-                continue
+                item = q.get(timeout=min(2.0, max(0.1, deadline - time.time())))
+                if isinstance(item, tuple):
+                    token, ts = item
+                    if time.time() - ts < TOKEN_TTL:
+                        return token
+                elif isinstance(item, str):
+                    return item
             except queue.Empty:
                 continue
         return None
     
-    def queue_size(self):
-        """Số token đang có trong kho."""
-        return self._queue.qsize()
+    def qsize(self, action="VIDEO_GENERATION"):
+        """Số token tươi hiện có trong queue."""
+        return self._queues.get(action, self._queue).qsize()
     
     def stats(self):
-        """Thống kê."""
+        """Thống kê farm."""
         return {
-            "running": self._started,
             "workers": len(self._workers),
+            "started": self._started,
+            "queued_video": self._queues["VIDEO_GENERATION"].qsize(),
+            "queued_upload": self._queues["UPLOAD_IMAGE"].qsize(),
             "queued": self._queue.qsize(),
             "total_farmed": self._total_farmed,
         }
@@ -144,85 +159,103 @@ class RecaptchaFarm:
             co.set_argument("--no-default-browser-check")
             co.set_argument("--disable-gpu")
             co.set_argument("--headless")
-            # --- Cực kỳ tối ưu CPU cho Chrome ngầm ---
             co.set_argument("--blink-settings=imagesEnabled=false")
             co.set_argument("--disable-software-rasterizer")
             co.set_argument("--disable-dev-shm-usage")
             co.set_argument("--no-sandbox")
             co.set_argument("--disable-webgl")
-            # Chặn tải ảnh ở mức profile settings
             co.set_pref("profile.default_content_setting_values.images", 2)
             co.set_pref("profile.managed_default_content_settings.images", 2)
             
+            # Chọn profile có sẵn — MỖI worker cần 1 profile RIÊNG (không được dùng chung user-data-dir)
+            pdir = self.profile_dir
+            if not pdir:
+                profiles_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_profiles")
+                if os.path.exists(profiles_dir):
+                    sub = [os.path.join(profiles_dir, d) for d in os.listdir(profiles_dir)
+                           if os.path.isdir(os.path.join(profiles_dir, d)) and not d.startswith("_farm_")]
+                    # Ưu tiên các profile đã đăng nhập (như colecole2627_gmail.com)
+                    auth_candidates = [p for p in sub if "cole" in os.path.basename(p).lower()]
+                    source_pool = auth_candidates if auth_candidates else sub
+                    if source_pool:
+                        source_profile = source_pool[worker_id % len(source_pool)]
+                        # Tạo bản copy riêng cho worker này để tránh lock conflict
+                        farm_profile = os.path.join(profiles_dir, f"_farm_{worker_id}")
+                        if not os.path.exists(farm_profile):
+                            import shutil
+                            try:
+                                shutil.copytree(source_profile, farm_profile, 
+                                              ignore=shutil.ignore_patterns("*.lock", "*.lck", "lockfile", "SingletonLock", "SingletonSocket", "SingletonCookie"),
+                                              dirs_exist_ok=True)
+                                self._log(f"{tag} Copied profile from {os.path.basename(source_profile)} -> _farm_{worker_id}")
+                            except Exception as e:
+                                self._log(f"{tag} Profile copy failed: {e}, using fresh profile")
+                                os.makedirs(farm_profile, exist_ok=True)
+                        pdir = farm_profile
+            if pdir:
+                co.set_user_data_path(pdir)
+
             co.set_local_port(random.randint(30000, 49999))
 
             page = ChromiumPage(co)
             page.set.retry_times(2)
 
-            # Load trang labs.google để có origin và script reCAPTCHA
-            page.get(LABS_URL)
-            time.sleep(2)
-
-            # Inject reCAPTCHA enterprise script nếu chưa có
-            inject_js = f"""
-                if (!window._rcFarmReady) {{
-                    var s = document.createElement('script');
-                    s.src = 'https://www.google.com/recaptcha/enterprise.js?render={RECAPTCHA_SITE_KEY}';
-                    s.onload = function() {{ window._rcFarmReady = true; }};
-                    document.head.appendChild(s);
-                }}
-            """
-            page.run_js(inject_js)
-            time.sleep(2)
+            page.get(FLOW_URL)
+            time.sleep(5)
 
             self._log(f"{tag} 🟢 DrissionPage Chrome sẵn sàng, bắt đầu farm")
 
-            exec_js = f"""
-            return new Promise((resolve) => {{
-                function executeToken() {{
+            def _build_exec_js(act):
+                return f"""
+                return new Promise((resolve) => {{
                     try {{
                         if (typeof grecaptcha === 'undefined' || !grecaptcha.enterprise) {{
                             resolve('ERROR:grecaptcha_undefined');
                             return;
                         }}
                         grecaptcha.enterprise.ready(function() {{
-                            grecaptcha.enterprise.execute('{RECAPTCHA_SITE_KEY}', {{action: '{RECAPTCHA_ACTION}'}})
+                            grecaptcha.enterprise.execute('{RECAPTCHA_SITE_KEY}', {{action: '{act}'}})
                                 .then(function(token) {{ resolve(token); }})
                                 .catch(function(err) {{ resolve('ERROR:' + err); }});
                         }});
                     }} catch(e) {{
                         resolve('ERROR:' + e);
                     }}
-                }}
-                executeToken();
-            }});
-            """
+                }});
+                """
+            exec_js_map = {act: _build_exec_js(act) for act in ["VIDEO_GENERATION", "UPLOAD_IMAGE"]}
 
             fail_streak = 0
             while not self._stop:
                 try:
-                    token = page.run_js(exec_js)
-                    if token and isinstance(token, str) and len(token) > 20 and not token.startswith("ERROR"):
-                        try:
-                            self._queue.put_nowait((token, time.time()))
-                            with self._lock:
-                                self._total_farmed += 1
-                            fail_streak = 0
-                        except queue.Full:
-                            pass
+                    any_success = False
+                    for act, js_code in exec_js_map.items():
+                        q = self._queues[act]
+                        if q.qsize() < MAX_QUEUE:
+                            token = page.run_js(js_code)
+                            if token and isinstance(token, str) and len(token) > 20 and not token.startswith("ERROR"):
+                                try:
+                                    q.put_nowait((token, time.time()))
+                                    with self._lock:
+                                        self._total_farmed += 1
+                                    any_success = True
+                                except queue.Full:
+                                    pass
+
+                    if any_success:
+                        fail_streak = 0
                     else:
                         fail_streak += 1
-                        if fail_streak >= 5:
-                            page.get(LABS_URL)
-                            time.sleep(2)
-                            page.run_js(inject_js)
-                            time.sleep(2)
+                        if fail_streak >= 4:
+                            page.get(FLOW_URL)
+                            time.sleep(5)
                             fail_streak = 0
 
                 except Exception as e:
                     fail_streak += 1
 
-                time.sleep(FARM_INTERVAL + random.uniform(-1, 2))
+                # Sleep 1 lần duy nhất: ngắn hơn khi thành công, dài hơn khi fail
+                time.sleep(FARM_INTERVAL + random.uniform(-1, 2) if any_success else 2)
 
         except Exception as e:
             self._log(f"{tag} ❌ Worker crash: {str(e)[:100]}")

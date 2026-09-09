@@ -687,11 +687,135 @@ _LANG_MAP = {
 
 # ==================== PROMPT BUILDERS ====================
 
-def build_image_prompt(product_name, scene_en, lang="en"):
+def _apply_pov_or_unbox_transform(prompt, review_style, lang="en"):
+    """Nếu review_style là POV hoặc Unboxing, loại bỏ hoàn toàn mô tả người mẫu nữ / khuôn mặt,
+    thay bằng chỉ thị POV chỉ quay bàn tay và sản phẩm trên mặt bàn."""
+    style_str = str(review_style or "").lower()
+    if not any(k in style_str for k in ("pov", "unbox", "đập hộp", "góc nhìn thứ nhất")):
+        return prompt
+
+    import re as _re
+
+    # 1. Thay thế hoàn toàn SECTION 3 (Xóa bỏ khuôn mặt / người mẫu nữ)
+    if lang == "vi":
+        pov_sec3 = (
+            "=== SECTION 3: ĐẶC TẢ GÓC NHÌN POV & BÀN TAY (TUYỆT ĐỐI KHÔNG LỘ MẶT) ===\n"
+            "- TUYỆT ĐỐI KHÔNG quay khuôn mặt, KHÔNG đầu người, KHÔNG thân người mẫu trong bất kỳ khung hình nào.\n"
+            "- GÓC NHÌN: Góc nhìn thứ nhất POV hoặc góc máy từ trên cao nhìn xuống bàn (top-down desk view).\n"
+            "- CHỈ CÓ BÀN TAY: Đúng hai bàn tay người bình thường với 5 ngón mỗi bàn tay, thao tác nhẹ nhàng trên mặt bàn.\n"
+            "- SẢN PHẨM LÀ TRỌNG TÂM: Sản phẩm là tâm điểm duy nhất trên mặt bàn sạch sẽ.\n"
+            "- Giọng đọc thuyết minh ngoài màn hình (voiceover) trong khi đôi bàn tay thao tác trên sản phẩm.\n"
+            "\n"
+        )
+    else:
+        pov_sec3 = (
+            "=== SECTION 3: SUBJECT & HANDS CONSISTENCY (POV / UNBOXING - NO FACE) ===\n"
+            "- ABSOLUTELY NO human face, NO head, NO body, NO presenter shown in any frame.\n"
+            "- SUBJECT: First-person POV (Point of View) or top-down desk perspective looking directly at the workspace.\n"
+            "- HANDS ONLY: Exactly two natural human hands with five normal fingers each, holding, operating, or unboxing the product on the desk.\n"
+            "- PRODUCT FOCAL POINT: The product is the central hero item on the table surface.\n"
+            "- Audio Narration / Voiceover speaks off-camera while hands demonstrate the product.\n"
+            "\n"
+        )
+
+    prompt = _re.sub(r'=== SECTION 3:.*?=== SECTION 4:', pov_sec3 + '=== SECTION 4:', prompt, count=1, flags=_re.DOTALL)
+
+    # 2. Thay thế các cụm từ mâu thuẫn trong Timeline Action & Camera
+    if lang == "vi":
+        replacements = [
+            ("Góc máy trực diện", "Góc quay POV từ trên nhìn xuống bàn"),
+            ("Góc trực diện", "Góc nhìn POV trên bàn"),
+            ("Góc máy giữ nguyên trực diện", "Góc máy POV giữ nguyên vị trí trên bàn"),
+            ("Nhân vật là một reviewer chuyên nghiệp, nói chuyện tự tin, cuốn hút với nét mặt rạng rỡ", "Đôi bàn tay khéo léo cầm, kiểm tra và giới thiệu sản phẩm trên bàn theo góc nhìn POV"),
+            ("Người review", "Đôi bàn tay"),
+            ("người review", "đôi bàn tay"),
+            ("nhân vật và sản phẩm", "đôi bàn tay và sản phẩm"),
+            ("Nhân vật cầm hoặc chạm", "Đôi bàn tay cầm hoặc chạm"),
+            ("ngang tầm ngực, đối diện camera", "ngay trên mặt bàn"),
+            ("ngang tầm ngực", "trên mặt bàn"),
+            ("ngang tầm mặt", "ngay trên mặt bàn"),
+            ("nhìn thẳng vào camera với nụ cười tự tin", "giơ ngón tay cái tán thưởng bên cạnh sản phẩm trên bàn"),
+            ("nói chuyện trực tiếp với camera", "thao tác nhẹ nhàng trên sản phẩm"),
+            ("hướng về phía camera", "hướng về phía sản phẩm"),
+            ("đối diện camera", "trên mặt bàn"),
+            ("nhìn vào camera", "nhìn xuống sản phẩm"),
+        ]
+    else:
+        replacements = [
+            ("Still front-facing", "Still in POV desk view"),
+            ("still front-facing", "still in POV desk view"),
+            ("Front-facing camera", "First-person POV desk camera looking down"),
+            ("front-facing camera", "first-person POV desk camera looking down"),
+            ("Front-facing", "POV desk angle"),
+            ("front-facing", "POV desk angle"),
+            ("Front view, focusing tightly on the character and the product", "Top-down view, focusing tightly on hands operating the product on the desk"),
+            ("Front view", "Top-down desk view"),
+            ("Return to the final front-facing shot", "Return to the clean top-down desk shot"),
+            ("The character is a professional product reviewer, speaking confidently and engagingly with a cheerful expression", "First-person POV product review, hands carefully and neatly presenting the product on the desk"),
+            ("The character remains generally in place, performing subtle, natural movements. Maintain character and setting consistency.", "Hands remain in place on the desk, performing smooth natural unboxing and testing movements."),
+            ("The person from the reference image is ALREADY holding '{name}' with both hands at chest level and carefully examining it from multiple angles", "Hands are ALREADY holding and inspecting '{name}' on the desk from multiple angles"),
+            ("The person from the reference image is ALREADY holding", "Hands are ALREADY holding"),
+            ("The character highlights key details", "Hands highlight key details"),
+            ("The character holds or gently touches", "Hands hold or gently touch"),
+            ("The character", "Hands"),
+            ("the character", "the hands"),
+            ("They look at the camera and begin sharing honest first impressions with natural speaking gestures.", "Hands gently turn the product over to show all sides while off-camera voiceover shares honest impressions."),
+            ("The person is ALREADY holding '{name}' with BOTH HANDS at CHEST LEVEL, facing camera, mid-sentence", "Hands are ALREADY holding '{name}' neatly on the desk"),
+            ("The person is ALREADY holding", "Hands are ALREADY holding"),
+            ("facing camera, mid-sentence", "at desk level"),
+            ("facing the camera, mouth slightly open as if mid-sentence", "on the desk smoothly"),
+            ("facing the camera", "on the desk"),
+            ("with ONE HAND near FACE level", "above desk level for close-up view"),
+            ("near FACE level", "above desk level"),
+            ("looking directly into camera with a confident, persuasive smile and double thumbs-up", "resting the product neatly on the table with a reassuring thumbs-up gesture next to the product"),
+            ("looking directly into camera with a confident, persuasive smile", "giving a subtle thumbs-up gesture next to the product on the desk"),
+            ("End with a confident, persuasive smile and recommendation", "End with a clean macro close-up of the product and an approving thumbs-up gesture on the desk"),
+            ("where the product '{name}' and the reviewer appear sharp", "where the product '{name}' and hands appear sharp"),
+            ("where the product and the reviewer appear sharp", "where the product and hands appear sharp"),
+            ("reviewer and the product", "hands and the product"),
+            ("look at the camera and begin", "focus on the product and begin"),
+            ("look at the camera", "focus on the product"),
+            ("looking directly into camera", "focusing on the product on the desk"),
+        ]
+
+    for old, new in replacements:
+        prompt = prompt.replace(old, new)
+
+    return prompt
+
+
+def build_image_prompt(product_name, scene_en, lang="en", review_style=None):
     """Tạo prompt cho Google Flow generate_image.
     Kết hợp: người mẫu (từ ảnh tham chiếu) + sản phẩm (từ ảnh SP) + khung cảnh.
     Tích hợp FRAMING LOCK 9:16 tràn viền và bảo tồn chi tiết sản phẩm tuyệt đối.
+    Hỗ trợ POV / Unboxing: loại bỏ hoàn toàn người mẫu, chỉ lấy bàn tay thao tác trên bàn.
     """
+    style_str = str(review_style or "").lower()
+    is_pov = any(k in style_str for k in ("pov", "unbox", "đập hộp", "góc nhìn thứ nhất"))
+
+    if is_pov:
+        if lang == "vi":
+            prompt = (
+                f"Ảnh chụp đánh giá sản phẩm thương mại điện tử chuyên nghiệp theo góc nhìn thứ nhất POV, giới thiệu '{product_name}', {scene_en}.\n"
+                f"FRAMING LOCK: Ảnh chân dung dọc full-frame 9:16 tràn viền, ảnh chụp máy ảnh thật edge-to-edge, TUYỆT ĐỐI KHÔNG viền đen, KHÔNG viền trắng, KHÔNG lề phụ, KHÔNG chia ô collage/storyboard, KHÔNG frame-within-frame.\n"
+                f"QUAN TRỌNG NHẤT: Sản phẩm '{product_name}' phải là bản sao CHÍNH XÁC PIXEL-PERFECT từ ảnh sản phẩm tham chiếu — giữ nguyên 100% hình dạng, màu sắc, logo, nhãn mác, bao bì, chất liệu và tỷ lệ thực tế.\n"
+                f"TẤT CẢ chữ viết, ký tự, tên thương hiệu in trên sản phẩm phải giữ nguyên TỪNG KÝ TỰ — cùng font, cùng kích cỡ, cùng vị trí. KHÔNG được bịa, thay thế, làm mờ, hay biến dạng chữ trên SP.\n"
+                f"BỐ CỤC & CHỦ THỂ: Góc nhìn thứ nhất POV nhìn xuống mặt bàn sạch sẽ. TUYỆT ĐỐI KHÔNG có khuôn mặt, KHÔNG đầu người, KHÔNG thân người mẫu. CHỈ CÓ đôi bàn tay người thật tự nhiên đang cầm, mở hộp hoặc thao tác nhẹ nhàng trên '{product_name}'.\n"
+                f"Bàn tay có đúng 5 ngón bình thường, màu da tự nhiên, không che khuất logo hay nhãn mác chính.\n"
+                f"Ánh sáng tự nhiên mềm mại, bối cảnh chân thực như chụp bằng smartphone đời thực, không có cảm giác AI giả tạo. Bố cục thương mại cao cấp, độ phân giải cao 8K."
+            )
+        else:
+            prompt = (
+                f"Professional e-commerce product review photography in first-person POV perspective, naturally showcasing '{product_name}', {scene_en}.\n"
+                f"FRAMING LOCK: Full-frame vertical 9:16 portrait image, edge-to-edge real camera photo, ABSOLUTELY NO borders, NO black bars, NO white margins, NO gutters, NO divider lines, NO frame-within-frame, NO storyboard or collage layout.\n"
+                f"MOST CRITICAL: The product '{product_name}' must be a PIXEL-PERFECT, EXACT DUPLICATE from the product reference image — preserve 100% of its shape, colors, logos, labels, textures, materials, and real-world proportions.\n"
+                f"ALL text, letters, brand names, logos, and printed info on the product MUST be reproduced CHARACTER-BY-CHARACTER exactly as they appear — same font, size, position. DO NOT invent, replace, blur, or distort any text.\n"
+                f"COMPOSITION & SUBJECT: First-person POV looking down at a clean minimalist tabletop. ABSOLUTELY NO human face, NO head, NO human body visible. ONLY a pair of neat, realistic human hands naturally interacting with, holding, or unboxing '{product_name}' on the desk.\n"
+                f"Hands have normal five fingers each, natural realistic skin tone, holding the product cleanly without obscuring key logos or labels.\n"
+                f"Natural soft lighting, realistic smartphone camera realism, authentic lived-in environment. Photorealistic, ultra high resolution 8K commercial quality."
+            )
+        return prompt
+
     if lang == "vi":
         prompt = (
             f"Ảnh chụp đánh giá sản phẩm thương mại điện tử chuyên nghiệp của người mẫu đang cầm và giới thiệu tự nhiên sản phẩm '{product_name}', {scene_en}.\n"
@@ -798,6 +922,9 @@ def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", revi
             else:
                 sitting_constraint = "[LAYOUT CONSTRAINT: The presenter is sitting politely behind a clean, minimalist wooden desk throughout the video. All actions are performed while seated at this desk. Do not show the presenter standing or walking. Keep her seated behind the desk. The product is either placed on the desk or held above it.]\n\n"
             prompt = sitting_constraint + prompt
+
+        # Áp dụng chuẩn hóa POV / Unboxing (loại bỏ khuôn mặt, sửa timeline action thành bàn tay trên bàn)
+        prompt = _apply_pov_or_unbox_transform(prompt, target_style or review_style, lang=lang)
         prompts.append(prompt)
     return prompts
 
@@ -1276,6 +1403,9 @@ def build_video_prompts_fallback(product_name, scene_en, duration_sec=16, lang="
             else:
                 sitting_constraint = "[LAYOUT CONSTRAINT: The presenter is sitting politely behind a clean, minimalist wooden desk throughout the video. All actions are performed while seated at this desk. Do not show the presenter standing or walking. Keep her seated behind the desk. The product is either placed on the desk or held above it.]\n\n"
             prompt = sitting_constraint + prompt
+
+        # Áp dụng chuẩn hóa POV / Unboxing (loại bỏ khuôn mặt, sửa timeline action thành bàn tay trên bàn)
+        prompt = _apply_pov_or_unbox_transform(prompt, target_style or review_style, lang=lang)
         prompts.append(prompt)
     return prompts
 

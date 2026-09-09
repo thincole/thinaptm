@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.16"
+APP_VERSION = "ThinAPTM 1.2.17"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -133,9 +133,9 @@ AUTO_RETRY_ROUNDS = 2      # sau khi chạy xong, TỰ retry các job lỗi thê
 MAX_REWRITES = 3           # prompt vi phạm -> nhờ Gemini viết lại tối đa bao nhiêu lần trước khi bỏ
 # LƯU Ý: model lite (t2v_lite / r2v_lite) MIỄN PHÍ -> không tốn credit -> KHÔNG cách ly theo credit.
 # Account chỉ bị throttle (giới hạn tốc độ) và tự hồi; AIMD tự giảm tốc là đủ.
-UPLOAD_MIN_THREADS = 2          # Luồng upload tối thiểu (sàn)
-UPLOAD_MAX_THREADS = 4          # Luồng upload tối đa (trần)
-UPLOAD_UP_AFTER = 8             # Tăng +1 luồng sau 8 video thành công liên tiếp
+UPLOAD_MIN_THREADS = 1          # Luồng upload tối thiểu / khởi đầu (sàn: 1 luồng)
+UPLOAD_MAX_THREADS = 4          # Luồng upload tối đa (trần: 4 luồng)
+UPLOAD_UP_AFTER = 5             # Cứ 5 lần thành công liên tiếp thì tăng +1 luồng (1 -> 2 -> 3 -> 4)
 
 
 
@@ -369,13 +369,14 @@ class AccountState:
         self._circuit_broken = False       # True khi bị ngắt mạch
         # --- Proxy health tracking ---
         self.proxy_fail_streak = 0         # số lần proxy fail liên tiếp (DNS/connection)
-        # --- Upload Rate Limit & Luồng Upload thông minh (Mặc định 2, Min 2, Max 4) ---
-        self.upload_threads = max(UPLOAD_MIN_THREADS, min(UPLOAD_MAX_THREADS, int(acc.get("upload_threads", UPLOAD_MIN_THREADS))))
+        # --- Upload Rate Limit & Luồng Upload thông minh (Khởi đầu 1, Min 1, Max 4) ---
+        self.upload_threads = UPLOAD_MIN_THREADS
         self.upload_inflight = 0
+        self._upload_ok_streak = 0
         self._video_ok_streak = 0
         self._upload_gate = threading.Condition()
         self.last_upload_ts = 0.0          # thời điểm upload gần nhất của tài khoản này
-        self.upload_lock = threading.Lock() # khóa giãn cách 4s giữa các lần upload của cùng 1 tài khoản (Rule #2)
+        self.upload_lock = threading.Lock() # khóa giãn cách 6-8s giữa các lần upload của cùng 1 tài khoản
         # --- Submit Rate Limit & Lock per account (Rule #2: Khóa giãn cách 4s chống 429) ---
         self.submit_lock = threading.Lock()
         self.last_submit_ts = 0.0
@@ -405,12 +406,13 @@ class AccountState:
     def busy_dec(self):
         with self.blk: self.busy = max(0, self.busy - 1)
 
-    def wait_upload_spacing(self, min_interval=4.0):
-        """Bắt buộc mỗi lần upload của CÙNG 1 tài khoản phải cách nhau ít nhất min_interval (4s) theo Rule #2."""
+    def wait_upload_spacing(self, min_interval=6.0, max_interval=8.0):
+        """Bắt buộc mỗi lần upload của CÙNG 1 tài khoản phải cách nhau ngẫu nhiên từ 6-8 giây."""
         with self.upload_lock:
+            target_wait = random.uniform(min_interval, max_interval) if max_interval > min_interval else min_interval
             elapsed = time.time() - self.last_upload_ts
-            if elapsed < min_interval:
-                time.sleep(min_interval - elapsed + random.uniform(0.1, 0.4))
+            if elapsed < target_wait:
+                time.sleep(target_wait - elapsed)
             self.last_upload_ts = time.time()
 
     def wait_submit_spacing(self, min_interval=4.0, max_interval=6.0):
@@ -490,10 +492,11 @@ class AccountState:
         self.rest_reason = reason
 
     def on_upload_throttle(self):
-        """Upload bị 429 → tăng streak lỗi. Dính 2 lần liên tiếp mới hạ về sàn UPLOAD_MIN_THREADS (2 luồng)."""
+        """Upload bị 429 → tăng streak lỗi. Dính 2 lần liên tiếp mới hạ về sàn UPLOAD_MIN_THREADS (1 luồng)."""
         self.upload_throttle_streak += 1
         n = self.upload_throttle_streak
         with self._upload_gate:
+            self._upload_ok_streak = 0
             self._video_ok_streak = 0
             if n >= 2 and self.upload_threads > UPLOAD_MIN_THREADS:
                 self.upload_threads = UPLOAD_MIN_THREADS
@@ -510,11 +513,26 @@ class AccountState:
         return secs
 
     def on_upload_ok(self):
-        """Upload thành công → reset streak."""
+        """Upload thành công → reset streak lỗi. Cứ 5 lần thành công liên tiếp thì tăng +1 luồng upload (tối đa 4)."""
         self.upload_throttle_streak = 0
+        with self._upload_gate:
+            self._upload_ok_streak += 1
+            if self._upload_ok_streak >= UPLOAD_UP_AFTER and self.upload_threads < UPLOAD_MAX_THREADS:
+                self.upload_threads += 1
+                self._upload_ok_streak = 0
+                self.acc["upload_threads"] = self.upload_threads
+                calc_rate = max(2, min(20, self.upload_threads + 3))
+                self.max_busy = calc_rate
+                with self._gate:
+                    self._submit_max = float(calc_rate)
+                    self.submit_limit = float(calc_rate)
+                    self._gate.notify_all()
+                self._upload_gate.notify_all()
+                return True
+        return False
 
     def on_video_ok(self):
-        """Khi 1 video tạo thành công -> tăng streak, đủ UPLOAD_UP_AFTER (8 video) thì tăng +1 luồng upload (tối đa 4)."""
+        """Khi 1 video tạo thành công -> tăng streak, đủ UPLOAD_UP_AFTER (5 video) thì tăng +1 luồng upload (tối đa 4)."""
         with self._upload_gate:
             self._video_ok_streak += 1
             if self._video_ok_streak >= UPLOAD_UP_AFTER and self.upload_threads < UPLOAD_MAX_THREADS:
@@ -551,7 +569,7 @@ class AccountState:
         """Thay đổi số luồng upload trong thời gian thực (real-time) mà không cần restart.
         Tạo và Tốc độ = số luồng upload + 3 (Min 2, Max 20)."""
         with self._upload_gate:
-            self.upload_threads = max(2, min(20, int(val)))
+            self.upload_threads = max(1, min(20, int(val)))
             self.acc["upload_threads"] = self.upload_threads
             calc_rate = max(2, min(20, self.upload_threads + 3))
             self.max_busy = calc_rate
@@ -1780,7 +1798,7 @@ class App(ctk.CTk):
         self.opt_aspect.set(self.settings.get("aspect", "Dọc 9:16 (TikTok)"))
         
         ctk.CTkLabel(rs, text="Upload/TK:").pack(side="left")
-        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=60)
+        self.opt_upload_threads_per_acc = ctk.CTkOptionMenu(rs, values=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], width=60)
         self.opt_upload_threads_per_acc.pack(side="left", padx=(4, 12))
         saved_gen_up = self.settings.get("gen_upload_threads_per_acc", "4")
         self.opt_upload_threads_per_acc.set(saved_gen_up)
@@ -2504,7 +2522,7 @@ class App(ctk.CTk):
     def _on_acc_upload_threads_change(self, st, val):
         """Thay đổi số luồng upload của riêng tài khoản này — có hiệu lực ngay lập tức trong thời gian thực."""
         try:
-            num = max(2, min(10, int(val)))
+            num = max(1, min(10, int(val)))
             st.set_upload_threads(num)
             for a in self.accounts:
                 if (a.get("email") or a.get("id")) == st.email:
@@ -2578,10 +2596,10 @@ class App(ctk.CTk):
                         ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=60, height=24, font=("", 11, "bold"),
                                            command=lambda e=s.email: self._toggle_acc_enabled(e))
                         ab.pack(side="left", padx=(2, 0))
-                        uo = ctk.CTkOptionMenu(row, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
+                        uo = ctk.CTkOptionMenu(row, values=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
                                                command=lambda v, st=s: self._on_acc_upload_threads_change(st, v))
                         uo.pack(side="left", padx=(4, 0))
-                        uo.set(str(getattr(s, "upload_threads", 4)))
+                        uo.set(str(getattr(s, "upload_threads", 1)))
                         self._pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "a": ab, "u": uo}
 
             for s in states:
@@ -2592,6 +2610,9 @@ class App(ctk.CTk):
                 _set(r["f"], f"m_{e}_f", text=str(s.fails))
                 _set(r["b"], f"m_{e}_b", text=str(s.busy))
                 _set(r["r"], f"m_{e}_r", text=str(int(s.submit_limit)))
+                cur_up = str(getattr(s, "upload_threads", 1))
+                if r.get("u") and r["u"].get() != cur_up:
+                    r["u"].set(cur_up)
                 is_enabled = s.acc.get("enabled", True)
                 if not is_enabled:
                     _set(r["s"], f"m_{e}_s", text="⏹ đã dừng", text_color=T2)
@@ -3163,6 +3184,7 @@ class App(ctk.CTk):
             states = []
             for a in accs:
                 st = AccountState(a, submit_max=self._user_submit_max)
+                st.upload_threads = UPLOAD_MIN_THREADS  # Khi chạy tool thì số luồng upload bắt đầu là 1
                 # Gán proxy từ pool (nếu có)
                 if self.proxy_pool.has_proxies():
                     px = self.proxy_pool.assign(st.email)
@@ -3207,9 +3229,8 @@ class App(ctk.CTk):
             self._run_done0 = sum(1 for j in todo if j["status"] == "xong")
             self._done_timestamps = collections.deque()   # ghi timestamp mỗi video xong → tính tốc độ trượt 10 phút
 
-            # Trần upload toàn cục = 4 luồng (Rule 9.5) — tối ưu chạy 24/7, tránh bị Google
-            # đánh dấu IP. Giới hạn per-account do st.acquire_upload() phụ trách.
-            n_upload_threads = 4
+            # Trần upload toàn cục co giãn theo số lượng tài khoản (mỗi TK tự giới hạn qua st.acquire_upload)
+            n_upload_threads = max(len(states) * UPLOAD_MAX_THREADS, 16)
             upload_sem = threading.Semaphore(n_upload_threads)
             jobq = queue.Queue()
             for j in todo:
@@ -3250,14 +3271,18 @@ class App(ctk.CTk):
                         if not st.acquire_upload(lambda: self._stop):
                             return "retry_soft"
                         try:
-                            st.wait_upload_spacing(10.0)  # giãn cách 10s giữa các lần upload cùng 1 TK
+                            st.wait_upload_spacing(6.0, 8.0)  # giãn cách 6-8s giữa các lần upload cùng 1 TK
                             upload_sem.acquire()
                             try:
-                                ref_mid = E.upload_image(bearer, project, job["ref"], proxy=st.proxy)
+                                ref_mid = E.upload_image(bearer, project, job["ref"], proxy=st.proxy, email=st.email)
                             finally:
                                 upload_sem.release()
                         finally:
                             st.release_upload()
+                        if ref_mid == "vi phạm cs":
+                            job["status"] = "vi phạm cs"
+                            self._log(f"  ⚠️ {st.email[:16]}: ảnh đầu vào vi phạm chính sách Google")
+                            return ("fail", "vi phạm cs")
                         if ref_mid == "proxy_dead":
                             new_px = self.proxy_pool.mark_dead(st.email)
                             st.proxy = self.proxy_pool.get_dict(st.email) if new_px else None
@@ -3314,14 +3339,18 @@ class App(ctk.CTk):
                             if not st.acquire_upload(lambda: self._stop):
                                 return "retry_soft"
                             try:
-                                st.wait_upload_spacing(10.0)
+                                st.wait_upload_spacing(6.0, 8.0)
                                 upload_sem.acquire()
                                 try:
-                                    ref_mid = E.upload_image(bearer, project, job["ref"], proxy=st.proxy)
+                                    ref_mid = E.upload_image(bearer, project, job["ref"], proxy=st.proxy, email=st.email)
                                 finally:
                                     upload_sem.release()
                             finally:
                                 st.release_upload()
+                            if ref_mid == "vi phạm cs":
+                                job["status"] = "vi phạm cs"
+                                self._log(f"  ⚠️ {st.email[:16]}: ảnh đầu vào vi phạm chính sách Google (retry)")
+                                return ("fail", "vi phạm cs")
                             if ref_mid == "proxy_dead":
                                 new_px = self.proxy_pool.mark_dead(st.email)
                                 st.proxy = self.proxy_pool.get_dict(st.email) if new_px else None
@@ -3527,7 +3556,7 @@ class App(ctk.CTk):
                     if outcome == "success":
                         job["status"] = "xong"; st.wins += 1; st.clear_rest()
                         if st.on_video_ok():
-                            self._log(f"  ⚡ [{st.email[:12]}] 8 video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
+                            self._log(f"  ⚡ [{st.email[:12]}] {UPLOAD_UP_AFTER} video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
                         ts_deque = getattr(self, "_done_timestamps", None)
                         if ts_deque is not None: ts_deque.append(time.time())
                     elif outcome == "retry_soft":
@@ -4593,10 +4622,10 @@ class App(ctk.CTk):
                         ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=60, height=24, font=("", 11, "bold"),
                                            command=lambda e=s.email: self._toggle_acc_enabled(e))
                         ab.pack(side="left", padx=(2, 0))
-                        uo = ctk.CTkOptionMenu(row, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
+                        uo = ctk.CTkOptionMenu(row, values=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
                                                command=lambda v, st=s: self._on_acc_upload_threads_change(st, v))
                         uo.pack(side="left", padx=(4, 0))
-                        uo.set(str(getattr(s, "upload_threads", 4)))
+                        uo.set(str(getattr(s, "upload_threads", 1)))
                         self._sp_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab, "u": uo}
             for s in states:
                 r = self._sp_pool_rows.get(s.email)
@@ -4606,6 +4635,9 @@ class App(ctk.CTk):
                 _set(r["f"], f"sp_{e}_f", text=str(s.fails))
                 _set(r["b"], f"sp_{e}_b", text=str(s.busy))
                 _set(r["r"], f"sp_{e}_r", text=str(int(s.submit_limit)))
+                cur_up = str(getattr(s, "upload_threads", 1))
+                if r.get("u") and r["u"].get() != cur_up:
+                    r["u"].set(cur_up)
                 px_str = self.proxy_pool.get_str(s.email) if self.proxy_pool else None
                 if px_str:
                     parts = px_str.split(":")
@@ -4799,24 +4831,24 @@ class App(ctk.CTk):
                 pass
 
             # ── Auth tài khoản (giống main tab) ──
-            # 1. Khởi tạo Donor pool
+            # 1. Khởi tạo Donor pool (Tự động nạp nếu có tài khoản donor để dự phòng khi dính 429)
             self._donor_states = []
-            if _sp_cached_use_laundering:
-                donor_accs = [a for a in self.accounts if a.get("role") == "donor" and a.get("cookie")]
-                for da in donor_accs:
-                    ds = AccountState(da)
-                    if self.proxy_pool.has_proxies():
-                        self.proxy_pool.assign(ds.email)
-                    ds.proxy = self.proxy_pool.get_dict(ds.email)
-                    self._donor_states.append(ds)
-                if self._donor_states:
-                    self._sp_log_msg(f"🛡️ {len(self._donor_states)} donor bypass 429 sẵn sàng")
+            donor_accs = [a for a in self.accounts if a.get("role") == "donor" and a.get("cookie")]
+            for da in donor_accs:
+                ds = AccountState(da)
+                if self.proxy_pool.has_proxies():
+                    self.proxy_pool.assign(ds.email)
+                ds.proxy = self.proxy_pool.get_dict(ds.email)
+                self._donor_states.append(ds)
+            if self._donor_states:
+                self._sp_log_msg(f"🛡️ {len(self._donor_states)} donor bypass 429 sẵn sàng")
 
             # 2. Nạp trực tiếp tất cả tài khoản chính (Không check trước để tránh delay/treo)
             self._sp_log_msg(f"🔑 Chuẩn bị {len(accs)} tài khoản chính...")
             states = []
             for a in accs:
                 st = AccountState(a, submit_max=_sp_cached_submit_max)
+                st.upload_threads = UPLOAD_MIN_THREADS  # Khi chạy tool thì số luồng upload bắt đầu là 1
                 if self.proxy_pool.has_proxies():
                     px = self.proxy_pool.assign(st.email)
                     if px:
@@ -4861,8 +4893,8 @@ class App(ctk.CTk):
             self._sp_eta_products = products
 
             # ── Shared Job Queue ──
-            n_upload_threads = max(8, sum(getattr(s, "upload_threads", 4) for s in states) * 2)
-            upload_sem = threading.Semaphore(n_upload_threads)
+            # Giới hạn upload toàn cục tự co giãn theo số tài khoản
+            upload_sem = threading.Semaphore(max(len(states) * UPLOAD_MAX_THREADS, 16))
             jobq = queue.Queue()
             for idx, prod in enumerate(products):
                 prod["_idx"] = idx
@@ -5012,11 +5044,11 @@ class App(ctk.CTk):
                                 return "retry_soft"
                             try:
                                 time.sleep(random.uniform(2, 5))  # stagger ngoài semaphore → tránh giữ lock
-                                st.wait_upload_spacing(10.0)
+                                st.wait_upload_spacing(6.0, 8.0)
                                 upload_sem.acquire()  # CHỜ đến lượt
                                 self._sp_log_msg(f"  📤 [{st.email[:12]}] Upload ảnh người mẫu (luồng {st.upload_inflight}/{st.upload_threads})...")
                                 try:
-                                    mid = E.upload_image(bearer, project, model_img, proxy=st.proxy)
+                                    mid = E.upload_image(bearer, project, model_img, proxy=st.proxy, email=st.email)
                                 finally:
                                     upload_sem.release()
                                     st.release_submit()
@@ -5089,10 +5121,11 @@ class App(ctk.CTk):
                             return "retry_soft"
                         try:
                             time.sleep(random.uniform(1, 3))  # stagger ngoài semaphore → tránh giữ lock
+                            st.wait_upload_spacing(6.0, 8.0)
                             upload_sem.acquire()
                             self._sp_log_msg(f"  📤 [{st.email[:12]}] Upload ảnh sản phẩm (luồng {st.upload_inflight}/{st.upload_threads})...")
                             try:
-                                product_mid = E.upload_image(bearer, project, prod["img"], proxy=st.proxy)
+                                product_mid = E.upload_image(bearer, project, prod["img"], proxy=st.proxy, email=st.email)
                             finally:
                                 upload_sem.release()
                                 st.release_submit()
@@ -5137,16 +5170,20 @@ class App(ctk.CTk):
                         st.on_upload_ok()
 
                         # Generate ảnh hoàn thiện qua API (AIMD gating)
-                        img_prompt = SV.build_image_prompt(prod["name"], scene_en, lang=lang_code)
+                        img_prompt = SV.build_image_prompt(prod["name"], scene_en, lang=lang_code, review_style=_sp_cached_review_style)
                         self._sp_log_msg(f"  📝 Prompt ảnh: {img_prompt[:100]}...")
                         gen_ok = False
                         img_result = None
+                        _is_pov_style = any(k in str(_sp_cached_review_style or "").lower() for k in ("pov", "unbox", "đập hộp", "góc nhìn thứ nhất"))
                         for attempt in range(3):
                             if self._shopee_stop_flag: break
                             if attempt > 0:
                                 st.ensure_auth(force=True)
                                 bearer, project = st.bearer, st.project
-                            if attempt < 2:
+                            if _is_pov_style:
+                                # Với POV / Unboxing: CHỈ dùng ảnh sản phẩm, không ép ảnh người mẫu vào để tránh lộ mặt
+                                img_inputs = [{"imageInputType": "IMAGE_INPUT_TYPE_REFERENCE", "name": product_mid}]
+                            elif attempt < 2:
                                 img_inputs = [
                                     {"imageInputType": "IMAGE_INPUT_TYPE_REFERENCE", "name": model_mid},
                                     {"imageInputType": "IMAGE_INPUT_TYPE_REFERENCE", "name": product_mid},
@@ -5251,7 +5288,7 @@ class App(ctk.CTk):
                             return "retry_soft"
                         upload_sem.acquire()
                         try:
-                            comp_mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy)
+                            comp_mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy, email=st.email)
                         finally:
                             upload_sem.release()
                             st.release_submit()
@@ -5509,7 +5546,7 @@ class App(ctk.CTk):
                         prod["_status"] = "success"
                         st.wins += 1; st.clear_rest()
                         if st.on_video_ok():
-                            self._sp_log_msg(f"  ⚡ [{st.email[:12]}] 8 video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
+                            self._sp_log_msg(f"  ⚡ [{st.email[:12]}] {UPLOAD_UP_AFTER} video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
                         self._sp_update_line_status(line_idx, "success")
                         ts_deque = getattr(self, "_sp_done_timestamps", None)
                         if ts_deque is not None: ts_deque.append(time.time())
@@ -6039,10 +6076,10 @@ class App(ctk.CTk):
                         ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=60, height=24, font=("", 11, "bold"),
                                            command=lambda e=s.email: self._toggle_acc_enabled(e))
                         ab.pack(side="left", padx=(2, 0))
-                        uo = ctk.CTkOptionMenu(row, values=["2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
+                        uo = ctk.CTkOptionMenu(row, values=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], width=52, height=24, font=("", 11),
                                                command=lambda v, st=s: self._on_acc_upload_threads_change(st, v))
                         uo.pack(side="left", padx=(4, 0))
-                        uo.set(str(getattr(s, "upload_threads", 4)))
+                        uo.set(str(getattr(s, "upload_threads", 1)))
                         self._sv_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab, "u": uo}
 
             # Fix 4: Chỉ update dòng có giá trị thay đổi (cached)
@@ -6054,6 +6091,9 @@ class App(ctk.CTk):
                 _set(r["f"], f"{e}_f", text=str(s.fails))
                 _set(r["b"], f"{e}_b", text=str(s.busy))
                 _set(r["r"], f"{e}_r", text=str(int(s.submit_limit)))
+                cur_up = str(getattr(s, "upload_threads", 1))
+                if r.get("u") and r["u"].get() != cur_up:
+                    r["u"].set(cur_up)
                 px_str = self.proxy_pool.get_str(s.email) if self.proxy_pool else None
                 if px_str:
                     parts = px_str.split(":")
@@ -7942,26 +7982,26 @@ class App(ctk.CTk):
                 try:
                     if _cached_px_lines: self.proxy_pool.load(_cached_px_lines)
                 except Exception: pass
-            # 1. Khởi tạo Donor pool
+            # 1. Khởi tạo Donor pool (Tự động nạp nếu có tài khoản donor để dự phòng khi dính 429)
             self._donor_states = []
-            if sv_use_laundering:
-                donor_accs = [a for a in self.accounts if a.get("role") == "donor" and a.get("cookie")]
-                for da in donor_accs:
-                    ds = AccountState(da, submit_max=_sv_cached_submit_max)
-                    if self.proxy_pool.has_proxies():
-                        self.proxy_pool.assign(ds.email)
-                    ds.proxy = self.proxy_pool.get_dict(ds.email)
-                    self._donor_states.append(ds)
-                if self._donor_states:
-                    self._sv_log_msg(f"🛡️ {len(self._donor_states)} donor bypass 429 sẵn sàng")
+            donor_accs = [a for a in self.accounts if a.get("role") == "donor" and a.get("cookie")]
+            for da in donor_accs:
+                ds = AccountState(da, submit_max=_sv_cached_submit_max)
+                if self.proxy_pool.has_proxies():
+                    self.proxy_pool.assign(ds.email)
+                ds.proxy = self.proxy_pool.get_dict(ds.email)
+                self._donor_states.append(ds)
+            if self._donor_states:
+                self._sv_log_msg(f"🛡️ {len(self._donor_states)} donor bypass 429 sẵn sàng")
 
             # 2. Nạp trực tiếp tất cả tài khoản chính (Không check trước để tránh delay/treo)
             self._sv_log_msg(f"🔑 Chuẩn bị {len(accs)} tài khoản chính...")
             states = []
             for a in accs:
                 st = AccountState(a, submit_max=_sv_cached_submit_max)
+                st.upload_threads = UPLOAD_MIN_THREADS  # Khi chạy tool thì số luồng upload bắt đầu là 1
                 # Workers = upload_threads + 1 (1 luồng dư poll/render trong khi upload tiếp)
-                st.max_busy = getattr(st, "upload_threads", 2) + 1
+                st.max_busy = getattr(st, "upload_threads", 1) + 1
                 if self.proxy_pool.has_proxies():
                     px = self.proxy_pool.assign(st.email)
                     if px: st.proxy = self.proxy_pool.get_dict(st.email)
@@ -7994,9 +8034,9 @@ class App(ctk.CTk):
             self._sv_video_done_count = 0
             self.after(0, lambda: self._sv_video_done_lbl.configure(text=""))
             error_count = [0]
-            n_upload_threads = max(8, len(states) * UPLOAD_MAX_THREADS)
-            upload_sem = threading.Semaphore(n_upload_threads)
-            self._sv_log_msg(f"📤 Khởi tạo pool upload ({len(states)} TK — cài đặt luồng upload riêng biệt từng TK trong bảng Pool)")
+            # Giới hạn upload toàn cục tự co giãn theo số tài khoản, mỗi TK tự kiểm soát qua st.acquire_upload()
+            upload_sem = threading.Semaphore(max(len(states) * UPLOAD_MAX_THREADS, 16))
+            self._sv_log_msg(f"📤 Khởi tạo pool upload ({len(states)} TK — luồng upload khởi đầu 1/TK, tăng dần tới 4/TK)")
             # Tự động tối ưu số luồng ghép video (FFmpeg) đồng thời dựa trên số nhân CPU của máy khách (14 luồng cho 56 nhân)
             merge_sem = threading.Semaphore(max(4, os.cpu_count() // 4))
 
@@ -8180,15 +8220,18 @@ class App(ctk.CTk):
                 if not st.acquire_upload(lambda: self._sv_stop_flag):
                     return "retry_soft"
                 try:
-                    st.wait_upload_spacing(4.0)  # Giãn cách 4s giữa các lần upload của CÙNG 1 tài khoản (Rule #2)
+                    st.wait_upload_spacing(6.0, 8.0)  # Giãn cách 6-8s giữa các lần upload của CÙNG 1 tài khoản
                     with upload_sem:
                         if self._sv_stop_flag: return "retry_soft"
                         self._sv_log_msg(f"  📤 [{st.email[:12]}] Upload ảnh SP (luồng {st.upload_inflight}/{st.upload_threads})...")
                         try:
-                            mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy)
+                            mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy, email=st.email)
                         except Exception as ex:
                             self._sv_log_msg(f"  ❌ Upload lỗi: {ex}")
                             return "retry_soft"
+                        if mid == "vi phạm cs":
+                            self._sv_log_msg(f"  ⚠️ [{st.email[:12]}] Ảnh SP vi phạm chính sách Google")
+                            return ("fail", "vi phạm cs")
                         if mid == "proxy_dead":
 
                             self._sv_handle_proxy_dead(st)
@@ -8205,11 +8248,15 @@ class App(ctk.CTk):
                                     # Retry ngay với proxy mới (không nghỉ)
                                     time.sleep(2)  # chờ 2s nhẹ rồi retry
                                     try:
-                                        mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy)
+                                        mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy, email=st.email)
                                     except Exception:
                                         mid = None
-                                    if mid and mid not in ("throttle", "forbidden", "unusual", "proxy_dead", "unauthorized"):
-                                        st.on_upload_ok()
+                                    if mid == "vi phạm cs":
+                                        self._sv_log_msg(f"  ⚠️ [{st.email[:12]}] Ảnh SP vi phạm chính sách Google")
+                                        return ("fail", "vi phạm cs")
+                                    if mid and mid not in ("throttle", "forbidden", "unusual", "proxy_dead", "unauthorized", "vi phạm cs"):
+                                        if st.on_upload_ok():
+                                            self._sv_log_msg(f"  ⚡ [{st.email[:12]}] {UPLOAD_UP_AFTER} lần upload OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
                                         self._sv_log_msg(f"  ✅ Retry proxy mới thành công! Media ID: {mid[:20]}...")
                                     else:
                                         self._sv_log_msg(f"  ⚠ Proxy mới cũng 429 → lỗi do tài khoản, nghỉ ngắn")
@@ -8248,8 +8295,10 @@ class App(ctk.CTk):
                                 rest_s = st.on_upload_throttle()
                                 self._sv_log_msg(f"  😴 {st.email[:16]}: nghỉ {int(rest_s)}s (lần {st.upload_throttle_streak}) do upload 429")
                                 return "retry_soft"
-                        if not mid or mid in ("forbidden", "unusual", "throttle", "proxy_dead", "unauthorized"):
-                            if mid == "forbidden":
+                        if not mid or mid in ("forbidden", "unusual", "throttle", "proxy_dead", "unauthorized", "vi phạm cs"):
+                            if mid == "vi phạm cs":
+                                return ("fail", "vi phạm cs")
+                            elif mid == "forbidden":
                                 self._sv_log_msg(f"  ❌ Upload lỗi: Tài khoản bị Google cấm tải ảnh (403 Forbidden)")
                             elif mid == "proxy_dead":
                                 self._sv_log_msg(f"  ❌ Upload lỗi: Proxy mất kết nối (Proxy Dead)")
@@ -8261,6 +8310,8 @@ class App(ctk.CTk):
                                 self._sv_log_msg(f"  ❌ Upload trả về rỗng (Google từ chối hoặc không cấp Media ID)")
                             return "retry_soft"
                         st.proxy_fail_streak = 0  # Upload OK → reset proxy streak
+                        if st.on_upload_ok():
+                            self._sv_log_msg(f"  ⚡ [{st.email[:12]}] {UPLOAD_UP_AFTER} lần upload OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
                         self._sv_log_msg(f"  ✅ Media ID: {mid[:20]}...")
                 finally:
                     st.release_upload()
@@ -8453,7 +8504,7 @@ class App(ctk.CTk):
                 self._sv_last_video_time = time.time()
                 st.wins += 1
                 if st.on_video_ok():
-                    self._sv_log_msg(f"  ⚡ [{st.email[:12]}] 8 video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
+                    self._sv_log_msg(f"  ⚡ [{st.email[:12]}] {UPLOAD_UP_AFTER} video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
                 prod["_status"] = "success"
                 self._sv_update_line_status(idx, "success")
                 with results_lock:
