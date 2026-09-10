@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.19"
+APP_VERSION = "ThinAPTM 1.2.20"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -3414,7 +3414,7 @@ class App(ctk.CTk):
                         return "retry_soft"
                     try:
                         with st.submit_guard(4.0, 6.0):
-                            kind, ops = E.submit_video(bearer, project, job["prompt"], seed, aspect, model, ref_mid, proxy=st.proxy)
+                            kind, ops = E.submit_video(bearer, project, job["prompt"], seed, aspect, model, ref_mid, proxy=st.proxy, cookie=st.cookie)
                     finally:
                         st.release_submit()
                     if kind == "ok":
@@ -5354,7 +5354,7 @@ class App(ctk.CTk):
                                     v_status, ops = E.submit_video(
                                         bearer, project, vid_prompt,
                                         seed=vid_seed, aspect=aspect_key,
-                                        model=sp_model_key, ref_media_id=comp_mid, proxy=st.proxy)
+                                        model=sp_model_key, ref_media_id=comp_mid, proxy=st.proxy, cookie=st.cookie)
                             finally:
                                 st.release_submit()
 
@@ -8225,7 +8225,7 @@ class App(ctk.CTk):
                         if self._sv_stop_flag: return "retry_soft"
                         self._sv_log_msg(f"  📤 [{st.email[:12]}] Upload ảnh SP (luồng {st.upload_inflight}/{st.upload_threads})...")
                         try:
-                            mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy, email=st.email)
+                            mid = E.upload_image(bearer, project, composite_path, proxy=st.proxy, email=st.email, cookie=st.cookie)
                         except Exception as ex:
                             self._sv_log_msg(f"  ❌ Upload lỗi: {ex}")
                             return "retry_soft"
@@ -8306,6 +8306,19 @@ class App(ctk.CTk):
                                 self._sv_log_msg(f"  ⏳ Upload bị 429 Throttle (Google quá tải → chuyển làm mát)")
                             elif mid == "unauthorized":
                                 self._sv_log_msg(f"  🔑 Upload lỗi: Cookie/Bearer hết hạn (401)")
+                                st.bearer = None
+                                st.auth_fail_streak += 1
+                                if st.auth_fail_streak >= 2 and not st.is_circuit_broken():
+                                    st.trip_circuit_breaker()
+                                if st.is_circuit_broken():
+                                    self._sv_log_msg(f"  🔌 Circuit Breaker: {st.email[:16]} ngắt mạch sau {st.auth_fail_streak} lỗi auth liên tiếp")
+                                    self._trigger_instant_health_check(st.email)
+                                st.rest(AUTH_REST, "auth")
+                                return "retry_soft"
+                            elif mid == "unusual":
+                                self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Upload bị unusual → nghỉ 120s làm mát")
+                                st.rest(120, "unusual")
+                                return "retry_soft"
                             else:
                                 self._sv_log_msg(f"  ❌ Upload trả về rỗng (Google từ chối hoặc không cấp Media ID)")
                             return "retry_soft"
@@ -8336,7 +8349,7 @@ class App(ctk.CTk):
                             vid_seed = random.randint(1, 999999)
                             v_status, ops = E.submit_video(
                                 bearer, project, prompt, seed=vid_seed, aspect=aspect_key,
-                                model=sv_model_key, ref_media_id=mid, proxy=st.proxy
+                                model=sv_model_key, ref_media_id=mid, proxy=st.proxy, cookie=st.cookie
                             )
                     finally:
                         st.release_submit()
@@ -8363,6 +8376,10 @@ class App(ctk.CTk):
                         if v_status == "quota_hard":
                             st.rest(QUOTA_HARD_REST, "quota")
                             self._sv_log_msg(f"    ⛔ {st.email[:16]} HẾT QUOTA → cách ly")
+                            return "retry_soft"
+                        if v_status == "unusual":
+                            st.rest(120, "unusual")
+                            self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Google báo unusual activity → cho tài khoản nghỉ 120s làm mát")
                             return "retry_soft"
                         if v_status == "auth":
                             st.auth_fail_streak += 1
