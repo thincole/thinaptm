@@ -1,1 +1,1 @@
-^C
+Exit code: 0 

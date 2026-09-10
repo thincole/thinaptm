@@ -687,18 +687,21 @@ def upload_image_rest(bearer, project, b64_img, filename="input_file_0.jpg", tim
     """
     token = get_session_token(bearer, proxy=proxy)
     headers = _h_rest_upload(bearer, token=token)
+    rc_ctx = get_recaptcha_context()
     payload = {
         "clientContext": {
+            "recaptchaContext": rc_ctx,
             "projectId": project,
             "tool": "PINHOLE"
         },
+        "recaptchaContext": rc_ctx,
         "imageBytes": b64_img,
         "isUserUploaded": True,
         "isHidden": False,
         "mimeType": "image/jpeg",
         "fileName": filename
     }
-    url = f"{BASE}/flow/uploadImage"
+    url = f"{BASE}/flow/uploadImage?key={KEY}"
     try:
         kw = _kw(timeout, proxy=proxy)
         r = cffi.post(url, headers=headers, data=json.dumps(payload), **kw)
@@ -818,33 +821,26 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=6, proxy=
 
     # ── [BƯỚC 1]: Thử tải lên bằng REST Upload Endpoint (/v1/flow/uploadImage) ──
     try:
-        rest_res, rest_status = upload_image_rest(bearer, project, b64_img, filename=filename, timeout=min(timeout, 60), proxy=proxy)
-        if rest_status == "ok" and rest_res:
-            _log_api(f"upload_image (REST): ✅ Thành công media_id={rest_res}")
-            set_cached_image(cache_key, rest_res)
-            return rest_res
-        elif rest_status == "violation":
-            _log_err(f"upload_image (REST): ⚠️ Vi phạm chính sách Google ({rest_res})")
-            return "vi phạm cs"
-        elif rest_status in ("unauthorized", "forbidden", "proxy_dead"):
-            _log_err(f"upload_image (REST): Lỗi xác thực/quyền ({rest_status})")
-            return rest_status
-        elif rest_status == "throttle":
-            _log_err("upload_image (REST): 429 throttled, thử fallback sang BOQ RPC...")
+        # Luôn thử REST endpoint (đã có key + recaptchaContext fallback)
+        if bearer:
+            rest_res, rest_status = upload_image_rest(bearer, project, b64_img, filename=filename, timeout=min(timeout, 30), proxy=proxy)
+            if rest_status == "ok" and rest_res:
+                _log_api(f"upload_image (REST): ✅ Thành công media_id={rest_res}")
+                set_cached_image(cache_key, rest_res)
+                return rest_res
+            elif rest_status == "violation":
+                _log_err(f"upload_image (REST): ⚠️ Vi phạm chính sách Google ({rest_res})")
+                return "vi phạm cs"
+            # Các trường hợp khác (unauthorized, fallback, v.v.) -> tự động fallback sang BOQ RPC maseQ
     except Exception as e_rest:
         _log_err(f"upload_image (REST) exception, fallback to BOQ RPC: {e_rest}")
 
-    # ── [BƯỚC 2]: Fallback BOQ RPC maseQ (Có Token Farm reCAPTCHA) ──
+    # ── [BƯỚC 2]: BOQ RPC maseQ (Tối ưu hóa: Không block 15s nếu hàng đợi token chưa sẵn sàng) ──
     throttle_count = 0
     for attempt in range(max_retries):
-        rc_token = get_recaptcha_token(timeout=15, action="UPLOAD_IMAGE")
+        rc_token = get_recaptcha_token(timeout=4, action="UPLOAD_IMAGE") or get_recaptcha_token(timeout=2, action="VIDEO_GENERATION")
         if not rc_token:
-            _log_err("upload_image: không lấy được token reCAPTCHA UPLOAD_IMAGE từ Token Farm")
-            if attempt >= max_retries - 1:
-                return "throttle"
-            time.sleep(2.0)
-            continue
-
+            rc_token = BYPASS_TOKEN  # Fallback bypass khi farm hết token
         u1 = str(uuid.uuid4())
         u2 = str(uuid.uuid4())
         client_context = [None, 22, None, None, None, project, None, None, None, None, [rc_token, 1]]
@@ -884,10 +880,10 @@ def upload_image(bearer, project, image_path, timeout=120, max_retries=6, proxy=
                     return None
             elif status == "throttle":
                 throttle_count += 1
-                if throttle_count >= 3:
+                if throttle_count >= 2:
                     _log_err(f"upload_image 429 throttled {throttle_count} lần liên tiếp — trả throttle cho caller")
                     return "throttle"
-                wait = _rnd.uniform(8.0, 15.0)
+                wait = _rnd.uniform(4.0, 8.0)
                 _log_err(f"upload_image 429 throttled — retry {throttle_count}, chờ {wait:.1f}s")
                 time.sleep(wait)
                 continue
@@ -1037,6 +1033,19 @@ def upload_image_via_donor(donor_bearer, donor_project, main_bearer, main_projec
     return None
 
 
+def _classify(r):
+    """Phân loại lỗi HTTP response cho generate_image."""
+    if r.status_code in (401, 403):
+        return "auth", None
+    txt = r.text or ""
+    head = txt[:200].lower()
+    if "<html" in head or "sorry" in head:
+        return "ip_block", None
+    if r.status_code == 429:
+        return "throttle", None
+    return "failed", None
+
+
 # ---------- IMAGE (bypass) ----------
 def generate_image(bearer, project, prompt, seed, aspect, model="GEM_PIX_2", image_inputs=None, timeout=90, proxy=None):
     ctx = {"recaptchaContext": {"token": BYPASS_TOKEN, "applicationType": APP_ANDROID}, "projectId": project, "tool": "PINHOLE", "sessionId": f";{int(time.time()*1000)}"}
@@ -1111,10 +1120,14 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
     _log_api(f"submit_video: model={model} ref={ref_media_id} aspect={aspect}")
     cookie = bearer
 
-    rc_token = get_recaptcha_token(timeout=15, action="VIDEO_GENERATION")
+    rc_token = get_recaptcha_token(timeout=2, action="VIDEO_GENERATION")
     if not rc_token:
-        _log_err("submit_video: không lấy được token reCAPTCHA tươi từ Token Farm")
-        return "unusual", None
+        # Fallback: thử queue UPLOAD_IMAGE
+        rc_token = get_recaptcha_token(timeout=1, action="UPLOAD_IMAGE")
+    if not rc_token:
+        # Fallback cuối: dùng bypass token tĩnh (như upload_image đã dùng thành công)
+        _log_api("submit_video: farm hết token → dùng bypass token")
+        rc_token = BYPASS_TOKEN
 
     u1 = str(uuid.uuid4()).upper()
     u2 = str(uuid.uuid4()).upper()
@@ -1125,18 +1138,12 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
     aspect_code = 1 if (aspect and ("16:9" in str(aspect) or "LANDSCAPE" in str(aspect))) else 2
 
     final_prompt = f"{prompt}. {VOICE_DESC}" if VOICE_DESC else prompt
-    prompt_block = [None, None, [[[final_prompt]]]]
 
-    if ref_media_id:
-        # Image-to-Video qua RPC eb1hJf (Start Frame)
+    if ref_media_id and ("abra" in str(model).lower() or "omni" in str(model).lower()):
+        # Image-to-Video qua RPC eb1hJf (Start Frame) — chỉ dành cho Omni Flash (mất credit)
         rpc_id = "eb1hJf"
-        if "10s" in str(model):
-            model_name = "abra_i2v_10s"
-        elif "abra" in str(model) or "omni" in str(model).lower():
-            model_name = "abra_i2v_8s"
-        else:
-            model_name = "abra_i2v_8s"
-
+        model_name = "abra_i2v_10s" if "10s" in str(model) else "abra_i2v_8s"
+        prompt_block = [None, None, [[[final_prompt]]]]
         scene1 = [
             prompt_block,
             model_name,
@@ -1154,7 +1161,8 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
             [None, None, None, None, u3, u4]
         ]
     else:
-        # Text-to-Video qua RPC YhhmEf
+        # Veo 3.1 Lite (0 credit, hoàn toàn miễn phí) qua RPC YhhmEf
+        # Hỗ trợ cả Text-to-Video và Ingredients (Thành phần hình ảnh sản phẩm)
         rpc_id = "YhhmEf"
         if "10s" in str(model):
             model_name = "abra_t2v_10s"
@@ -1162,6 +1170,12 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
             model_name = "abra_t2v_8s"
         else:
             model_name = "veo_3_1_t2v_lite_low_priority"
+
+        if ref_media_id:
+            # Truyền ảnh dưới dạng Ingredients (Thành phần) -> VEO 3.1 0 CREDIT!
+            prompt_block = [None, None, [[[final_prompt]]], None, None, None, None, None, [[None, 1, ref_media_id]]]
+        else:
+            prompt_block = [None, None, [[[final_prompt]]]]
 
         scene1 = [
             prompt_block,
@@ -1348,25 +1362,37 @@ def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout
                             failed_reason = str(st_block[1]) if len(st_block) > 1 else "render_failed"
 
             if all_done:
-                _log_api(f"poll_video: render thành công trên attempt #{attempt+1}! Đang lấy link CDN...")
+                _log_api(f"poll_video: render thành công trên attempt #{attempt+1}! Đang lấy link CDN video...")
                 proj_id = get_project(cookie, proxy=proxy) or "513f3b20-fa17-4be7-89b5-f179860de580"
-                zzl_res, zzl_status = boq_execute("Zzl0ze", json.dumps([f"projects/{proj_id}", None, None, None, [1]]),
-                                                  cookie, proxy=proxy, timeout=timeout)
-                if zzl_res and isinstance(zzl_res, list) and len(zzl_res) > 2:
-                    for scene in zzl_res[2]:
-                        if isinstance(scene, list) and len(scene) > 5 and scene[0] in ops:
-                            m_arr = scene[5]
-                            cdn_url = m_arr[10] or m_arr[5]
-                            if cdn_url:
-                                return "done", cdn_url, credits
+                
+                # 1. Gọi Iyc41d (FlowService.BatchGetMedia) với ops để lấy signed link direct CDN video (flow-content.google/video/...)
+                try:
+                    iyc_res, _ = boq_execute("Iyc41d", json.dumps([ops]), cookie, proxy=proxy, timeout=timeout, source_path=f"/project/{proj_id}")
+                    if iyc_res:
+                        import re
+                        m_vids = re.findall(r'https://flow-content\.google/video/[^\s"\',]+', json.dumps(iyc_res))
+                        if not m_vids:
+                            m_vids = re.findall(r'https://[^\s"\',]*\.google(?:usercontent)?\.com/video/[^\s"\',]+', json.dumps(iyc_res))
+                        if m_vids:
+                            _log_api(f"poll_video: lấy thành công link direct CDN video: {m_vids[0][:60]}...")
+                            return "done", m_vids[0], credits
+                except Exception as e_cdn:
+                    _log_err(f"poll_video Iyc41d exception: {e_cdn}")
 
-                if zzl_res:
-                    import re
-                    m_lh3 = re.findall(r'https://lh3\.googleusercontent\.com/[^\s"\',]+', json.dumps(zzl_res))
-                    if m_lh3:
-                        return "done", m_lh3[0], credits
+                # 2. Fallback: query Zzl0ze tìm flow-content video
+                try:
+                    zzl_res, _ = boq_execute("Zzl0ze", json.dumps([f"projects/{proj_id}", None, None, None, [1]]),
+                                             cookie, proxy=proxy, timeout=timeout)
+                    if zzl_res:
+                        import re
+                        m_vids = re.findall(r'https://flow-content\.google/video/[^\s"\',]+', json.dumps(zzl_res))
+                        if m_vids:
+                            return "done", m_vids[0], credits
+                except Exception:
+                    pass
 
                 return "done", media_id, credits
+
 
             if failed_reason:
                 _log_err(f"poll_video: render FAILED — {failed_reason}")
@@ -1509,36 +1535,33 @@ def download_video(media_id, cookie, dst, timeout=180, proxy=None, max_retries=3
     if str(media_id).startswith("http://") or str(media_id).startswith("https://"):
         return download_url(media_id, dst, timeout=timeout, proxy=proxy)
 
-    # Nếu media_id là scene UUID: dùng Zzl0ze để tìm URL CDN
+    # Nếu media_id là scene UUID: dùng Iyc41d để tìm signed URL CDN flow-content.google/video/...
     if cookie:
         try:
-            zzl_res, status = boq_execute("Zzl0ze", json.dumps(["projects/513f3b20-fa17-4be7-89b5-f179860de580", None, None, None, [1]]),
-                                          cookie, proxy=proxy, timeout=30)
-            if zzl_res and isinstance(zzl_res, list) and len(zzl_res) > 2:
-                for scene in zzl_res[2]:
-                    if isinstance(scene, list) and len(scene) > 5 and scene[0] == media_id:
-                        cdn_url = scene[5][10] or scene[5][5]
-                        if cdn_url:
-                            return download_url(cdn_url, dst, timeout=timeout, proxy=proxy)
-            if zzl_res:
+            proj_id = get_project(cookie, proxy=proxy) or "513f3b20-fa17-4be7-89b5-f179860de580"
+            iyc_res, _ = boq_execute("Iyc41d", json.dumps([[media_id]]), cookie, proxy=proxy, timeout=30, source_path=f"/project/{proj_id}")
+            if iyc_res:
                 import re
-                m_lh3 = re.findall(r'https://lh3\.googleusercontent\.com/[^\s"\',]+', json.dumps(zzl_res))
-                if m_lh3:
-                    return download_url(m_lh3[0], dst, timeout=timeout, proxy=proxy)
+                m_vids = re.findall(r'https://flow-content\.google/video/[^\s"\',]+', json.dumps(iyc_res))
+                if not m_vids:
+                    m_vids = re.findall(r'https://[^\s"\',]*\.google(?:usercontent)?\.com/video/[^\s"\',]+', json.dumps(iyc_res))
+                if m_vids:
+                    return download_url(m_vids[0], dst, timeout=timeout, proxy=proxy)
         except Exception as e:
-            _log_err(f"download_video Zzl0ze resolution exception: {e}")
+            _log_err(f"download_video Iyc41d resolution exception: {e}")
 
-    # Fallback
+    # Fallback trpc redirect
     H = {"Cookie": cookie or "", "User-Agent": UA_CH, "Referer": "https://flow.google.com/", "Accept": "*/*"}
     for attempt in range(max_retries):
         try:
             r = cffi.get(f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}", headers=H,
                          **_kw(timeout, proxy=proxy), allow_redirects=True)
             if r.status_code == 200 and r.headers.get("content-type", "").startswith("video"):
-                os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-                with open(dst, "wb") as f:
-                    f.write(r.content)
-                return len(r.content)
+                if len(r.content) > 10000 and (b"ftyp" in r.content[:32] or b"moov" in r.content[:32]):
+                    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+                    with open(dst, "wb") as f:
+                        f.write(r.content)
+                    return len(r.content)
             return 0
         except Exception as e:
             kind = net_error_kind(e)
@@ -1554,11 +1577,14 @@ def download_video(media_id, cookie, dst, timeout=180, proxy=None, max_retries=3
 def download_url(url, dst, timeout=120, proxy=None):
     try:
         data = cffi.get(url, headers={"User-Agent": UA_CH}, **_kw(timeout, proxy=proxy)).content
-        if data and len(data) > 1000:
+        # Xác thực đây là file MP4 hợp lệ, tuyệt đối KHÔNG chấp nhận HTML hoặc file hỏng
+        if data and len(data) > 10000 and (b"ftyp" in data[:32] or b"moov" in data[:32] or b"\x00\x00\x00" in data[:4]):
             os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
             with open(dst, "wb") as f:
                 f.write(data)
             return len(data)
+        else:
+            _log_err(f"download_url từ chối file không phải MP4 từ {url[:80]}: len={len(data) if data else 0}, header={repr(data[:32]) if data else None}")
     except Exception as e:
         _log_err(f"download_url exception: {e}")
     return 0

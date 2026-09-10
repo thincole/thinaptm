@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.17"
+APP_VERSION = "ThinAPTM 1.2.18"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -4893,8 +4893,8 @@ class App(ctk.CTk):
             self._sp_eta_products = products
 
             # ── Shared Job Queue ──
-            # Giới hạn upload toàn cục tự co giãn theo số tài khoản
-            upload_sem = threading.Semaphore(max(len(states) * UPLOAD_MAX_THREADS, 16))
+            # Giới hạn upload toàn cục (Rule 9.5: tối đa 4 luồng đồng thời chạy 24/7)
+            upload_sem = threading.Semaphore(4)
             jobq = queue.Queue()
             for idx, prod in enumerate(products):
                 prod["_idx"] = idx
@@ -8034,11 +8034,11 @@ class App(ctk.CTk):
             self._sv_video_done_count = 0
             self.after(0, lambda: self._sv_video_done_lbl.configure(text=""))
             error_count = [0]
-            # Giới hạn upload toàn cục tự co giãn theo số tài khoản, mỗi TK tự kiểm soát qua st.acquire_upload()
-            upload_sem = threading.Semaphore(max(len(states) * UPLOAD_MAX_THREADS, 16))
-            self._sv_log_msg(f"📤 Khởi tạo pool upload ({len(states)} TK — luồng upload khởi đầu 1/TK, tăng dần tới 4/TK)")
-            # Tự động tối ưu số luồng ghép video (FFmpeg) đồng thời dựa trên số nhân CPU của máy khách (14 luồng cho 56 nhân)
-            merge_sem = threading.Semaphore(max(4, os.cpu_count() // 4))
+            # Giới hạn upload toàn cục (Rule 9.5: tối đa 4 luồng đồng thời chạy 24/7)
+            upload_sem = threading.Semaphore(4)
+            self._sv_log_msg(f"📤 Khởi tạo pool upload (Rule 9.5: tối đa 4 luồng đồng thời)")
+            # Tự động tối ưu số luồng ghép video (FFmpeg) đồng thời dựa trên số nhân CPU (Rule 9.5)
+            merge_sem = threading.Semaphore(max(2, os.cpu_count() // 8))
 
             # 2h inactivity timeout checker
             def _inactivity_checker():

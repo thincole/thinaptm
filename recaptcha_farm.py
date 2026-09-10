@@ -18,8 +18,7 @@ import threading, time, queue, os, json
 # Đây là enterprise key, dùng với grecaptcha.enterprise.execute()
 RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 RECAPTCHA_ACTION = "VIDEO_GENERATION"
-DEFAULT_PROJECT_ID = "513f3b20-fa17-4be7-89b5-f179860de580"
-FLOW_URL = f"https://flow.google.com/project/{DEFAULT_PROJECT_ID}"
+FLOW_URL = "https://labs.google/fx/tools/flow"
 LABS_URL = FLOW_URL
 
 # Số token tồn kho tối đa (token hết hạn sau ~2 phút nên không nên giữ quá nhiều)
@@ -27,7 +26,7 @@ MAX_QUEUE = 20
 # Token hết hạn sau bao lâu (giây) — Google reCAPTCHA token sống ~120s
 TOKEN_TTL = 100
 # Thời gian chờ giữa các lần farm (giây)
-FARM_INTERVAL = 8
+FARM_INTERVAL = 3
 
 
 def get_chrome_path():
@@ -105,12 +104,15 @@ class RecaptchaFarm:
     
     def get_token(self, timeout=15, action="VIDEO_GENERATION"):
         """Lấy 1 token tươi từ queue cho action tương ứng (VIDEO_GENERATION hoặc UPLOAD_IMAGE).
-        Trả token string hoặc None nếu timeout. Tự bỏ token quá hạn."""
+        Trả token string hoặc None nếu timeout. Tự bỏ token quá hạn.
+        Tự động fallback sang queue còn lại nếu queue yêu cầu đang tạm hết."""
         q = self._queues.get(action, self._queue)
+        alt_action = "UPLOAD_IMAGE" if action == "VIDEO_GENERATION" else "VIDEO_GENERATION"
+        alt_q = self._queues.get(alt_action)
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                item = q.get(timeout=min(2.0, max(0.1, deadline - time.time())))
+                item = q.get(timeout=min(1.0, max(0.1, deadline - time.time())))
                 if isinstance(item, tuple):
                     token, ts = item
                     if time.time() - ts < TOKEN_TTL:
@@ -118,6 +120,17 @@ class RecaptchaFarm:
                 elif isinstance(item, str):
                     return item
             except queue.Empty:
+                if alt_q and not alt_q.empty():
+                    try:
+                        item = alt_q.get_nowait()
+                        if isinstance(item, tuple):
+                            token, ts = item
+                            if time.time() - ts < TOKEN_TTL:
+                                return token
+                        elif isinstance(item, str):
+                            return item
+                    except queue.Empty:
+                        pass
                 continue
         return None
     
@@ -254,8 +267,11 @@ class RecaptchaFarm:
                 except Exception as e:
                     fail_streak += 1
 
-                # Sleep 1 lần duy nhất: ngắn hơn khi thành công, dài hơn khi fail
-                time.sleep(FARM_INTERVAL + random.uniform(-1, 2) if any_success else 2)
+                # Sleep ngắn khi thành công (farm nhanh hơn), dài hơn khi fail liên tục
+                if any_success:
+                    time.sleep(FARM_INTERVAL + random.uniform(-0.5, 1))
+                else:
+                    time.sleep(1.5 + random.uniform(0, 1))
 
         except Exception as e:
             self._log(f"{tag} ❌ Worker crash: {str(e)[:100]}")
