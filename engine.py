@@ -379,6 +379,7 @@ def boq_execute(rpc_id, payload_str, cookie, proxy=None, source_path="/", timeou
     if "PUBLIC_ERROR_USER_QUOTA_REACHED" in r.text or "QUOTA" in r.text.upper():
         return None, "quota_hard"
     if "PUBLIC_ERROR_UNUSUAL_ACTIVITY" in r.text or "UNUSUAL_ACTIVITY" in r.text:
+        _log_err(f"boq_execute {rpc_id}: UNUSUAL_ACTIVITY! HTTP {r.status_code}. Response[:500]: {r.text[:500]}")
         return None, "unusual"
 
     for line in r.text.splitlines():
@@ -1120,14 +1121,15 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
     _log_api(f"submit_video: model={model} ref={ref_media_id} aspect={aspect}")
     cookie = bearer
 
-    rc_token = get_recaptcha_token(timeout=2, action="VIDEO_GENERATION")
+    rc_token = get_recaptcha_token(timeout=15, action="VIDEO_GENERATION")
     if not rc_token:
-        # Fallback: thử queue UPLOAD_IMAGE
-        rc_token = get_recaptcha_token(timeout=1, action="UPLOAD_IMAGE")
-    if not rc_token:
-        # Fallback cuối: dùng bypass token tĩnh (như upload_image đã dùng thành công)
-        _log_api("submit_video: farm hết token → dùng bypass token")
-        rc_token = BYPASS_TOKEN
+        rc_token = get_recaptcha_token(timeout=5, action="UPLOAD_IMAGE")
+    # ★ Token flow.google.com BẮT BUỘC — không có → Google trả UNUSUAL_ACTIVITY
+    if rc_token:
+        _log_api(f"submit_video: ✅ Có token thật (len={len(rc_token)})")
+    else:
+        _log_api("submit_video: ⚠️ farm hết token → sẽ retry sau (token bắt buộc)")
+        return [], "retry_soft"
 
     u1 = str(uuid.uuid4()).upper()
     u2 = str(uuid.uuid4()).upper()
@@ -1192,9 +1194,12 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
             [None, None, None, None, u3, u4]
         ]
 
+    # Client context: rc_token luôn có (đã return retry_soft nếu không có ở trên)
+    client_ctx = [None, 22, None, None, None, project, None, None, None, None, [rc_token, 1]]
+
     payload = [
         [scene1, scene2],
-        [None, 22, None, None, None, project, None, None, None, None, [rc_token, 1]],
+        client_ctx,
         [parent_u, aspect_code]
     ]
 
