@@ -22,16 +22,40 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.20"
+APP_VERSION = "ThinAPTM 1.2.21"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
 AC = "#1a73e8"; AC2 = "#1557b0"; GR = "#00897B"; RD = "#EA4335"; BG = "#f4f6fb"; CARD = "#ffffff"; T1 = "#202124"; T2 = "#5f6368"
 
 
+def get_acc_email(a):
+    """Trả về Gmail thật của tài khoản (ưu tiên @gmail.com hoặc id gốc thay vì @google)."""
+    if not isinstance(a, dict):
+        return str(a)
+    aid = str(a.get("id") or "").strip()
+    aem = str(a.get("email") or "").strip()
+    if "@gmail.com" in aid:
+        return aid
+    if "@gmail.com" in aem:
+        return aem
+    if aid and not aid.endswith("@google"):
+        return aid
+    if aem and not aem.endswith("@google"):
+        return aem
+    return aem or aid or "?"
+
+
 def load_accs():
-    try: return json.load(open(ACC_FILE, encoding="utf-8"))
-    except Exception: return []
+    try:
+        accs = json.load(open(ACC_FILE, encoding="utf-8"))
+        for a in accs:
+            real_em = get_acc_email(a)
+            if real_em and real_em != "?" and not real_em.endswith("@google"):
+                a["email"] = real_em
+        return accs
+    except Exception:
+        return []
 
 def save_accs(a):
     json.dump(a, open(ACC_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
@@ -345,7 +369,7 @@ class AccountState:
     """1 tài khoản trong pool + trạng thái runtime (auth, cooldown, cache ảnh). Nhiều worker dùng chung."""
     def __init__(self, acc, submit_max=SUBMIT_MAX):
         self.acc = acc
-        self.email = acc.get("email") or acc.get("id") or "?"
+        self.email = get_acc_email(acc)
         self.cookie = acc.get("cookie") or ""
         self.bearer = None
         self.project = None
@@ -587,7 +611,7 @@ class AccountState:
         """Khi cookie bị chết, tự động gọi DrissionPage reopen_profile_cookie / login_get_cookie để lấy cookie mới 100%."""
         if L is None:
             return None
-        email = self.email or self.acc.get("email") or self.acc.get("id")
+        email = get_acc_email(self.acc)
         if not email or email == "?":
             return None
             
@@ -611,7 +635,7 @@ class AccountState:
         if not fresh_ck and self.acc.get("password"):
             try:
                 fresh_ck = L.login_get_cookie(
-                    self.acc["email"], self.acc["password"], self.acc.get("totp", ""),
+                    email, self.acc["password"], self.acc.get("totp", ""),
                     profile_dir=profile_dir
                 )
             except Exception:
@@ -902,7 +926,7 @@ class App(ctk.CTk):
         acc_col = ctk.CTkFrame(main_row, fg_color="transparent")
         acc_col.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
         hdr = ctk.CTkFrame(acc_col, fg_color="#e8eaf6", corner_radius=6, height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        for txt, w in [("Dùng", 40), ("#", 25), ("Email", 180), ("Vai trò", 65), ("Trạng thái", 95), ("Hành động", 70), ("Cookie", 50), ("Pass", 40), ("2FA", 40)]:
+        for txt, w in [("Dùng", 40), ("#", 25), ("Email", 210), ("Vai trò", 65), ("Trạng thái", 95), ("Hành động", 70), ("Cookie", 50), ("Pass", 40), ("2FA", 40)]:
             ctk.CTkLabel(hdr, text=txt, font=("Consolas", 11, "bold"), text_color=T1, width=w, anchor="w").pack(side="left", padx=(6, 0))
         self.acc_scroll = ctk.CTkScrollableFrame(acc_col, fg_color=CARD, corner_radius=8)
         self.acc_scroll.pack(fill="both", expand=True, pady=(2, 0))
@@ -1296,7 +1320,8 @@ class App(ctk.CTk):
             cb.pack(side="left", padx=(6, 0))
             ctk.CTkLabel(row, text=str(display_i + 1), font=("Consolas", 11), width=25, anchor="w", text_color=T2).pack(side="left", padx=(6, 0))
             txt_color = T1 if a.get("enabled", True) else "#bdbdbd"
-            ctk.CTkLabel(row, text=(a.get('email') or a.get('id') or '?')[:28], font=("Consolas", 11), width=180, anchor="w", text_color=txt_color).pack(side="left", padx=(6, 0))
+            disp_email = get_acc_email(a)
+            ctk.CTkLabel(row, text=disp_email[:32], font=("Consolas", 11), width=210, anchor="w", text_color=txt_color).pack(side="left", padx=(6, 0))
             # --- Vai trò (Main / Donor) ---
             role = a.get("role", "main")
             role_txt = "🎬 Main" if role != "donor" else "🎁 Donor"
@@ -1342,7 +1367,7 @@ class App(ctk.CTk):
         old = a.get("role", "main")
         a["role"] = "donor" if old != "donor" else "main"
         new = a["role"]
-        email = a.get("email") or a.get("id") or "?"
+        email = get_acc_email(a)
         self._log(f"🔄 {email}: vai trò đổi từ {old} → {new}")
         save_accs(self.accounts)
         self._refresh_acc()
@@ -1351,7 +1376,7 @@ class App(ctk.CTk):
         """Mở dialog sửa password & 2FA cho tài khoản (để auto re-login khi cookie die)."""
         if idx < 0 or idx >= len(self.accounts): return
         a = self.accounts[idx]
-        email = a.get('email') or a.get('id') or '?'
+        email = get_acc_email(a)
         dlg = ctk.CTkToplevel(self)
         dlg.title(f"Sửa tài khoản: {email}")
         dlg.geometry("420x200"); dlg.resizable(False, False)
@@ -1416,11 +1441,11 @@ class App(ctk.CTk):
                 logp(f"🔑 Tự động đăng nhập {len(need_login)} tài khoản có password...")
                 for i, a in enumerate(need_login, 1):
                     if self._stop: break
-                    email = a.get("email") or a.get("id") or "?"
+                    email = get_acc_email(a)
                     profile_dir = os.path.join(HERE, "_profiles", email.replace("@", "_"))
                     logp(f"🔑 [{i}/{len(need_login)}] Đang login {email} (auto-fill email+pass+2FA)...")
                     try:
-                        ck = L.login_get_cookie(a["email"], a["password"], a.get("totp", ""),
+                        ck = L.login_get_cookie(email, a["password"], a.get("totp", ""),
                                                 profile_dir=profile_dir, log=logp)
                     except Exception as ex:
                         logp(f"❌ [{i}/{len(need_login)}] Lỗi login {email}: {ex}")
@@ -1430,7 +1455,10 @@ class App(ctk.CTk):
                         b = res[0] if isinstance(res, tuple) else res
                         em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
-                        if em: a["email"] = em
+                        if em and not em.endswith("@google"):
+                            a["email"] = em
+                        elif email and not email.endswith("@google"):
+                            a["email"] = email
                         if b:
                             logp(f"✅ [{i}/{len(need_login)}] {email}: login thành công!")
                         else:
@@ -1624,7 +1652,11 @@ class App(ctk.CTk):
                 em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                 if b:
                     a["status"] = "ok"
-                    if em: a["email"] = em
+                    real_em = get_acc_email(a)
+                    if em and not em.endswith("@google"):
+                        a["email"] = em
+                    elif real_em and not real_em.endswith("@google"):
+                        a["email"] = real_em
                 else:
                     a["status"] = "dead"
                     dead_accs.append(a)
@@ -1647,7 +1679,7 @@ class App(ctk.CTk):
                 self.after(0, lambda: self._hc_status_lbl.configure(
                     text=f"🔄 Profile re-login {len(dead_accs)} tk...", text_color="#F9A825"))
                 for i, a in enumerate(dead_accs, 1):
-                    email = a.get("email") or a.get("id") or "?"
+                    email = get_acc_email(a)
                     profile_dir = os.path.join(HERE, "_profiles", email.replace("@", "_"))
                     if not hasattr(self, "_hc_attempted_accs") or isinstance(self._hc_attempted_accs, set):
                         self._hc_attempted_accs = {}
@@ -1675,7 +1707,10 @@ class App(ctk.CTk):
                             em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                             a["cookie"] = ck
                             a["status"] = "ok" if b else "dead"
-                            if em: a["email"] = em
+                            if em and not em.endswith("@google"):
+                                a["email"] = em
+                            elif email and not email.endswith("@google"):
+                                a["email"] = email
                             if b:
                                 self._log(f"✅ [Health Check] {email}: profile re-login thành công! (không cần password)")
                             else:
@@ -1697,12 +1732,12 @@ class App(ctk.CTk):
                     self.after(0, lambda: self._hc_status_lbl.configure(
                         text=f"🔑 Password login {len(relogin_accs)} tk...", text_color="#F9A825"))
                     for i, a in enumerate(relogin_accs, 1):
-                        email = a.get("email") or a.get("id") or "?"
+                        email = get_acc_email(a)
                         self._log(f"🔑 [Health Check] [{i}/{len(relogin_accs)}] Re-login {email} bằng password...")
                         try:
                             ck = L.login_get_cookie(
-                                a["email"], a["password"], a.get("totp", ""),
-                                profile_dir=os.path.join(HERE, "_profiles", a["email"].replace("@", "_")),
+                                email, a["password"], a.get("totp", ""),
+                                profile_dir=os.path.join(HERE, "_profiles", email.replace("@", "_")),
                                 log=lambda m: self._log(f"  [Health Check] {m}")
                             )
                             if ck:
@@ -1711,7 +1746,10 @@ class App(ctk.CTk):
                                 em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
                                 a["cookie"] = ck
                                 a["status"] = "ok" if b else "dead"
-                                if em: a["email"] = em
+                                if em and not em.endswith("@google"):
+                                    a["email"] = em
+                                elif email and not email.endswith("@google"):
+                                    a["email"] = email
                                 if b:
                                     self._log(f"✅ [Health Check] {email}: password re-login thành công!")
                                 else:
@@ -8672,17 +8710,17 @@ class App(ctk.CTk):
             return
         for st in self._sv_pool_states:
             for acc in self.accounts:
-                acc_email = acc.get("email") or acc.get("id") or ""
-                if acc_email == st.email:
+                acc_email = get_acc_email(acc)
+                if acc_email == st.email or acc.get("email") == st.email or acc.get("id") == st.email:
                     new_cookie = acc.get("cookie", "")
                     if new_cookie and new_cookie != st.cookie:
                         st.cookie = new_cookie
                         st.reset_circuit_breaker()
                         st.clear_rest()
                         if st.ensure_auth(force=True):
-                            self._sv_log_msg(f"  ✅ [Sync] {st.email[:16]}: Cookie đã được làm mới → sẵn sàng!")
+                            self._sv_log_msg(f"  ✅ [Sync] {st.email}: Cookie đã được làm mới → sẵn sàng!")
                         else:
-                            self._sv_log_msg(f"  ⚠️ [Sync] {st.email[:16]}: Cookie mới nhưng vẫn không auth được")
+                            self._sv_log_msg(f"  ⚠️ [Sync] {st.email}: Cookie mới nhưng vẫn không auth được")
                     elif acc.get("status") == "ok" and st.is_circuit_broken():
                         st.reset_circuit_breaker()
                         st.clear_rest()

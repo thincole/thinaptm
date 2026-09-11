@@ -284,10 +284,11 @@ def get_wiz_tokens(cookie, proxy=None, force=False):
                 m_fsid = re.search(r'"FdrFJe":"([^"]+)"', r.text)
                 m_bl = re.search(r'"cfb2h":"([^"]+)"', r.text)
                 m_acc = re.search(r'"S06Grb":"([^"]+)"', r.text)
+                m_gmail = re.search(r'"oPEP7c":"([^"]+)"', r.text)
                 at = m_snl.group(1) if m_snl else None
                 fsid = m_fsid.group(1) if m_fsid else None
                 bl = m_bl.group(1) if m_bl else "boq_labs-ai-sandbox-frontend_20260907.00_p0"
-                account_id = m_acc.group(1) if m_acc else None
+                account_id = m_gmail.group(1) if m_gmail else (m_acc.group(1) if m_acc else None)
                 if at:
                     # Kiểm tra bl phải là trang Flow (sandbox), KHÔNG phải trang login Google
                     if bl and "sandbox" not in bl.lower() and "identityfrontend" in bl.lower():
@@ -439,7 +440,7 @@ def bearer_from_cookie(cookie, timeout=25, proxy=None):
     if m:
         email = urllib.parse.unquote(m.group(1))
     elif account_id:
-        email = f"{account_id}@google"
+        email = account_id if "@" in str(account_id) else f"{account_id}@google"
     return cookie, email, cookie
 
 
@@ -1171,7 +1172,8 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
     u4 = str(uuid.uuid4()).upper()
     parent_u = str(uuid.uuid4()).upper()
 
-    aspect_code = 1 if (aspect and ("16:9" in str(aspect) or "LANDSCAPE" in str(aspect))) else 2
+    # Google Flow BOQ RPC (YhhmEf / eb1hJf): 1 = Dọc 9:16 (PORTRAIT), 2 = Ngang 16:9 (LANDSCAPE)
+    aspect_code = 2 if (aspect and ("16:9" in str(aspect) or "LANDSCAPE" in str(aspect))) else 1
 
     if ref_media_id and ("abra" in str(model).lower() or "omni" in str(model).lower()):
         # Image-to-Video qua RPC eb1hJf (Start Frame) — chỉ dành cho Omni Flash (mất credit)

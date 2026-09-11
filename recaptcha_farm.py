@@ -284,7 +284,8 @@ class RecaptchaFarm:
             page = sess.get("page")
             if not page:
                 return "auth", []
-            aspect_code = 1 if (aspect and ("16:9" in str(aspect) or "LANDSCAPE" in str(aspect))) else 2
+            # Google Flow BOQ RPC (YhhmEf / eb1hJf): 1 = Dọc 9:16 (PORTRAIT), 2 = Ngang 16:9 (LANDSCAPE)
+            aspect_code = 2 if (aspect and ("16:9" in str(aspect) or "LANDSCAPE" in str(aspect))) else 1
             
             u1, u2, u3, u4 = [str(uuid.uuid4()).upper() for _ in range(4)]
             parent_u = str(uuid.uuid4()).upper()
