@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.21"
+APP_VERSION = "ThinAPTM 1.2.22"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -393,6 +393,8 @@ class AccountState:
         self._circuit_broken = False       # True khi bị ngắt mạch
         # --- Proxy health tracking ---
         self.proxy_fail_streak = 0         # số lần proxy fail liên tiếp (DNS/connection)
+        # --- Unusual Activity tracking (lũy tiến: 300s → 600s → 1200s) ---
+        self.unusual_streak = 0            # số lần unusual liên tiếp → tăng thời gian nghỉ
         # --- Upload Rate Limit & Luồng Upload thông minh (Khởi đầu 1, Min 1, Max 4) ---
         self.upload_threads = UPLOAD_MIN_THREADS
         self.upload_inflight = 0
@@ -3452,7 +3454,7 @@ class App(ctk.CTk):
                         return "retry_soft"
                     try:
                         with st.submit_guard(4.0, 6.0):
-                            kind, ops = E.submit_video(bearer, project, job["prompt"], seed, aspect, model, ref_mid, proxy=st.proxy, cookie=st.cookie)
+                            kind, ops = E.submit_video(bearer, project, job["prompt"], seed, aspect, model, ref_mid, proxy=st.proxy, cookie=st.cookie, email=st.email)
                     finally:
                         st.release_submit()
                     if kind == "ok":
@@ -5392,7 +5394,7 @@ class App(ctk.CTk):
                                     v_status, ops = E.submit_video(
                                         bearer, project, vid_prompt,
                                         seed=vid_seed, aspect=aspect_key,
-                                        model=sp_model_key, ref_media_id=comp_mid, proxy=st.proxy, cookie=st.cookie)
+                                        model=sp_model_key, ref_media_id=comp_mid, proxy=st.proxy, cookie=st.cookie, email=st.email)
                             finally:
                                 st.release_submit()
 
@@ -7158,8 +7160,17 @@ class App(ctk.CTk):
             f"   - ITEM PERSISTENCE: Any object held or worn must remain naturally present throughout.\n"
             f"2. SECTION 2 (PRODUCT TO ADVERTISE): \"{product_name}\" is the HERO. Prominently featured and in sharp focus.\n"
         )
-        # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
-        if lang_code == "my":
+        # Section 3: Người mẫu hoặc POV (Không mặt)
+        is_pov_or_unbox = any(k in str(review_style or "").lower() for k in ("pov", "unbox", "đập hộp", "góc nhìn thứ nhất"))
+        if is_pov_or_unbox:
+            system_prompt += (
+                f"3. SECTION 3 (POV / UNBOXING - NO PRESENTER FACE): ABSOLUTELY NO human face, NO head, NO model body visible in any frame. "
+                f"Define strictly First-person POV or top-down desk perspective looking directly at the product. "
+                f"Only TWO clean natural human hands interacting with and showcasing the product on the table. "
+                f"Voiceover speaks off-camera while hands demonstrate the product.\n"
+            )
+        elif lang_code == "my":
+            # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
             system_prompt += (
                 f"3. SECTION 3 (PRESENTER & OUTFIT LOCK): Define ONE fixed Malay MALE presenter (~25-30yo, "
                 f"modest clothing: clean long-sleeve button-down or polo shirt, dark trousers, neat well-groomed hair, "
@@ -7561,39 +7572,11 @@ class App(ctk.CTk):
                 scene_name, scene_en = SV.pick_scene(scene_choice, lang=lang_code)
 
                 if n_segments_needed == 1:
-                    # === CHẾ ĐỘ 8s: TVC prompt cố định ===
-                    _tvc_lang_map = {
-                        "en": {"nationality": "American", "language": "English"},
-                        "vi": {"nationality": "Việt Nam", "language": "tiếng Việt"},
-                        "id": {"nationality": "Indonesian", "language": "tiếng Indonesia"},
-                        "my": {"nationality": "Malaysian", "language": "tiếng Malaysia (Bahasa Melayu)"},
-                        "ph": {"nationality": "Filipino", "language": "Filipino"},
-                    }
-                    _tvc = _tvc_lang_map.get(lang_code, _tvc_lang_map["en"])
-                    short_name = product_name[:80].strip()
-                    # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
-                    if lang_code == "my":
-                        tvc_prompt = (
-                            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
-                            f'A handsome Malay male model, modest clothing (clean long-sleeve shirt, dark trousers), about 25 years old, '
-                            f'holds the product and introduces its key benefits. '
-                            f'He states the benefits right away without any introduction. '
-                            f'He speaks {_tvc["language"]}; no text is displayed in the video. '
-                            f'The product is accurately sized. '
-                            f'The product price is not mentioned in the video.'
-                        )
-                    else:
-                        tvc_prompt = (
-                            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
-                            f'A beautiful {_tvc["nationality"]} woman, about 20 years old, holds the product and introduces its key benefits. '
-                            f'She states the benefits right away without any introduction. '
-                            f'She speaks {_tvc["language"]}; no text is displayed in the video. '
-                            f'The product is accurately sized. '
-                            f'Her outfit is modest and appropriate, not revealing or offensive. '
-                            f'The product price is not mentioned in the video.'
-                        )
+                    # === CHẾ ĐỘ 8s: TVC prompt chuẩn hóa theo review_style ===
+                    tvc_prompt, tvc_label = SV.build_tvc_prompt(product_name, lang=lang_code, review_style=review_style)
                     prompts = [tvc_prompt]
-                    self._sv_log_msg(f"  📺 TVC 8s: 1 prompt (Mẫu Nam)")
+                    short_name = product_name[:80].strip()
+                    self._sv_log_msg(f"  📺 TVC 8s: 1 prompt ({tvc_label} - SP: {short_name[:40]}...)")
                 else:
                     # === CHẾ ĐỘ 16s/24s: AI hoặc Template sinh nhiều prompt ===
                     prompts = None
@@ -8188,41 +8171,12 @@ class App(ctk.CTk):
                 scene_name, scene_en = SV.pick_scene(scene_choice, lang=lang_code)
                 prod["_use_fallback_prompts"] = True  # luôn dùng fallback prompts (không có ảnh người mẫu)
 
-                # === CHẾ ĐỘ 8s: Prompt TVC cố định (1 segment duy nhất) ===
+                # === CHẾ ĐỘ 8s: Prompt TVC chuẩn hóa theo review_style (1 segment duy nhất) ===
                 if duration_sec == 8:
-                    _tvc_lang_map = {
-                        "en": {"nationality": "American", "language": "English"},
-                        "vi": {"nationality": "Việt Nam", "language": "tiếng Việt"},
-                        "id": {"nationality": "Indonesian", "language": "tiếng Indonesia"},
-                        "my": {"nationality": "Malaysian", "language": "tiếng Malaysia (Bahasa Melayu)"},
-                        "ph": {"nationality": "Filipino", "language": "Filipino"},
-                    }
-                    _tvc = _tvc_lang_map.get(lang_code, _tvc_lang_map["en"])
-                    # Rút gọn tên SP (tối đa 80 ký tự)
-                    short_name = product_name[:80].strip()
-                    # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
-                    if lang_code == "my":
-                        tvc_prompt = (
-                            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
-                            f'A handsome Malay male model, modest clothing (clean long-sleeve shirt, dark trousers), about 25 years old, '
-                            f'holds the product and introduces its key benefits. '
-                            f'He states the benefits right away without any introduction. '
-                            f'He speaks {_tvc["language"]}; no text is displayed in the video. '
-                            f'The product is accurately sized. '
-                            f'The product price is not mentioned in the video.'
-                        )
-                    else:
-                        tvc_prompt = (
-                            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
-                            f'A beautiful {_tvc["nationality"]} woman, about 20 years old, holds the product and introduces its key benefits. '
-                            f'She states the benefits right away without any introduction. '
-                            f'She speaks {_tvc["language"]}; no text is displayed in the video. '
-                            f'The product is accurately sized. '
-                            f'Her outfit is modest and appropriate, not revealing or offensive. '
-                            f'The product price is not mentioned in the video.'
-                        )
+                    tvc_prompt, tvc_label = SV.build_tvc_prompt(product_name, lang=lang_code, review_style=review_style)
                     prompts = [tvc_prompt]
-                    self._sv_log_msg(f"  📺 TVC 8s: 1 prompt cố định (Mẫu Nam - SP: {short_name[:40]}...)")
+                    short_name = product_name[:80].strip()
+                    self._sv_log_msg(f"  📺 TVC 8s: 1 prompt cố định ({tvc_label} - SP: {short_name[:40]}...)")
                     n_segments = 1
                 else:
                     # === CHẾ ĐỘ 16s/24s: AI hoặc Template ===
@@ -8354,8 +8308,10 @@ class App(ctk.CTk):
                                 st.rest(AUTH_REST, "auth")
                                 return "retry_soft"
                             elif mid == "unusual":
-                                self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Upload bị unusual → nghỉ 120s làm mát")
-                                st.rest(120, "unusual")
+                                st.unusual_streak += 1
+                                unusual_rest = min(1200, 300 * st.unusual_streak)
+                                self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Upload bị unusual (lần {st.unusual_streak}) → nghỉ {unusual_rest}s")
+                                st.rest(unusual_rest, "unusual")
                                 return "retry_soft"
                             else:
                                 self._sv_log_msg(f"  ❌ Upload trả về rỗng (Google từ chối hoặc không cấp Media ID)")
@@ -8387,7 +8343,7 @@ class App(ctk.CTk):
                             vid_seed = random.randint(1, 999999)
                             v_status, ops = E.submit_video(
                                 bearer, project, prompt, seed=vid_seed, aspect=aspect_key,
-                                model=sv_model_key, ref_media_id=mid, proxy=st.proxy, cookie=st.cookie
+                                model=sv_model_key, ref_media_id=mid, proxy=st.proxy, cookie=st.cookie, email=st.email
                             )
                     finally:
                         st.release_submit()
@@ -8416,8 +8372,11 @@ class App(ctk.CTk):
                             self._sv_log_msg(f"    ⛔ {st.email[:16]} HẾT QUOTA → cách ly")
                             return "retry_soft"
                         if v_status == "unusual":
-                            st.rest(120, "unusual")
-                            self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Google báo unusual activity → cho tài khoản nghỉ 120s làm mát")
+                            st.unusual_streak += 1
+                            # Lũy tiến: 300s → 600s → 1200s (tối đa 20 phút)
+                            unusual_rest = min(1200, 300 * st.unusual_streak)
+                            st.rest(unusual_rest, "unusual")
+                            self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Google báo unusual activity (lần {st.unusual_streak}) → nghỉ {unusual_rest}s")
                             return "retry_soft"
                         if v_status == "auth":
                             st.auth_fail_streak += 1
@@ -8439,6 +8398,7 @@ class App(ctk.CTk):
                     # AIMD success
                     st.on_submit_ok()
                     st.proxy_fail_streak = 0  # Submit OK → reset proxy streak
+                    st.unusual_streak = 0     # Submit OK → reset unusual streak
 
                     self._sv_log_msg(f"  ⏳ Polling segment {seg_idx+1}...")
                     kind, poll_result, _ = E.poll_video(bearer, ops, cookie=cookie, max_attempts=POLL_MAX, interval=8, proxy=st.proxy)
@@ -8607,9 +8567,14 @@ class App(ctk.CTk):
                         if prod["_cycles"] < 3:
                             jobq.put(prod)
                         else:
-                            # --- Lớp 2: Trả lại job nếu lỗi do auth/cookie ---
-                            is_auth_failure = st.is_circuit_broken() or st.rest_reason in ("auth", "circuit_breaker")
-                            if is_auth_failure:
+                            # --- Lớp 2: Trả lại job nếu lỗi do TÀI KHOẢN (không phải do sản phẩm) ---
+                            # Bao gồm: auth, circuit_breaker, unusual, quota, throttle, proxy
+                            is_account_failure = (
+                                st.is_circuit_broken()
+                                or st.rest_reason in ("auth", "circuit_breaker", "unusual", "quota", "submit_throttle", "proxy_dead")
+                                or st.rest_remaining() > 0  # TK đang nghỉ = lỗi tạm thời, không phải lỗi SP
+                            )
+                            if is_account_failure:
                                 # Trả SP về pending trên Server thay vì đánh dấu failed
                                 try:
                                     self._sv_api_call("POST", "/api/thinaptm/release-single-job", {"itemId": prod.get("item_id")})
@@ -8717,6 +8682,13 @@ class App(ctk.CTk):
                         st.cookie = new_cookie
                         st.reset_circuit_breaker()
                         st.clear_rest()
+                        try:
+                            import recaptcha_farm as RF
+                            farm = RF.get_farm()
+                            if farm and hasattr(farm, "reset_session"):
+                                farm.reset_session(st.email)
+                        except Exception:
+                            pass
                         if st.ensure_auth(force=True):
                             self._sv_log_msg(f"  ✅ [Sync] {st.email}: Cookie đã được làm mới → sẵn sàng!")
                         else:
@@ -9359,15 +9331,10 @@ class App(ctk.CTk):
                 # Generate prompts (same logic as _sv)
                 scene_name, scene_en = SV.pick_scene(scene_choice, lang=lang_code)
                 if n_segments_needed == 1:
-                    _tvc_lang_map = {"en": {"nationality": "American", "language": "English"}, "vi": {"nationality": "Việt Nam", "language": "tiếng Việt"}, "id": {"nationality": "Indonesian", "language": "tiếng Indonesia"}, "my": {"nationality": "Malaysian", "language": "tiếng Malaysia"}, "ph": {"nationality": "Filipino", "language": "Filipino"}}
-                    _tvc = _tvc_lang_map.get(lang_code, _tvc_lang_map["en"])
+                    tvc_prompt, tvc_label = SV.build_tvc_prompt(product_name, lang=lang_code, review_style=review_style)
+                    prompts = [tvc_prompt]
                     short_name = product_name[:80].strip()
-                    # Malaysia: 100% Mẫu Nam (Male Model) an toàn tuyệt đối
-                    if lang_code == "my":
-                        prompts = [f'Create a product advertisement video (TVC) reviewing the product "{short_name}". A handsome Malay male model, modest clothing (clean long-sleeve shirt, dark trousers), about 25 years old, holds the product and introduces its key benefits. He states the benefits right away without any introduction. He speaks {_tvc["language"]}; no text is displayed in the video. The product is accurately sized. The product price is not mentioned in the video.']
-                    else:
-                        prompts = [f'Create a product advertisement video (TVC) reviewing the product "{short_name}". A beautiful {_tvc["nationality"]} woman, about 20 years old, holds the product and introduces its key benefits. She states the benefits right away without any introduction. She speaks {_tvc["language"]}; no text is displayed in the video. The product is accurately sized. Her outfit is modest and appropriate, not revealing or offensive. The product price is not mentioned in the video.']
-                    self._sa_log_msg(f"  📺 TVC 8s: 1 prompt (Mẫu Nam)")
+                    self._sa_log_msg(f"  📺 TVC 8s: 1 prompt ({tvc_label} - SP: {short_name[:40]}...)")
                 else:
                     prompts = None
                     if ai_mode == "Gemini":

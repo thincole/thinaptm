@@ -71,6 +71,7 @@ class RecaptchaFarm:
         self._workers = []
         self._started = False
         self._total_farmed = 0
+        self._lock = threading.Lock()
         self._sessions = {}  # acc_key -> {"page": page, "lock": Lock(), "project": project, "ready": bool}
         self._sessions_lock = threading.Lock()
     
@@ -160,9 +161,36 @@ class RecaptchaFarm:
             "total_farmed": self._total_farmed,
         }
 
-    def _get_acc_key(self, cookie):
-        """Tạo định danh hash duy nhất cho tài khoản dựa trên cookie."""
+    def _find_profile_dir(self, email=None, cookie=None):
+        """Tìm thư mục profile tương ứng của tài khoản."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        profiles_root = os.path.join(here, "_profiles")
+        if email:
+            p = os.path.join(profiles_root, str(email).replace("@", "_"))
+            if os.path.isdir(p):
+                return p
+        if cookie:
+            try:
+                acc_path = os.path.join(here, "accounts.json")
+                if os.path.isfile(acc_path):
+                    with open(acc_path, "r", encoding="utf-8") as f:
+                        accs = json.load(f)
+                    for a in accs:
+                        if a.get("cookie") == cookie or (email and (a.get("email") == email or a.get("id") == email)):
+                            acc_em = a.get("email") or a.get("id") or ""
+                            if acc_em:
+                                p = os.path.join(profiles_root, acc_em.replace("@", "_"))
+                                if os.path.isdir(p):
+                                    return p
+            except Exception:
+                pass
+        return None
+
+    def _get_acc_key(self, cookie, email=None):
+        """Tạo định danh hash duy nhất cho tài khoản dựa trên email hoặc cookie."""
         import hashlib
+        if email:
+            return str(email).strip().lower()
         if not cookie:
             return "unknown"
         for pair in str(cookie).split(";"):
@@ -172,69 +200,109 @@ class RecaptchaFarm:
                     return hashlib.md5(v.strip().encode()).hexdigest()[:12]
         return hashlib.md5(str(cookie)[:100].encode()).hexdigest()[:12]
 
-    def _get_or_create_session(self, cookie, project):
-        """Lấy hoặc khởi tạo 1 browser session chuyên trách cho tài khoản."""
+    def reset_session(self, key_or_email):
+        """Đóng và xóa browser session của tài khoản khi cookie được làm mới hoặc cần reset."""
+        if not key_or_email:
+            return
+        target = str(key_or_email).strip().lower()
+        with self._sessions_lock:
+            for k, sess in list(self._sessions.items()):
+                if k == target or target in k or k in target:
+                    try:
+                        if sess.get("page"):
+                            sess["page"].quit()
+                    except Exception:
+                        pass
+                    sess["ready"] = False
+                    sess["page"] = None
+                    self._sessions.pop(k, None)
+                    self._log(f"🔄 Đã reset browser session cho {key_or_email}")
+
+    def _get_or_create_session(self, cookie, project, email=None):
+        """Lấy hoặc khởi tạo 1 browser session chuyên trách cho tài khoản.
+        Tự động ưu tiên dùng user profile đã đăng nhập sẵn để tránh bị reCAPTCHA Enterprise chặn."""
         import random
         from DrissionPage import ChromiumOptions, ChromiumPage
-        key = self._get_acc_key(cookie)
+        key = self._get_acc_key(cookie, email=email)
         with self._sessions_lock:
             if key not in self._sessions:
-                self._sessions[key] = {"lock": threading.Lock(), "ready": False, "page": None, "project": project}
+                self._sessions[key] = {"lock": threading.Lock(), "ready": False, "page": None, "project": project, "cookie": cookie}
             sess = self._sessions[key]
 
         with sess["lock"]:
+            # Nếu cookie của tài khoản đã thay đổi -> reset phiên cũ
+            if sess.get("cookie") and cookie and sess.get("cookie") != cookie:
+                self._log(f"🔄 [Browser-{key[:10]}] Cookie đã đổi → Khởi tạo lại Chrome...")
+                try:
+                    if sess.get("page"):
+                        sess["page"].quit()
+                except Exception:
+                    pass
+                sess["page"] = None
+                sess["ready"] = False
+                sess["cookie"] = cookie
+
             if sess.get("ready") and sess.get("page"):
                 try:
                     if sess["page"].run_js("return 1") == 1:
                         return sess
-                except:
+                except Exception:
                     sess["ready"] = False
                     try:
                         sess["page"].quit()
-                    except:
+                    except Exception:
                         pass
                     sess["page"] = None
             
-            tag = f"[Browser-{key[:6]}]"
-            self._log(f"🌐 {tag} Khởi tạo phiên Chrome headless cho project {str(project)[:12]}...")
+            tag = f"[Browser-{key[:10]}]"
+            profile_dir = self._find_profile_dir(email=email, cookie=cookie)
+
             co = ChromiumOptions()
             chrome_path = get_chrome_path()
             if chrome_path:
                 co.set_browser_path(chrome_path)
             co.set_argument("--headless")
-            co.set_argument("--disable-extensions")
             co.set_argument("--no-first-run")
+            co.set_argument("--no-default-browser-check")
             co.set_argument("--disable-gpu")
-            co.set_argument("--no-sandbox")
-            co.set_argument("--blink-settings=imagesEnabled=false")
-            co.set_pref("profile.default_content_setting_values.images", 2)
-            co.set_local_port(random.randint(30000, 49999))
+            co.set_local_port(random.randint(20000, 39999))
+
+            if profile_dir:
+                self._log(f"🌐 {tag} Nạp profile người dùng: {os.path.basename(profile_dir)} (headless)...")
+                co.set_user_data_path(profile_dir)
+            else:
+                self._log(f"🌐 {tag} Không có profile sẵn → Dùng Chrome headless + CDP cookie injection...")
+                co.set_argument("--disable-extensions")
+                co.set_argument("--no-sandbox")
+                co.set_argument("--blink-settings=imagesEnabled=false")
+                co.set_pref("profile.default_content_setting_values.images", 2)
 
             try:
                 page = ChromiumPage(co)
                 page.set.retry_times(2)
-                page.get(FLOW_URL)
-                time.sleep(1.5)
 
-                for pair in str(cookie).split(";"):
-                    if "=" in pair:
-                        name, val = pair.strip().split("=", 1)
-                        name, val = name.strip(), val.strip()
-                        try:
-                            if name.startswith("__Host-"):
-                                page.run_cdp("Network.setCookie", name=name, value=val,
-                                            url="https://flow.google.com", path="/", secure=True, httpOnly=True)
-                            else:
-                                page.run_cdp("Network.setCookie", name=name, value=val,
-                                            domain=".google.com", path="/", secure=True)
-                        except:
-                            pass
+                if not profile_dir and cookie:
+                    page.get(FLOW_URL)
+                    time.sleep(1.5)
+                    for pair in str(cookie).split(";"):
+                        if "=" in pair:
+                            name, val = pair.strip().split("=", 1)
+                            name, val = name.strip(), val.strip()
+                            try:
+                                if name.startswith("__Host-"):
+                                    page.run_cdp("Network.setCookie", name=name, value=val,
+                                                url="https://flow.google.com", path="/", secure=True, httpOnly=True)
+                                else:
+                                    page.run_cdp("Network.setCookie", name=name, value=val,
+                                                domain=".google.com", path="/", secure=True)
+                            except:
+                                pass
 
                 target_url = f"https://flow.google.com/project/{project}" if project else f"{FLOW_URL}/?pli=1"
                 page.get(target_url)
                 self._log(f"🌐 {tag} Đang load project editor...")
 
-                # Đợi Angular & WIZ & grecaptcha ready (polling nhanh thay vì sleep 15s)
+                # Đợi Angular & WIZ & grecaptcha ready
                 ready = False
                 for _ in range(25):
                     time.sleep(1)
@@ -247,7 +315,7 @@ class RecaptchaFarm:
                             try: page.quit()
                             except: pass
                             return None
-                        ok = page.run_js("return typeof grecaptcha !== 'undefined' && !!grecaptcha.enterprise && !!window.WIZ_global_data && !!window.WIZ_global_data.SNlM0e")
+                        ok = page.run_js("return typeof grecaptcha !== 'undefined' && !!grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function' && !!window.WIZ_global_data && !!window.WIZ_global_data.SNlM0e")
                         if ok:
                             ready = True
                             break
@@ -255,10 +323,11 @@ class RecaptchaFarm:
                         pass
 
                 if not ready:
-                    self._log(f"⚠️ {tag} Editor chưa sẵn sàng sau 25s, thử tiếp...")
+                    self._log(f"⚠️ {tag} Editor chưa hoàn toàn sẵn sàng sau 25s, vẫn tiếp tục submit...")
 
                 sess["page"] = page
                 sess["ready"] = True
+                sess["cookie"] = cookie
                 self._log(f"🟢 {tag} Phiên Chrome sẵn sàng cho video submit!")
                 return sess
             except Exception as ex:
@@ -267,16 +336,17 @@ class RecaptchaFarm:
                 sess["page"] = None
                 return None
 
-    def submit_video_native(self, cookie, project, prompt, model="veo_3_1_t2v_lite_low_priority", aspect="9:16", ref_media_id=None):
+    def submit_video_native(self, cookie, project, prompt, model="veo_3_1_t2v_lite_low_priority", aspect="9:16", ref_media_id=None, email=None):
         """Submit video TRỰC TIẾP từ bên trong trình duyệt (In-Browser Native Fetch).
         
         ★ Tránh 100% lỗi PUBLIC_ERROR_UNUSUAL_ACTIVITY vì:
+        - Sử dụng persistent profile Chrome thật của tài khoản (nếu có)
         - Token reCAPTCHA sinh ra trên cùng origin và được fetch() ngay tại tab đó
         - Đúng TLS fingerprint, đúng credentials và session context của Chrome
         - Hỗ trợ cả Text-to-Video và Ingredients (ảnh sản phẩm tham chiếu)
         """
         import uuid
-        sess = self._get_or_create_session(cookie, project)
+        sess = self._get_or_create_session(cookie, project, email=email)
         if not sess:
             return "auth", []
 
@@ -290,38 +360,34 @@ class RecaptchaFarm:
             u1, u2, u3, u4 = [str(uuid.uuid4()).upper() for _ in range(4)]
             parent_u = str(uuid.uuid4()).upper()
             
-            if ref_media_id and ("abra" in str(model).lower() or "omni" in str(model).lower()):
+            # Xác định model có phải dòng trả phí (abra/omni) không
+            is_paid_model = ("abra" in str(model).lower() or "omni" in str(model).lower())
+            
+            if ref_media_id and is_paid_model:
+                # Image-to-Video qua eb1hJf — CHỈ cho model trả phí (tốn credit)
                 rpc_id = "eb1hJf"
                 model_name = "abra_i2v_10s" if "10s" in str(model) else "abra_i2v_8s"
                 prompt_block = [None, None, [[[prompt]]]]
+                scene1 = [prompt_block, model_name, aspect_code, None, [None, ref_media_id], [None, None, None, None, u1, u2]]
+                scene2 = [prompt_block, model_name, aspect_code, None, [None, ref_media_id], [None, None, None, None, u3, u4]]
             else:
+                # Text-to-Video qua YhhmEf — Veo 3.1 Lite (miễn phí, 0 credit)
+                # LƯU Ý: Ingredient format (ref_media_id) trên YhhmEf bị Google chặn (UNUSUAL_ACTIVITY)
+                # → bỏ qua ref_media_id, chỉ dùng prompt text thuần
                 rpc_id = "YhhmEf"
                 if "10s" in str(model):
                     model_name = "abra_t2v_10s"
-                elif "abra" in str(model) or "omni" in str(model).lower():
+                elif is_paid_model:
                     model_name = "abra_t2v_8s"
                 else:
                     model_name = "veo_3_1_t2v_lite_low_priority"
-
-                if ref_media_id:
-                    prompt_block = [None, None, [[[prompt]]], None, None, None, None, None, [[None, 1, ref_media_id]]]
-                else:
-                    prompt_block = [None, None, [[[prompt]]]]
-                
-            scene1 = [prompt_block, model_name, aspect_code, None, [None, None, None, None, u1, u2]]
-            scene2 = [prompt_block, model_name, aspect_code, None, [None, None, None, None, u3, u4]]
+                prompt_block = [None, None, [[[prompt]]]]
+                scene1 = [prompt_block, model_name, aspect_code, None, [None, None, None, None, u1, u2]]
+                scene2 = [prompt_block, model_name, aspect_code, None, [None, None, None, None, u3, u4]]
             
             js = f"""
             async function _doSubmit() {{
                 try {{
-                    try {{
-                        window.dispatchEvent(new MouseEvent('mousemove', {{
-                            clientX: Math.floor(Math.random() * 600) + 100,
-                            clientY: Math.floor(Math.random() * 400) + 100,
-                            bubbles: true
-                        }}));
-                    }} catch(_) {{}}
-
                     await new Promise(r => grecaptcha.enterprise.ready(r));
                     const rcToken = await grecaptcha.enterprise.execute('{RECAPTCHA_SITE_KEY}', {{action: 'VIDEO_GENERATION'}});
                     
@@ -338,8 +404,13 @@ class RecaptchaFarm:
                     body.append('f.req', JSON.stringify(freq));
                     body.append('at', at);
                     
+                    // Dynamic _reqid counter (mô phỏng browser thật, tăng dần mỗi request)
+                    if (!window._thinaptm_reqid) window._thinaptm_reqid = Math.floor(Math.random() * 100000);
+                    window._thinaptm_reqid += Math.floor(Math.random() * 50000) + 10000;
+                    const reqId = window._thinaptm_reqid;
+                    
                     const url = '/_/AiSandboxAngularFrontend/data/batchexecute?rpcids={rpc_id}&source-path=' + 
-                                encodeURIComponent('/project/{project}') + '&bl=' + bl + '&f.sid=' + fsid + '&hl=en-US&_reqid=1234&rt=c';
+                                encodeURIComponent('/project/{project}') + '&bl=' + bl + '&f.sid=' + fsid + '&hl=en-US&_reqid=' + reqId + '&rt=c';
                     
                     const resp = await fetch(url, {{
                         method: 'POST',

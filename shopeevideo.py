@@ -839,6 +839,100 @@ def build_image_prompt(product_name, scene_en, lang="en", review_style=None):
     return prompt
 
 
+def build_tvc_prompt(product_name, lang="en", review_style="Random"):
+    """Tạo 1 prompt TVC 8s chuẩn cho video quảng cáo / review sản phẩm.
+    Hỗ trợ đầy đủ phong cách:
+    - POV / Góc nhìn thứ nhất: TUYỆT ĐỐI KHÔNG có mặt người mẫu, chỉ có 2 bàn tay thao tác trên mặt bàn.
+    - Unboxing / Đập hộp: Góc máy từ trên xuống, chỉ có 2 bàn tay bóc hộp / giới thiệu.
+    - Demo Công Dụng: Cận cảnh macro 100% vào tính năng sản phẩm, không quay mặt.
+    - Các phong cách có MC (Review tự nhiên, Ngồi Review, UGC, v.v.):
+        + Malaysia ('my'): 100% Mẫu Nam (handsome Malay male model) an toàn chính sách.
+        + Thị trường khác: Mẫu Nữ đẹp thanh lịch theo quốc gia.
+    Trả về tuple: (tvc_prompt, label)
+    """
+    _tvc_lang_map = {
+        "en": {"nationality": "American", "language": "English"},
+        "vi": {"nationality": "Việt Nam", "language": "tiếng Việt"},
+        "id": {"nationality": "Indonesian", "language": "tiếng Indonesia"},
+        "my": {"nationality": "Malaysian", "language": "tiếng Malaysia (Bahasa Melayu)"},
+        "ph": {"nationality": "Filipino", "language": "Filipino"},
+    }
+    _tvc = _tvc_lang_map.get(lang, _tvc_lang_map["en"])
+    short_name = (product_name or "").strip()[:80].strip()
+
+    style_raw = str(review_style or "").strip()
+    if not style_raw or "random" in style_raw.lower() or "🎲" in style_raw:
+        style_raw = random.choice([
+            "Review tự nhiên", "Ngồi Review", "POV (Góc nhìn thứ nhất)",
+            "Unboxing", "UGC Authentic", "Demo Công Dụng", "So Sánh/Đánh Giá"
+        ])
+
+    style_lower = style_raw.lower()
+    is_pov = any(k in style_lower for k in ("pov", "góc nhìn thứ nhất"))
+    is_unbox = any(k in style_lower for k in ("unbox", "đập hộp"))
+    is_demo = any(k in style_lower for k in ("demo", "công dụng", "feature"))
+
+    if is_pov:
+        prompt = (
+            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
+            f'A first-person point of view (POV) shot looking down at a clean minimalist tabletop surface. '
+            f'ABSOLUTELY NO human face, NO head, NO presenter body visible. '
+            f'Only two clean, natural hands are visible holding, rotating, demonstrating, and interacting with the product. '
+            f'The hands smoothly showcase the key features, texture, and quality of the product. '
+            f'Voiceover speaks in {_tvc["language"]} explaining the product benefits right away without any introduction; no text is displayed in the video. '
+            f'The product is accurately sized. '
+            f'The product price is not mentioned in the video.'
+        )
+        return prompt, "POV"
+
+    if is_unbox:
+        prompt = (
+            f'Create a product advertisement video (TVC) unboxing the product "{short_name}". '
+            f'A top-down desk camera angle looking down at a clean tabletop. '
+            f'ABSOLUTELY NO human face, NO head, NO presenter body visible. '
+            f'Only two clean, natural hands are visible carefully opening packaging, unboxing, and presenting the product. '
+            f'The hands smoothly showcase the product details, packaging, and craftsmanship. '
+            f'Voiceover speaks in {_tvc["language"]} explaining the product benefits right away without any introduction; no text is displayed in the video. '
+            f'The product is accurately sized. '
+            f'The product price is not mentioned in the video.'
+        )
+        return prompt, "Unboxing"
+
+    if is_demo:
+        prompt = (
+            f'Create a product advertisement video (TVC) demonstrating the product "{short_name}". '
+            f'Extreme close-up macro shots focusing 100% on demonstrating and testing the product features, durability, and practical utility on a clean surface. '
+            f'ABSOLUTELY NO human face visible. Only clean hands interacting with and testing the product. '
+            f'Voiceover speaks in {_tvc["language"]} explaining the product benefits right away without any introduction; no text is displayed in the video. '
+            f'The product is accurately sized. '
+            f'The product price is not mentioned in the video.'
+        )
+        return prompt, "Demo Công Dụng"
+
+    if lang == "my":
+        prompt = (
+            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
+            f'A handsome Malay male model, modest clothing (clean long-sleeve shirt, dark trousers), about 25 years old, '
+            f'holds the product and introduces its key benefits. '
+            f'He states the benefits right away without any introduction. '
+            f'He speaks {_tvc["language"]}; no text is displayed in the video. '
+            f'The product is accurately sized. '
+            f'The product price is not mentioned in the video.'
+        )
+        return prompt, "Mẫu Nam"
+    else:
+        prompt = (
+            f'Create a product advertisement video (TVC) reviewing the product "{short_name}". '
+            f'A beautiful {_tvc["nationality"]} woman, about 20 years old, holds the product and introduces its key benefits. '
+            f'She states the benefits right away without any introduction. '
+            f'She speaks {_tvc["language"]}; no text is displayed in the video. '
+            f'The product is accurately sized. '
+            f'Her outfit is modest and appropriate, not revealing or offensive. '
+            f'The product price is not mentioned in the video.'
+        )
+        return prompt, "Mẫu Nữ"
+
+
 def build_video_prompts(product_name, scene_en, duration_sec=16, lang="en", review_style="Random", content_style="Review kho hàng"):
     """Sinh list prompt liền mạch dựa trên độ dài video (16s hoặc 24s).
     Tất cả prompt dùng CÙNG khung cảnh + trang phục + ánh sáng

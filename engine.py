@@ -1120,12 +1120,19 @@ def get_recaptcha_context():
     return {"applicationType": APP_ANDROID, "token": BYPASS_TOKEN}
 
 
-def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None, timeout=120, proxy=None, cookie=None):
+def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None, timeout=120, proxy=None, cookie=None, email=None):
     final_prompt = f"{prompt}. {VOICE_DESC}" if VOICE_DESC else prompt
 
     # Tự động gán cookie nếu cookie rỗng nhưng bearer thực chất là chuỗi cookie
     if not cookie and isinstance(bearer, str) and ("SID=" in bearer or "OSID=" in bearer):
         cookie = bearer
+
+    # Tự động trích xuất email nếu chưa có
+    if not email and cookie:
+        import re
+        m_em = re.search(r'(?:email|EMAIL)=([^;]+)', str(cookie))
+        if m_em:
+            email = m_em.group(1).strip()
 
     # ★ ƯU TIÊN 1: In-Browser Native Submit qua RecaptchaFarm / Browser Engine
     # Giải quyết triệt để 100% lỗi PUBLIC_ERROR_UNUSUAL_ACTIVITY cho TẤT CẢ các tài khoản
@@ -1145,14 +1152,17 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
                 prompt=final_prompt,
                 model=model,
                 aspect=aspect,
-                ref_media_id=ref_media_id
+                ref_media_id=ref_media_id,
+                email=email
             )
             if b_status == "ok" and b_ops:
                 _log_api(f"submit_video: 🚀 Native Browser Submit thành công! ops={b_ops}")
                 return "ok", b_ops
-            elif b_status in ("unusual", "auth", "vi phạm cs", "quota_hard", "throttle"):
+            elif b_status in ("auth", "vi phạm cs", "quota_hard", "throttle"):
                 _log_err(f"submit_video: Native Browser submit trả {b_status}")
                 return b_status, None
+            elif b_status == "unusual":
+                _log_err("submit_video: Native Browser submit báo unusual -> tiếp tục fallback sang boq_execute với token farm")
         except Exception as ex:
             _log_err(f"submit_video: Native Browser submit exception: {ex}")
 
@@ -1175,8 +1185,11 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
     # Google Flow BOQ RPC (YhhmEf / eb1hJf): 1 = Dọc 9:16 (PORTRAIT), 2 = Ngang 16:9 (LANDSCAPE)
     aspect_code = 2 if (aspect and ("16:9" in str(aspect) or "LANDSCAPE" in str(aspect))) else 1
 
-    if ref_media_id and ("abra" in str(model).lower() or "omni" in str(model).lower()):
-        # Image-to-Video qua RPC eb1hJf (Start Frame) — chỉ dành cho Omni Flash (mất credit)
+    # Xác định model có phải dòng trả phí (abra/omni) không
+    is_paid_model = ("abra" in str(model).lower() or "omni" in str(model).lower())
+
+    if ref_media_id and is_paid_model:
+        # Image-to-Video qua RPC eb1hJf (Start Frame) — CHỈ cho model trả phí (tốn credit)
         rpc_id = "eb1hJf"
         model_name = "abra_i2v_10s" if "10s" in str(model) else "abra_i2v_8s"
         prompt_block = [None, None, [[[final_prompt]]]]
@@ -1197,22 +1210,18 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
             [None, None, None, None, u3, u4]
         ]
     else:
-        # Veo 3.1 Lite (0 credit, hoàn toàn miễn phí) qua RPC YhhmEf
-        # Hỗ trợ cả Text-to-Video và Ingredients (Thành phần hình ảnh sản phẩm)
+        # Text-to-Video qua RPC YhhmEf — dùng cho Veo 3.1 Lite (miễn phí, 0 credit)
+        # LƯU Ý: Ingredient format (ref_media_id) trên YhhmEf bị Google chặn (UNUSUAL_ACTIVITY)
+        # → bỏ qua ref_media_id, chỉ dùng prompt text thuần. Ảnh SP vẫn dùng trong composite/outro.
         rpc_id = "YhhmEf"
         if "10s" in str(model):
             model_name = "abra_t2v_10s"
-        elif "abra" in str(model) or "omni" in str(model).lower():
+        elif is_paid_model:
             model_name = "abra_t2v_8s"
         else:
             model_name = "veo_3_1_t2v_lite_low_priority"
 
-        if ref_media_id:
-            # Truyền ảnh dưới dạng Ingredients (Thành phần) -> VEO 3.1 0 CREDIT!
-            prompt_block = [None, None, [[[final_prompt]]], None, None, None, None, None, [[None, 1, ref_media_id]]]
-        else:
-            prompt_block = [None, None, [[[final_prompt]]]]
-
+        prompt_block = [None, None, [[[final_prompt]]]]
         scene1 = [
             prompt_block,
             model_name,
