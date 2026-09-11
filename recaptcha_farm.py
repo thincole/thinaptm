@@ -218,6 +218,51 @@ class RecaptchaFarm:
                     self._sessions.pop(k, None)
                     self._log(f"🔄 Đã reset browser session cho {key_or_email}")
 
+    def get_wiz_tokens_from_browser(self, cookie=None, project=None, email=None):
+        """Lấy (at, fsid, bl, account_id) từ browser session đã mở sẵn.
+        Đây là FALLBACK khi get_wiz_tokens() HTTP parsing fail (Google thay đổi page).
+        Browser session chạy JavaScript nên lấy được window.WIZ_global_data.SNlM0e.
+        CHỈ dùng session đã có sẵn, KHÔNG tạo session mới."""
+        # Ưu tiên session khớp email/cookie
+        target_key = self._get_acc_key(cookie, email=email) if (cookie or email) else None
+        candidates = []
+        with self._sessions_lock:
+            if target_key and target_key in self._sessions:
+                candidates.append(self._sessions[target_key])
+            else:
+                # Tìm tất cả session đang sẵn sàng
+                candidates = [s for s in self._sessions.values() if s.get("ready") and s.get("page")]
+
+        for sess in candidates:
+            try:
+                if not sess.get("ready") or not sess.get("page"):
+                    continue
+                page = sess["page"]
+                js = """
+                (function() {
+                    var w = window.WIZ_global_data || {};
+                    return JSON.stringify({
+                        at: w.SNlM0e || '',
+                        fsid: w.FdrFJe || '',
+                        bl: w.cfb2h || '',
+                        account_id: w['oPEP7c'] || w['S06Grb'] || ''
+                    });
+                })()
+                """
+                raw = page.run_js(js)
+                if raw:
+                    data = json.loads(raw)
+                    at = data.get("at") or None
+                    fsid = data.get("fsid") or None
+                    bl = data.get("bl") or "boq_labs-ai-sandbox-frontend_20260907.00_p0"
+                    account_id = data.get("account_id") or None
+                    if at:
+                        return at, fsid, bl, account_id
+            except Exception as ex:
+                self._log(f"get_wiz_tokens_from_browser error: {ex}")
+                continue
+        return None, None, None, None
+
     def _get_or_create_session(self, cookie, project, email=None):
         """Lấy hoặc khởi tạo 1 browser session chuyên trách cho tài khoản.
         Tự động ưu tiên dùng user profile đã đăng nhập sẵn để tránh bị reCAPTCHA Enterprise chặn."""

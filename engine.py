@@ -309,6 +309,32 @@ def get_wiz_tokens(cookie, proxy=None, force=False):
             _log_err(f"get_wiz_tokens error {'(via proxy)' if px else '(direct)'}: {e}")
             if px:
                 continue  # Retry trực tiếp
+
+    # ★ FALLBACK: HTML parsing thất bại → thử lấy từ native browser session (chạy JavaScript)
+    # Google đã thay đổi flow.google.com — SNlM0e không còn nhúng trong HTML, chỉ load qua JS
+    try:
+        global _recaptcha_farm
+        if _recaptcha_farm is None:
+            import recaptcha_farm as RF
+            _recaptcha_farm = RF.get_farm()
+        if _recaptcha_farm and hasattr(_recaptcha_farm, "get_wiz_tokens_from_browser"):
+            # Trích email từ cookie để tìm browser session
+            import re as _re
+            _em = None
+            m_em = _re.search(r'(?:email|EMAIL)=([^;]+)', str(cookie))
+            if m_em:
+                _em = m_em.group(1).strip()
+            at, fsid, bl, account_id = _recaptcha_farm.get_wiz_tokens_from_browser(
+                cookie=cookie, project=None, email=_em
+            )
+            if at:
+                _log_api(f"get_wiz_tokens: ✅ Fallback browser JS thành công! (at={at[:15]}...)")
+                with _wiz_lock:
+                    _wiz_cache[ck_key] = {"at": at, "fsid": fsid, "bl": bl, "account_id": account_id, "ts": time.time()}
+                return at, fsid, bl, account_id
+    except Exception as ex:
+        _log_err(f"get_wiz_tokens browser fallback error: {ex}")
+
     return None, None, None, None
 
 
