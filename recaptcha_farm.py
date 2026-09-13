@@ -45,6 +45,47 @@ def get_chrome_path():
     return None
 
 
+def hide_pid_windows_from_taskbar(pid):
+    """Ẩn toàn bộ cửa sổ của tiến trình Chrome khỏi Taskbar Windows (không hiện icon rác)."""
+    if not pid:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        GWL_EXSTYLE = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_APPWINDOW = 0x00040000
+        SWP_FRAMECHANGED = 0x0020
+        SWP_NOMOVE = 0x0002
+        SWP_NOSIZE = 0x0001
+        SWP_NOZORDER = 0x0004
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        hwnds = []
+        def enum_cb(hwnd, lparam):
+            lpdw_pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(lpdw_pid))
+            if lpdw_pid.value == pid:
+                hwnds.append(hwnd)
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+        for hwnd in hwnds:
+            try:
+                ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                ex_style |= WS_EX_TOOLWINDOW
+                ex_style &= ~WS_EX_APPWINDOW
+                user32.ShowWindow(hwnd, 0)
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
+                user32.ShowWindow(hwnd, 4)
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 class RecaptchaFarm:
     """Trại Token reCAPTCHA — farm token tươi bằng headless Chrome.
     
@@ -306,10 +347,14 @@ class RecaptchaFarm:
             chrome_path = get_chrome_path()
             if chrome_path:
                 co.set_browser_path(chrome_path)
-            co.set_argument("--headless")
+            # ★ Kỹ thuật Chiến Hust: KHÔNG dùng --headless (Google phát hiện qua WebGL/Canvas)
+            # Thay vào đó đẩy cửa sổ ra ngoài màn hình → Chrome render thật 100% nhưng ẩn
+            co.set_argument("--window-position=-30000,0")
+            co.set_argument("--window-size=1280,900")
             co.set_argument("--no-first-run")
             co.set_argument("--no-default-browser-check")
             co.set_argument("--disable-gpu")
+            co.set_argument("--disable-blink-features=AutomationControlled")
             co.set_local_port(random.randint(20000, 39999))
 
             if profile_dir:
@@ -325,6 +370,7 @@ class RecaptchaFarm:
             try:
                 page = ChromiumPage(co)
                 page.set.retry_times(2)
+                hide_pid_windows_from_taskbar(getattr(page, "process_id", None))
 
                 if not profile_dir and cookie:
                     page.get(FLOW_URL)
@@ -360,6 +406,11 @@ class RecaptchaFarm:
                             try: page.quit()
                             except: pass
                             return None
+                        if "404" in curr and "project" in curr:
+                            self._log(f"⚠️ {tag} Project cũ không tồn tại (404) → chuyển về trang chủ Flow...")
+                            page.get(f"{FLOW_URL}/?pli=1")
+                            time.sleep(3)
+                            continue
                         ok = page.run_js("return typeof grecaptcha !== 'undefined' && !!grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function' && !!window.WIZ_global_data && !!window.WIZ_global_data.SNlM0e")
                         if ok:
                             ready = True
@@ -524,13 +575,6 @@ class RecaptchaFarm:
 
             if status == "ok":
                 sess["submit_count"] = sess.get("submit_count", 0) + 1
-                if sess["submit_count"] >= 6:
-                    try:
-                        page.refresh()
-                        time.sleep(2)
-                        sess["submit_count"] = 0
-                    except:
-                        pass
             return status, ops
     
     def _worker(self, worker_id):
@@ -563,12 +607,15 @@ class RecaptchaFarm:
             co.set_argument("--no-first-run")
             co.set_argument("--no-default-browser-check")
             co.set_argument("--disable-gpu")
-            co.set_argument("--headless")
+            # ★ Kỹ thuật Chiến Hust: Không dùng --headless (reCAPTCHA Enterprise cho điểm thấp)
+            # Đẩy cửa sổ ra ngoài màn hình → Chrome thật nhưng ẩn
+            co.set_argument("--window-position=-30000,0")
+            co.set_argument("--window-size=800,600")
             co.set_argument("--blink-settings=imagesEnabled=false")
             co.set_argument("--disable-software-rasterizer")
             co.set_argument("--disable-dev-shm-usage")
             co.set_argument("--no-sandbox")
-            co.set_argument("--disable-webgl")
+            co.set_argument("--disable-blink-features=AutomationControlled")
             co.set_pref("profile.default_content_setting_values.images", 2)
             co.set_pref("profile.managed_default_content_settings.images", 2)
             
@@ -577,6 +624,7 @@ class RecaptchaFarm:
 
             page = ChromiumPage(co)
             page.set.retry_times(2)
+            hide_pid_windows_from_taskbar(getattr(page, "process_id", None))
 
             # ★ Lấy cookie + project từ accounts.json
             cookie_str = None
@@ -742,10 +790,16 @@ _farm_instance = None
 _farm_lock = threading.Lock()
 
 
-def get_farm(num_workers=3, log_func=None):
-    """Lấy hoặc tạo singleton RecaptchaFarm."""
+def get_farm(num_workers=2, log_func=None):
+    """Lấy hoặc tạo singleton RecaptchaFarm. Tự động khởi động lại nếu số luồng cấu hình thay đổi."""
     global _farm_instance
     with _farm_lock:
+        if _farm_instance is not None and _farm_instance.num_workers != num_workers:
+            try:
+                _farm_instance.stop()
+            except Exception:
+                pass
+            _farm_instance = None
         if _farm_instance is None:
             _farm_instance = RecaptchaFarm(num_workers=num_workers, log_func=log_func)
         return _farm_instance

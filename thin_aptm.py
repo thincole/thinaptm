@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.23"
+APP_VERSION = "ThinAPTM 1.2.24"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -994,7 +994,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(rccard, text="🔒 reCAPTCHA Mode",
                      font=("", 12, "bold"), text_color=T1).pack(anchor="w", padx=12, pady=(8, 2))
         rc_row = ctk.CTkFrame(rccard, fg_color="transparent"); rc_row.pack(fill="x", padx=12, pady=(2, 4))
-        self._recaptcha_mode = ctk.StringVar(value=self.settings.get("recaptcha_mode", "android_bypass"))
+        self._recaptcha_mode = ctk.StringVar(value=self.settings.get("recaptcha_mode", "token_farm"))
         rc_seg = ctk.CTkSegmentedButton(rc_row, values=["android_bypass", "token_farm"],
                                          variable=self._recaptcha_mode, font=("", 11),
                                          command=self._on_recaptcha_mode_change)
@@ -1005,7 +1005,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(rc_bot, text="Số luồng farm:", font=("", 11), text_color=T2).pack(side="left")
         self._rc_workers = ctk.CTkEntry(rc_bot, width=50, height=28, font=("Consolas", 11))
         self._rc_workers.pack(side="left", padx=(6, 8))
-        self._rc_workers.insert(0, str(self.settings.get("recaptcha_workers", 3)))
+        self._rc_workers.insert(0, str(self.settings.get("recaptcha_workers", 2)))
         self._on_recaptcha_mode_change(self._recaptcha_mode.get())
 
         # Cột phải: Telegram Report
@@ -8126,12 +8126,33 @@ class App(ctk.CTk):
                     return "retry_soft"
 
                 if not st.ensure_auth():
-                    # ensure_auth() đã tăng auth_fail_streak bên trong
+                    # ★ Kỹ thuật Chiến Hust: Thay vì retry_soft ngay (spam log + lãng phí cycles),
+                    # chờ tối đa 5 phút kiểm tra mỗi 10s xem cookie đã được refresh chưa.
+                    # Background threads (Health Check / Proactive Refresher) sẽ tự làm mới cookie.
                     if st.is_circuit_broken():
                         self._sv_log_msg(f"  🔌 Circuit Breaker: {st.email[:16]} ngắt mạch sau {st.auth_fail_streak} lỗi auth liên tiếp")
                         self._trigger_instant_health_check(st.email)
-                    st.rest(AUTH_REST, "auth")
-                    return "retry_soft"
+                    old_cookie = st.cookie
+                    self._sv_log_msg(f"  ⏳ {st.email[:16]}: Cookie chết → chờ tối đa 5 phút để refresh...")
+                    _wait_end = time.time() + 300  # 5 phút
+                    _recovered = False
+                    while time.time() < _wait_end and not self._sv_stop_flag:
+                        time.sleep(10)
+                        # Kiểm tra xem cookie đã thay đổi (được refresh bởi luồng nền) chưa
+                        if st.cookie and st.cookie != old_cookie:
+                            if st.ensure_auth():
+                                self._sv_log_msg(f"  ✅ {st.email[:16]}: Cookie đã được refresh → tiếp tục!")
+                                _recovered = True
+                                break
+                        # Hoặc thử lại với cookie hiện tại (có thể bearer đã được refresh)
+                        elif st.ensure_auth():
+                            self._sv_log_msg(f"  ✅ {st.email[:16]}: Auth đã hồi phục → tiếp tục!")
+                            _recovered = True
+                            break
+                    if not _recovered:
+                        st.rest(AUTH_REST, "auth")
+                        return "retry_soft"
+                    # Auth đã hồi phục — cập nhật lại biến
                 # ensure_auth() đã reset auth_fail_streak = 0 khi thành công
                 bearer, project, cookie = st.bearer, st.project, st.cookie
 
@@ -8308,8 +8329,13 @@ class App(ctk.CTk):
                                 st.rest(AUTH_REST, "auth")
                                 return "retry_soft"
                             elif mid == "unusual":
-                                st.unusual_streak += 1
-                                unusual_rest = min(1200, 300 * st.unusual_streak)
+                                # Chống đếm trùng: 2 worker trong 30s chỉ tính 1 lần
+                                _last_unusual = getattr(st, "_last_unusual_time", 0)
+                                _now = time.time()
+                                if _now - _last_unusual > 30:
+                                    st.unusual_streak += 1
+                                    st._last_unusual_time = _now
+                                unusual_rest = min(600, 60 * (2 ** (st.unusual_streak - 1)))
                                 self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Upload bị unusual (lần {st.unusual_streak}) → nghỉ {unusual_rest}s")
                                 st.rest(unusual_rest, "unusual")
                                 return "retry_soft"
@@ -8372,9 +8398,14 @@ class App(ctk.CTk):
                             self._sv_log_msg(f"    ⛔ {st.email[:16]} HẾT QUOTA → cách ly")
                             return "retry_soft"
                         if v_status == "unusual":
-                            st.unusual_streak += 1
-                            # Lũy tiến: 300s → 600s → 1200s (tối đa 20 phút)
-                            unusual_rest = min(1200, 300 * st.unusual_streak)
+                            # Chống đếm trùng: 2 worker cùng dính unusual trong 30s chỉ tính 1 lần
+                            _last_unusual = getattr(st, "_last_unusual_time", 0)
+                            _now = time.time()
+                            if _now - _last_unusual > 30:
+                                st.unusual_streak += 1
+                                st._last_unusual_time = _now
+                            # Lũy tiến nhẹ hơn: 60s → 120s → 300s → 600s (tối đa)
+                            unusual_rest = min(600, 60 * (2 ** (st.unusual_streak - 1)))
                             st.rest(unusual_rest, "unusual")
                             self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Google báo unusual activity (lần {st.unusual_streak}) → nghỉ {unusual_rest}s")
                             return "retry_soft"
@@ -8545,7 +8576,47 @@ class App(ctk.CTk):
                         continue
                     # BẮT BUỘC: Kiểm tra auth hợp lệ trước khi nhận job, tránh việc TK chết cookie nuốt và làm trôi hàng đợi SP
                     if not st.ensure_auth():
-                        time.sleep(2)
+                        # Tự động đồng bộ nếu người dùng vừa lấy lại cookie / đăng nhập lại trên UI
+                        _synced = False
+                        try:
+                            for a in self.accounts:
+                                if get_acc_email(a) == st.email and a.get("cookie") and a.get("cookie") != st.cookie:
+                                    st.cookie = a["cookie"]
+                                    st.reset_circuit_breaker()
+                                    st.clear_rest()
+                                    try:
+                                        import recaptcha_farm as RF
+                                        farm = RF.get_farm()
+                                        if farm and hasattr(farm, "reset_session"):
+                                            farm.reset_session(st.email)
+                                    except Exception:
+                                        pass
+                                    if st.ensure_auth(force=True):
+                                        self._sv_log_msg(f"  ✅ [Auto Sync] Nhận diện cookie mới cho {st.email[:16]} → Tiếp tục tạo video!")
+                                        _synced = True
+                                        break
+                            if not _synced:
+                                # Kiểm tra thêm trên file accounts.json
+                                try:
+                                    fresh_accs = load_accs()
+                                    for a in fresh_accs:
+                                        if get_acc_email(a) == st.email and a.get("cookie") and a.get("cookie") != st.cookie:
+                                            st.cookie = a["cookie"]
+                                            st.reset_circuit_breaker()
+                                            st.clear_rest()
+                                            if st.ensure_auth(force=True):
+                                                self._sv_log_msg(f"  ✅ [File Sync] Nạp cookie mới từ file cho {st.email[:16]} → Tiếp tục tạo video!")
+                                                _synced = True
+                                                break
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                        if not _synced:
+                            if st.is_circuit_broken() or st.auth_fail_streak >= 2:
+                                self._trigger_instant_health_check(st.email)
+                            time.sleep(2)
                         continue
                     with st.blk:
                         if st.busy >= st.get_current_max_busy():
@@ -8659,6 +8730,12 @@ class App(ctk.CTk):
         if getattr(self, "_health_checking", False):
             self._sv_sync_cookies()
             return
+        # Debounce nhẹ 10s chống các worker gọi đè cùng 1 giây (đã có _health_checking bảo vệ)
+        _last = getattr(self, "_last_instant_hc_time", 0)
+        if time.time() - _last < 10:
+            self._sv_sync_cookies()
+            return
+        self._last_instant_hc_time = time.time()
         self._sv_log_msg(f"⚡ [Instant HC] Kích hoạt Health Check khẩn cấp{f' cho {target_email[:16]}' if target_email else ''}...")
         def _hc_bg():
             try:
