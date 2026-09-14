@@ -11,10 +11,14 @@ Tài liệu này chứa các quy tắc thiết kế, hành vi và tính năng t�
   3. **Số thứ tự (001...):** Tự động đánh số tăng dần.
 - Luôn sử dụng hàm kiểm tra trùng lặp để sinh tên duy nhất dạng `tenvideo_2.mp4` nếu bị trùng tên file trong thư mục đầu ra.
 
-## 2. Hệ thống kiểm soát luồng & Rate limit (Chống lỗi 429)
+## 2. Hệ thống kiểm soát luồng & Rate limit (Chống lỗi 429 — TstGoogleFlow v1.0.6)
 - **Đồng bộ hóa tài khoản (`Lock` per account):** Khi chạy đa luồng, mỗi tài khoản hoạt động phải giữ 1 khóa riêng biệt. Không cho phép gửi yêu cầu song song cùng lúc trên 1 tài khoản để tránh lỗi trùng phiên.
-- **Giãn cách gửi (4 giây):** Luồng phải giữ khóa thêm 4 giây sau khi gửi request thành công trước khi nhả khóa cho luồng khác.
-- **Tự động chờ phạt (30s - 150s):** Nếu gặp lỗi HTTP 429 (`Resource has been exhausted / PUBLIC_ERROR_USER_REQUESTS_THROTTLED`), luồng phải tự động nghỉ từ 30s đến tối đa 150s (với số giây tăng dần theo số lần dính lỗi liên tiếp) rồi tự động thử lại, tránh ghi nhận lỗi ngay lập tức.
+- **Giãn cách gửi (4-6 giây):** Luồng phải giữ khóa thêm 4-6 giây sau khi gửi request thành công trước khi nhả khóa cho luồng khác (`submit_guard`).
+- **Tự động chờ phạt khi 429 (1 giờ — v1.0.6):** Nếu gặp lỗi HTTP 429 (`Resource has been exhausted / PUBLIC_ERROR_USER_REQUESTS_THROTTLED`), tài khoản tự động nghỉ 1 giờ (`THROTTLE_429_REST = 3600s`) theo chuẩn v1.0.6 để Google nhả limit hoàn toàn.
+- **Cách ly hết hạn mức Quota (2 giờ — v1.0.6):** Khi hết hạn mức tạo video thật sự (`quota`/`credit`), tài khoản cách ly 2 giờ (`QUOTA_HARD_REST = 7200s`).
+- **Circuit Breaker Model (10 lỗi — v1.0.6):** Nếu dính 10 lỗi `MODEL_ACCESS_DENIED` toàn cục → dừng ngay toàn bộ hàng đợi để bảo vệ tài nguyên.
+- **Circuit Breaker Download (20 lỗi — v1.0.6):** Nếu dính 20 lỗi download liên tiếp toàn cục → dừng ngay hàng đợi.
+- **Đánh dấu lỗi vĩnh viễn (`#` prefix — v1.0.6):** Tài khoản lỗi auth 5 lần liên tiếp sẽ đánh dấu `error_message` với tiền tố `#` (ví dụ: `#Auth failed 5 times`) → các vòng lặp re-login và proactive refresh tự động bỏ qua, giữ nguyên cooldown khi restart queue.
 - **Tôn trọng luồng cấu hình:** Không tự động hạ hoặc giới hạn số luồng của người dùng cấu hình trên giao diện.
 
 ## 3. Quản lý lỗi chính sách ("vi phạm cs")

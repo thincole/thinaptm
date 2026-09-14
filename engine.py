@@ -253,6 +253,13 @@ _wiz_cache = {}
 _wiz_lock = threading.Lock()
 
 
+def invalidate_wiz_cache(cookie):
+    if not cookie: return
+    import hashlib
+    ck_key = hashlib.md5(str(cookie).encode()).hexdigest()
+    with _wiz_lock:
+        _wiz_cache.pop(ck_key, None)
+
 def get_wiz_tokens(cookie, proxy=None, force=False):
     """Trích xuất (at, fsid, bl, account_id) từ flow.google.com qua pure HTTP GET với cookie."""
     if not cookie:
@@ -261,7 +268,9 @@ def get_wiz_tokens(cookie, proxy=None, force=False):
     import hashlib
     ck_key = hashlib.md5(str(cookie).encode()).hexdigest()
     with _wiz_lock:
-        if not force and ck_key in _wiz_cache:
+        if force:
+            _wiz_cache.pop(ck_key, None)
+        elif ck_key in _wiz_cache:
             entry = _wiz_cache[ck_key]
             if time.time() - entry.get("ts", 0) < 600:
                 return entry["at"], entry["fsid"], entry["bl"], entry["account_id"]
@@ -328,6 +337,9 @@ def get_wiz_tokens(cookie, proxy=None, force=False):
                 cookie=cookie, project=None, email=_em
             )
             if at:
+                if bl and "sandbox" not in bl.lower() and "identityfrontend" in bl.lower():
+                    _log_err(f"get_wiz_tokens (browser): COOKIE HẾT HẠN - redirect login (bl={bl[:50]})")
+                    return None, None, None, None
                 _log_api(f"get_wiz_tokens: ✅ Fallback browser JS thành công! (at={at[:15]}...)")
                 with _wiz_lock:
                     _wiz_cache[ck_key] = {"at": at, "fsid": fsid, "bl": bl, "account_id": account_id, "ts": time.time()}
@@ -454,12 +466,46 @@ def get_credits(cookie, proxy=None):
 
 
 def bearer_from_cookie(cookie, timeout=25, proxy=None):
-    """Xác thực cookie Google Flow, trả (token, email, new_cookie) tương thích với thin_aptm.py."""
+    """Xác thực cookie Google Flow, trả (token, email, new_cookie) tương thích với thin_aptm.py.
+    ★ Bước 1: Kiểm tra SNlM0e (nhanh, từ cache hoặc HTTP GET)
+    ★ Bước 2: Xác minh thật sự bằng API call (boq_execute) — chặn trường hợp Google trả SNlM0e 
+      cho cookie bán-chết (load được trang HTML nhưng không gọi được API)
+    """
     if not cookie:
         return None, None, None
+    
+    # Kiểm tra cache trước — nếu đã verified trong cache → bỏ qua API verify
+    import hashlib as _hl_bfc
+    _ck_key = _hl_bfc.md5(str(cookie).encode()).hexdigest()
+    _from_cache = False
+    with _wiz_lock:
+        if _ck_key in _wiz_cache:
+            _entry = _wiz_cache[_ck_key]
+            if time.time() - _entry.get("ts", 0) < 600 and _entry.get("verified"):
+                _from_cache = True
+    
     at, fsid, bl, account_id = get_wiz_tokens(cookie, proxy=proxy)
     if not at:
         return None, None, None
+    
+    # ★ XÁC MINH THẬT SỰ: Gọi API nhẹ (lấy project) để đảm bảo cookie THẬT SỰ hoạt động
+    # Chống lỗi "cookie bán-chết": SNlM0e có nhưng API trả 401/403
+    # Chỉ verify khi entry chưa được verify (mới fetch lần đầu)
+    if not _from_cache:
+        try:
+            _res, _st = boq_execute("LWkPYd", "[]", cookie, proxy=proxy, timeout=15)
+            if _st in ("auth", "forbidden"):
+                _log_err(f"bearer_from_cookie: SNlM0e OK nhưng API xác minh THẤT BẠI ({_st}) → Cookie bán-chết!")
+                invalidate_wiz_cache(cookie)
+                return None, None, None
+            # Đánh dấu đã verified trong cache
+            with _wiz_lock:
+                if _ck_key in _wiz_cache:
+                    _wiz_cache[_ck_key]["verified"] = True
+        except Exception as _ex:
+            _log_err(f"bearer_from_cookie: API verify error: {_ex}")
+            # Nếu lỗi mạng → vẫn cho qua (có thể do proxy/internet), không chặn
+    
     email = None
     import re
     m = re.search(r'(?:email|EMAIL)=([^;]+)', cookie)
@@ -642,7 +688,11 @@ _session_token_cache = {}
 _session_lock = threading.Lock()
 
 def get_session_token(cookie, proxy=None, force=False):
-    """Lấy access_token từ https://labs.google/fx/api/auth/session bằng cookie (học từ AutoVeo3)."""
+    """Lấy access_token (Bearer) từ https://labs.google/fx/api/auth/session.
+    
+    Đây là phương thức auth chính cho REST API (giống TstGoogleFlow v1.0.6).
+    Cache 900s (15 phút). Tự động retry 1 lần nếu thất bại.
+    """
     if not cookie or not isinstance(cookie, str) or ("=" not in cookie):
         return None
     import hashlib
@@ -650,28 +700,624 @@ def get_session_token(cookie, proxy=None, force=False):
     with _session_lock:
         if not force and ck_key in _session_token_cache:
             entry = _session_token_cache[ck_key]
-            if time.time() - entry.get("ts", 0) < 1800:
+            if time.time() - entry.get("ts", 0) < 900:  # 15 phút TTL (v1.0.6 refresh mỗi 20 phút)
                 return entry.get("token")
     headers = {
-        "User-Agent": UA_CH,
-        "Accept": "*/*",
+        "User-Agent": UA_FF,  # v1.0.6 dùng Firefox UA
+        "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://labs.google/",
+        "Referer": "https://labs.google/fx/tools/flow",  # v1.0.6 referer cụ thể
         "Cookie": cookie,
     }
+    for _retry in range(2):  # retry 1 lần nếu thất bại
+        try:
+            kw = _kw(30, proxy=proxy)  # v1.0.6 timeout 30s
+            r = cffi.get("https://labs.google/fx/api/auth/session", headers=headers, **kw)
+            if r.status_code == 200:
+                text = r.text or ""
+                # v1.0.6: kiểm tra ACCESS_TOKEN_REFRESH_NEEDED
+                if "ACCESS_TOKEN_REFRESH_NEEDED" in text:
+                    _log_err("get_session_token: ACCESS_TOKEN_REFRESH_NEEDED — thử Headless OAuth Refresh...")
+                    # ★ Tự động thử Headless OAuth Refresh (v1.0.6)
+                    new_ck, new_tok = headless_oauth_refresh(cookie, proxy=proxy)
+                    if new_tok:
+                        return new_tok  # Refresh thành công → trả token mới
+                    _log_err("get_session_token: Headless OAuth Refresh thất bại — cookie cần làm mới qua browser")
+                    return None
+                data = r.json() if hasattr(r, "json") else json.loads(text)
+                tok = data.get("access_token")
+                if tok:
+                    with _session_lock:
+                        _session_token_cache[ck_key] = {"token": tok, "ts": time.time()}
+                    return tok
+            elif r.status_code in (401, 403):
+                _log_err(f"get_session_token: HTTP {r.status_code} — cookie hết hạn")
+                return None
+        except Exception as e:
+            _log_err(f"get_session_token error (attempt {_retry+1}): {e}")
+            if _retry == 0:
+                time.sleep(1)  # chờ 1s rồi retry
+                continue
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REST API FUNCTIONS (giống TstGoogleFlow v1.0.6)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_rest_headers(bearer_token):
+    """Headers REST giống TstGoogleFlow v1.0.6 AddVeo3SandboxHeaders."""
+    return {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+        "Origin": "https://labs.google",
+        "Referer": "https://labs.google/",
+        "User-Agent": UA_FF,
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Priority": "u=1, i",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
+        "X-Browser-Channel": "stable",
+    }
+
+
+def _build_client_context(project, rc_token=None, paygate_tier="PAYGATE_TIER_TWO"):
+    """clientContext JSON chuẩn v1.0.6 Veo3BuildVideoClientContext."""
+    session_id = f";{int((time.time() + 900) * 1000)}"
+    ctx = {
+        "projectId": project,
+        "tool": "PINHOLE",
+        "userPaygateTier": paygate_tier,
+        "sessionId": session_id,
+    }
+    if rc_token:
+        ctx["recaptchaContext"] = {
+            "token": rc_token,
+            "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB"
+        }
+    return ctx
+
+
+def submit_video_rest(bearer_token, project, prompt, seed, aspect, model,
+                      ref_media_id=None, rc_token=None, timeout=120, proxy=None):
+    """Submit video qua REST API trực tiếp (giống TstGoogleFlow v1.0.6).
+    
+    Trả về: (status, result)
+      - ("ok", [media_id])  khi thành công
+      - ("auth", None)      khi Bearer hết hạn
+      - ("unusual", None)   khi bị UNUSUAL_ACTIVITY
+      - ("throttle", None)  khi bị rate limit
+      - ("quota_hard", None) khi hết quota
+      - ("vi phạm cs", None) khi vi phạm chính sách
+      - ("failed", None)    khi lỗi khác
+    """
+    # Chọn endpoint
+    is_i2v = bool(ref_media_id)
+    url = GEN_I2V if is_i2v else GEN_T2V
+    
+    # Build clientContext (v1.0.6)
+    client_ctx = _build_client_context(project, rc_token)
+    
+    # Map aspect ratio
+    if isinstance(aspect, str):
+        if "16:9" in aspect or "LANDSCAPE" in aspect:
+            aspect_code = "VIDEO_ASPECT_RATIO_LANDSCAPE"
+        else:
+            aspect_code = "VIDEO_ASPECT_RATIO_PORTRAIT"
+    else:
+        aspect_code = aspect if isinstance(aspect, str) and aspect.startswith("VIDEO_") else "VIDEO_ASPECT_RATIO_PORTRAIT"
+    
+    # Map model key (giữ nguyên nếu đã đúng format)
+    model_key = model
+    if ref_media_id and model_key and "t2v" in model_key:
+        # Auto-convert T2V model → R2V cho I2V (v1.0.6)
+        model_key = model_key.replace("t2v", "r2v")
+    
+    # Build request item (v1.0.6 payload structure)
+    request_item = {
+        "aspectRatio": aspect_code,
+        "seed": seed,
+        "textInput": {
+            "structuredPrompt": {
+                "parts": [{"text": prompt}]
+            }
+        },
+        "videoModelKey": model_key,
+        "metadata": {}
+    }
+    
+    # I2V: thêm reference (v1.0.6 format)
+    if ref_media_id:
+        request_item["textInput"]["structuredPrompt"]["parts"].insert(0, {
+            "reference": {
+                "media": {"handle": "image_name", "mediaId": ref_media_id}
+            }
+        })
+        request_item["referenceImages"] = [{
+            "mediaId": ref_media_id,
+            "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"
+        }]
+    
+    # Build full payload (v1.0.6)
+    payload = {
+        "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
+        "clientContext": client_ctx,
+        "requests": [request_item],
+        "useV2ModelConfig": True
+    }
+    
+    headers = _build_rest_headers(bearer_token)
     try:
-        kw = _kw(15, proxy=proxy)
-        r = cffi.get("https://labs.google/fx/api/auth/session", headers=headers, **kw)
+        kw = _kw(timeout, proxy=proxy)
+        r = cffi.post(url, headers=headers, data=json.dumps(payload), **kw)
+        text = r.text or ""
+        
+        # HTTP error codes
+        if r.status_code in (401,):
+            return "auth", None
+        if r.status_code == 403:
+            if "UNUSUAL_ACTIVITY" in text or "PERMISSION_DENIED" in text:
+                return "unusual", None
+            return "auth", None
+        if r.status_code == 429:
+            return "throttle", None
+        
+        # Error keywords trong response body
+        up = text.upper()
+        if "UNUSUAL_ACTIVITY" in up:
+            return "unusual", None
+        if "QUOTA_REACHED" in up:
+            return "quota_hard", None
+        if "RATE-LIMITED" in up or "RATELIMITEXCEEDED" in up or "TOO MANY REQUESTS" in up:
+            return "throttle", None
+        if any(tok in up for tok in POLICY_TOKENS):
+            return "vi phạm cs", None
+        
+        if r.status_code in (200, 201):
+            # Parse mediaId (v1.0.6: media[0].name hoặc workflows[0].metadata.primaryMediaId)
+            try:
+                data = json.loads(text)
+                # Path 1: media[0].name
+                media_list = data.get("media", [])
+                if isinstance(media_list, list) and media_list:
+                    mid = media_list[0].get("name")
+                    if mid:
+                        _log_api(f"submit_video_rest: ✅ REST thành công! mediaId={mid}")
+                        return "ok", [str(mid)]
+                # Path 2: workflows[0].metadata.primaryMediaId
+                workflows = data.get("workflows", [])
+                if isinstance(workflows, list) and workflows:
+                    meta = workflows[0].get("metadata", {})
+                    mid = meta.get("primaryMediaId")
+                    if mid:
+                        _log_api(f"submit_video_rest: ✅ REST thành công (workflow)! mediaId={mid}")
+                        return "ok", [str(mid)]
+                # Path 3: mediaId trực tiếp
+                mid = data.get("mediaId")
+                if mid:
+                    _log_api(f"submit_video_rest: ✅ REST thành công (direct)! mediaId={mid}")
+                    return "ok", [str(mid)]
+                _log_err(f"submit_video_rest: HTTP 200 nhưng không parse được mediaId: {text[:300]}")
+                return "failed", None
+            except Exception as e_parse:
+                _log_err(f"submit_video_rest: parse error: {e_parse}, text={text[:200]}")
+                return "failed", None
+        
+        _log_err(f"submit_video_rest: HTTP {r.status_code}: {text[:300]}")
+        return "failed", None
+        
+    except Exception as e:
+        kind = net_error_kind(e)
+        if kind == "proxy_dead":
+            return "proxy_dead", None
+        _log_err(f"submit_video_rest exception: {e}")
+        return "failed", None
+
+
+def poll_video_rest(bearer_token, media_id, project, proxy=None, timeout_minutes=15):
+    """Poll trạng thái video qua REST API (thuật toán TstGoogleFlow v1.0.6).
+    
+    Timing v1.0.6: initial 8s, +3s mỗi lượt, tối đa 20s interval, timeout 15 phút.
+    Chuỗi delay: 8s → 11s → 14s → 17s → 20s → 20s → ...
+    
+    Trả về: (status, result, credits)
+      - ("done", media_id, None)
+      - ("failed", reason, None)
+      - ("auth", None, None)
+      - ("proxy_dead", None, None)
+    """
+    url = f"{BASE}/video:batchCheckAsyncVideoGenerationStatus"
+    headers = _build_rest_headers(bearer_token)
+    payload = json.dumps({"media": [{"name": media_id, "projectId": project}]})
+    
+    deadline = time.time() + timeout_minutes * 60
+    delay = 8.0  # v1.0.6 initial delay
+    
+    attempt = 0
+    while time.time() < deadline:
+        time.sleep(delay)
+        attempt += 1
+        
+        # Tăng delay theo v1.0.6: +3s mỗi lượt, tối đa 20s
+        if delay < 20.0:
+            delay = min(delay + 3.0, 20.0)
+        
+        try:
+            kw = _kw(30, proxy=proxy)  # v1.0.6 single request timeout 30s
+            r = cffi.post(url, headers=headers, data=payload, **kw)
+            
+            if r.status_code in (401, 403):
+                _log_err(f"poll_video_rest: HTTP {r.status_code} — Bearer hết hạn")
+                return "auth", None, None
+            
+            if r.status_code != 200:
+                _log_err(f"poll_video_rest: HTTP {r.status_code} attempt #{attempt}")
+                continue
+            
+            text = r.text or ""
+            
+            # v1.0.6 nhận diện thành công
+            if "MEDIA_GENERATION_STATUS_SUCCESSFUL" in text:
+                _log_api(f"poll_video_rest: ✅ Video render thành công sau {attempt} lượt poll!")
+                return "done", media_id, None
+            
+            # v1.0.6 nhận diện thất bại
+            if "MEDIA_GENERATION_STATUS_FAILED" in text or "STATUS_FAILED" in text:
+                # Trích xuất lý do lỗi
+                reason = "render_failed"
+                try:
+                    body = json.loads(text)
+                    reasons = _find_reasons(body)
+                    if reasons:
+                        reason = reasons[0]
+                except Exception:
+                    pass
+                _log_err(f"poll_video_rest: ❌ Video render thất bại: {reason}")
+                return "failed", reason, None
+            
+        except Exception as e:
+            kind = net_error_kind(e)
+            if kind == "proxy_dead":
+                return "proxy_dead", None, None
+            _log_err(f"poll_video_rest: exception attempt #{attempt}: {e}")
+    
+    _log_err(f"poll_video_rest: ⏰ Timeout {timeout_minutes} phút sau {attempt} lượt poll.")
+    return "failed", "timeout", None
+
+
+def get_credits_rest(bearer_token, proxy=None):
+    """Lấy số credits còn lại qua REST API (v1.0.6 Veo3FetchCreditsAsync).
+    
+    Trả về: (credits: int, paygate_tier: str) hoặc (None, None) nếu lỗi.
+    """
+    url = f"{BASE}/credits?key={KEY}"
+    headers = _build_rest_headers(bearer_token)
+    try:
+        r = cffi.get(url, headers=headers, **_kw(30, proxy=proxy))
         if r.status_code == 200:
             data = r.json() if hasattr(r, "json") else json.loads(r.text)
-            tok = data.get("access_token")
-            if tok:
-                with _session_lock:
-                    _session_token_cache[ck_key] = {"token": tok, "ts": time.time()}
-                return tok
+            credits = data.get("credits", 0)
+            tier = data.get("userPaygateTier", "")
+            return int(credits), tier
     except Exception as e:
-        _log_err(f"get_session_token error: {e}")
-    return None
+        _log_err(f"get_credits_rest error: {e}")
+    return None, None
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HEADLESS OAUTH REFRESH (giống TstGoogleFlow v1.0.6 DoRefreshTokenAsync)
+# Làm mới cookie NextAuth bằng HTTP thuần — KHÔNG cần mở trình duyệt
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Per-cookie refresh lock: chỉ 1 luồng refresh / cookie tại 1 thời điểm
+# (Double-Checked Locking pattern giống v1.0.6 _accountAuthLocks)
+_refresh_locks = {}          # ck_key -> threading.Lock
+_refresh_locks_meta = threading.Lock()
+
+# Cookie update propagation: worker đọc cookie mới sau khi engine refresh
+_cookie_updates = {}         # ck_key -> new_cookie_str
+_cookie_updates_lock = threading.Lock()
+
+
+def _get_refresh_lock(ck_key):
+    """Lấy hoặc tạo Lock riêng cho từng cookie (per-account)."""
+    with _refresh_locks_meta:
+        if ck_key not in _refresh_locks:
+            _refresh_locks[ck_key] = threading.Lock()
+        return _refresh_locks[ck_key]
+
+
+def get_refreshed_cookie(old_cookie):
+    """Kiểm tra xem cookie này đã được refresh qua Headless OAuth chưa.
+
+    Worker trong thin_aptm.py gọi hàm này sau mỗi engine call để cập nhật st.cookie.
+    Trả về cookie string mới hoặc None.
+    """
+    if not old_cookie:
+        return None
+    import hashlib
+    ck_key = hashlib.md5(old_cookie.encode("utf-8", errors="ignore")).hexdigest()
+    with _cookie_updates_lock:
+        return _cookie_updates.pop(ck_key, None)
+
+
+def _parse_cookie_string(cookie):
+    """Tách chuỗi cookie 'name=val; name2=val2' thành dict {name: val}."""
+    result = {}
+    if not cookie:
+        return result
+    for part in cookie.split(";"):
+        part = part.strip()
+        if "=" in part:
+            name, _, val = part.partition("=")
+            result[name.strip()] = val.strip()
+    return result
+
+
+def _merge_cookies(old_cookie, new_pairs):
+    """Merge dict cookie mới vào chuỗi cookie cũ (update existing + add new)."""
+    import re
+    updated = old_cookie
+    for name, val in new_pairs.items():
+        pattern = re.compile(rf'(?<![.\w]){re.escape(name)}=[^;]*')
+        if pattern.search(updated):
+            updated = pattern.sub(f"{name}={val}", updated)
+        else:
+            updated = f"{updated}; {name}={val}"
+    return updated
+
+
+def _collect_set_cookies(response, target_dict):
+    """Thu thập tất cả Set-Cookie headers từ response vào target_dict."""
+    try:
+        sc_list = []
+        if hasattr(response.headers, 'getlist'):
+            sc_list = response.headers.getlist("set-cookie")
+        elif hasattr(response.headers, 'get_list'):
+            sc_list = response.headers.get_list("set-cookie")
+        else:
+            sc = response.headers.get("set-cookie")
+            if sc:
+                sc_list = [sc]
+
+        for sc in sc_list:
+            if not sc:
+                continue
+            cookie_part = sc.split(";")[0].strip()
+            if "=" in cookie_part:
+                name, _, val = cookie_part.partition("=")
+                name = name.strip()
+                if name and not name.startswith(("Path", "Domain", "Expires", "Max-Age",
+                                                  "SameSite", "Secure", "HttpOnly")):
+                    target_dict[name] = val.strip()
+    except Exception:
+        pass
+
+
+def headless_oauth_refresh(cookie, proxy=None):
+    """Làm mới cookie NextAuth bằng HTTP thuần (Headless OAuth Refresh — v1.0.6).
+
+    Khi access_token bị ACCESS_TOKEN_REFRESH_NEEDED nhưng cookie Google session
+    (SID, SAPISID...) vẫn còn sống, hàm này giả lập luồng OAuth redirect:
+      1. Lấy CSRF token từ cookie / endpoint /api/auth/csrf
+      2. POST /api/auth/signin/google → nhận OAuth URL
+      3. Follow Google OAuth redirect (cookie Google tự xác thực)
+      4. Nhận cookie NextAuth mới từ Set-Cookie header
+      5. GET /api/auth/session → Bearer token mới
+
+    Trả về: (new_cookie_str, access_token) hoặc (None, None) nếu thất bại.
+    """
+    if not cookie or not isinstance(cookie, str):
+        return None, None
+
+    import re, hashlib
+
+    # ── DOUBLE-CHECKED LOCKING (v1.0.6 pattern) ──
+    ck_key = hashlib.md5(cookie.encode("utf-8", errors="ignore")).hexdigest()
+
+    # Check 1: Ngoài khóa — có thể luồng khác đã refresh xong
+    with _session_lock:
+        entry = _session_token_cache.get(ck_key)
+        if entry and time.time() - entry.get("ts", 0) < 900:
+            return None, None  # Token vẫn tươi → không cần refresh
+
+    # Lấy per-cookie lock
+    lock = _get_refresh_lock(ck_key)
+    if not lock.acquire(timeout=60):
+        _log_err("headless_oauth_refresh: Timeout chờ lock 60s")
+        return None, None
+
+    try:
+        # Check 2: Trong khóa — luồng trước có thể đã refresh thành công
+        with _session_lock:
+            entry = _session_token_cache.get(ck_key)
+            if entry and time.time() - entry.get("ts", 0) < 900:
+                return None, None  # Luồng trước đã refresh → dùng cache
+
+        # Cũng check cookie mới — luồng trước có thể đã update cookie
+        with _cookie_updates_lock:
+            if ck_key in _cookie_updates:
+                # Cookie đã được refresh, lấy token từ cookie mới
+                new_ck = _cookie_updates[ck_key]
+                new_key = hashlib.md5(new_ck.encode("utf-8", errors="ignore")).hexdigest()
+                with _session_lock:
+                    entry2 = _session_token_cache.get(new_key)
+                    if entry2:
+                        return None, None  # Đã có token mới trong cache
+
+        _log_api("headless_oauth_refresh: 🔄 Bắt đầu Headless OAuth Refresh...")
+
+        # ── BƯỚC 1: Lấy CSRF token ──
+        csrf_token = None
+        cookie_dict = _parse_cookie_string(cookie)
+
+        for csrf_name in ("__Host-next-auth.csrf-token", "next-auth.csrf-token"):
+            raw = cookie_dict.get(csrf_name)
+            if raw:
+                csrf_token = raw.split("|")[0] if "|" in raw else raw
+                break
+
+        # Fallback: GET /api/auth/csrf endpoint
+        if not csrf_token:
+            try:
+                h = {"User-Agent": UA_FF, "Cookie": cookie,
+                     "Referer": "https://labs.google/fx/tools/flow"}
+                r = cffi.get("https://labs.google/fx/api/auth/csrf",
+                             headers=h, **_kw(15, proxy=proxy))
+                if r.status_code == 200:
+                    data = r.json() if hasattr(r, "json") else json.loads(r.text)
+                    csrf_token = data.get("csrfToken")
+                    # Cũng thu thập Set-Cookie (có thể nhận csrf-token mới)
+                    new_sc = {}
+                    _collect_set_cookies(r, new_sc)
+                    if new_sc:
+                        cookie = _merge_cookies(cookie, new_sc)
+            except Exception as e:
+                _log_err(f"headless_oauth_refresh: Lấy CSRF từ endpoint lỗi: {e}")
+
+        if not csrf_token:
+            _log_err("headless_oauth_refresh: ❌ Không tìm thấy CSRF token")
+            return None, None
+
+        # ── BƯỚC 2: POST /api/auth/signin/google → Nhận OAuth URL ──
+        headers_post = {
+            "User-Agent": UA_FF,
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://labs.google",
+            "Referer": "https://labs.google/fx/tools/flow",
+            "Cookie": cookie,
+        }
+        form_data = (
+            f"csrfToken={urllib.parse.quote(csrf_token, safe='')}"
+            f"&callbackUrl={urllib.parse.quote('https://labs.google/fx/tools/flow', safe='')}"
+            f"&json=true"
+        )
+
+        kw = _kw(30, proxy=proxy)
+        r = cffi.post("https://labs.google/fx/api/auth/signin/google",
+                      headers=headers_post, data=form_data, allow_redirects=False, **kw)
+
+        # Thu thập Set-Cookie từ response POST
+        post_cookies = {}
+        _collect_set_cookies(r, post_cookies)
+        if post_cookies:
+            cookie = _merge_cookies(cookie, post_cookies)
+
+        oauth_url = None
+        if r.status_code == 200:
+            try:
+                data = r.json() if hasattr(r, "json") else json.loads(r.text)
+                oauth_url = data.get("url")
+            except Exception:
+                pass
+        elif r.status_code in (301, 302, 303, 307, 308):
+            oauth_url = r.headers.get("Location")
+
+        if not oauth_url:
+            _log_err(f"headless_oauth_refresh: ❌ Không nhận được OAuth URL "
+                     f"(HTTP {r.status_code}, text={r.text[:200] if r.text else ''})")
+            return None, None
+
+        _log_api("headless_oauth_refresh: 🔗 Nhận OAuth URL, follow redirects...")
+
+        # ── BƯỚC 3: Follow Google OAuth redirect chain ──
+        new_cookies = {}
+        new_cookies.update(post_cookies)
+        current_url = oauth_url
+
+        for redirect_i in range(20):
+            headers_redir = {
+                "User-Agent": UA_FF,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cookie": cookie,
+            }
+
+            try:
+                r = cffi.get(current_url, headers=headers_redir,
+                             allow_redirects=False, **_kw(30, proxy=proxy))
+            except Exception as e_redir:
+                _log_err(f"headless_oauth_refresh: Redirect #{redirect_i} exception: {e_redir}")
+                break
+
+            _collect_set_cookies(r, new_cookies)
+
+            if r.status_code in (301, 302, 303, 307, 308):
+                next_url = r.headers.get("Location", "")
+                if not next_url:
+                    break
+                if next_url.startswith("/"):
+                    parsed = urllib.parse.urlparse(current_url)
+                    next_url = f"{parsed.scheme}://{parsed.netloc}{next_url}"
+                current_url = next_url
+                # Cập nhật cookie header liên tục
+                if new_cookies:
+                    cookie = _merge_cookies(cookie, new_cookies)
+                continue
+            else:
+                break
+
+        # ── BƯỚC 4: Kiểm tra cookie NextAuth mới ──
+        new_session = (new_cookies.get("__Secure-next-auth.session-token")
+                       or new_cookies.get("next-auth.session-token"))
+
+        if not new_session:
+            _log_err(f"headless_oauth_refresh: ❌ Không nhận được cookie NextAuth mới "
+                     f"(thu {len(new_cookies)} cookies: {list(new_cookies.keys())[:10]})")
+            return None, None
+
+        # ── BƯỚC 5: Merge cookie mới vào chuỗi cũ ──
+        updated_cookie = _merge_cookies(cookie, new_cookies)
+
+        # ── BƯỚC 6: Lấy access_token mới ──
+        session_headers = {
+            "User-Agent": UA_FF,
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://labs.google/fx/tools/flow",
+            "Cookie": updated_cookie,
+        }
+        r = cffi.get("https://labs.google/fx/api/auth/session",
+                     headers=session_headers, **_kw(30, proxy=proxy))
+
+        if r.status_code == 200:
+            text = r.text or ""
+            if "ACCESS_TOKEN_REFRESH_NEEDED" not in text:
+                try:
+                    data = r.json() if hasattr(r, "json") else json.loads(text)
+                    tok = data.get("access_token")
+                    if tok:
+                        new_ck_key = hashlib.md5(
+                            updated_cookie.encode("utf-8", errors="ignore")).hexdigest()
+                        with _session_lock:
+                            _session_token_cache[new_ck_key] = {"token": tok, "ts": time.time()}
+                            _session_token_cache.pop(ck_key, None)
+
+                        with _cookie_updates_lock:
+                            _cookie_updates[ck_key] = updated_cookie
+
+                        _log_api(f"headless_oauth_refresh: ✅ Thành công! "
+                                 f"Cookie NextAuth mới + Bearer (len={len(tok)})")
+                        return updated_cookie, tok
+                except Exception as e_parse:
+                    _log_err(f"headless_oauth_refresh: Parse access_token lỗi: {e_parse}")
+
+        _log_err(f"headless_oauth_refresh: ❌ GET /session thất bại "
+                 f"(HTTP {r.status_code})")
+        return None, None
+
+    except Exception as e:
+        _log_err(f"headless_oauth_refresh: Exception tổng: {e}")
+        return None, None
+    finally:
+        lock.release()
+
+
+
 
 def _h_rest_upload(bearer, token=None):
     """Headers chuẩn Chrome Impersonation cho REST flow/uploadImage (giống AutoVeo3)."""
@@ -781,6 +1427,8 @@ def upload_image_rest(bearer, project, b64_img, filename="input_file_0.jpg", tim
                     mid = media[0].get("name")
                 elif "name" in data:
                     mid = data.get("name")
+                if not mid:
+                    mid = data.get("mediaId")  # v1.0.6 response format
                 if mid:
                     return str(mid), "ok"
             except Exception as e_parse:
@@ -1184,7 +1832,41 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
             if b_status == "ok" and b_ops:
                 _log_api(f"submit_video: 🚀 Native Browser Submit thành công! ops={b_ops}")
                 return "ok", b_ops
-            elif b_status in ("auth", "vi phạm cs", "quota_hard", "throttle"):
+            elif b_status == "auth":
+                # ★ Browser session chết nhưng cookie HTTP vẫn sống
+                # → Reset browser session rồi THỬ LẠI ngay (tạo phiên Chrome mới với cookie inject mới)
+                _log_err(f"submit_video: Native Browser submit trả auth → Reset session & retry...")
+                try:
+                    if hasattr(_recaptcha_farm, "reset_session"):
+                        _recaptcha_farm.reset_session(email or cookie[:20])
+                except Exception:
+                    pass
+                # ★ RETRY: Tạo phiên Chrome mới từ đầu với cookie inject
+                try:
+                    b_status2, b_ops2 = _recaptcha_farm.submit_video_native(
+                        cookie=cookie,
+                        project=project,
+                        prompt=final_prompt,
+                        model=model,
+                        aspect=aspect,
+                        ref_media_id=ref_media_id,
+                        email=email
+                    )
+                    if b_status2 == "ok" and b_ops2:
+                        _log_api(f"submit_video: 🚀 Retry Native Submit thành công sau reset session!")
+                        return "ok", b_ops2
+                    elif b_status2 == "auth":
+                        # Cookie HTTP cũng chết thật → trả auth
+                        _log_err(f"submit_video: Retry vẫn auth → Cookie thật sự hết hạn")
+                        return "auth", None
+                    elif b_status2 in ("vi phạm cs", "quota_hard", "throttle"):
+                        return b_status2, None
+                    elif b_status2 == "unusual":
+                        _log_err("submit_video: Retry trả unusual → fallback BOQ HTTP")
+                except Exception as ex2:
+                    _log_err(f"submit_video: Retry native submit exception: {ex2}")
+                    return "auth", None
+            elif b_status in ("vi phạm cs", "quota_hard", "throttle"):
                 _log_err(f"submit_video: Native Browser submit trả {b_status}")
                 return b_status, None
             elif b_status == "unusual":
@@ -1192,6 +1874,46 @@ def submit_video(bearer, project, prompt, seed, aspect, model, ref_media_id=None
         except Exception as ex:
             _log_err(f"submit_video: Native Browser submit exception: {ex}")
 
+    # ★ ƯU TIÊN 2: REST API Submit (giống TstGoogleFlow v1.0.6)
+    # Gọi labs.google/fx/api/auth/session lấy Bearer → POST trực tiếp REST endpoint
+    if cookie:
+        try:
+            _bearer = get_session_token(cookie, proxy=proxy)
+            if _bearer:
+                _rc = get_recaptcha_token(timeout=10, action="VIDEO_GENERATION")
+                if not _rc:
+                    _rc = get_recaptcha_token(timeout=3, action="UPLOAD_IMAGE")
+                if _rc:
+                    _log_api("submit_video: 🌐 Thử REST API (v1.0.6)...")
+                    r_status, r_ops = submit_video_rest(
+                        _bearer, project, final_prompt, seed, aspect, model,
+                        ref_media_id=ref_media_id, rc_token=_rc, timeout=timeout, proxy=proxy
+                    )
+                    if r_status == "ok" and r_ops:
+                        _log_api(f"submit_video: 🚀 REST API Submit thành công! ops={r_ops}")
+                        return "ok", r_ops
+                    elif r_status == "auth":
+                        _log_err("submit_video: REST API trả auth → Bearer hết hạn")
+                        # Invalidate session token cache
+                        import hashlib
+                        _ck = hashlib.md5(cookie.encode("utf-8", errors="ignore")).hexdigest()
+                        with _session_lock:
+                            _session_token_cache.pop(_ck, None)
+                        return "auth", None
+                    elif r_status in ("vi phạm cs", "quota_hard", "throttle"):
+                        return r_status, None
+                    elif r_status == "unusual":
+                        _log_err("submit_video: REST API trả unusual → fallback BOQ")
+                    else:
+                        _log_err(f"submit_video: REST API trả {r_status} → fallback BOQ")
+                else:
+                    _log_api("submit_video: REST API — không có reCAPTCHA token → fallback BOQ")
+            else:
+                _log_api("submit_video: Không lấy được Bearer token → fallback BOQ")
+        except Exception as ex_rest:
+            _log_err(f"submit_video: REST API exception: {ex_rest} → fallback BOQ")
+
+    # ★ ƯU TIÊN 3: BOQ Batchexecute fallback (phương thức cũ)
     rc_token = get_recaptcha_token(timeout=15, action="VIDEO_GENERATION")
     if not rc_token:
         rc_token = get_recaptcha_token(timeout=5, action="UPLOAD_IMAGE")
@@ -1399,14 +2121,36 @@ def check_video_status(bearer, ops, timeout=30, proxy=None):
 
 
 def poll_video(bearer, ops, cookie=None, max_attempts=120, interval=5.0, timeout=60, proxy=None,
-               initial_wait=20.0, status_every=6):
+               initial_wait=20.0, status_every=6, project=None):
     """Thăm dò trạng thái render của video qua RPC jwpduf và lấy link CDN qua Zzl0ze."""
     if not ops:
         return "failed", "ops_empty", None
-    cookie = cookie or bearer
     media_id = ops[0]
     credits = None
 
+    # ★ ƯU TIÊN 1: REST API Poll (giống TstGoogleFlow v1.0.6)
+    # Timing v1.0.6: 8s → 11s → 14s → 17s → 20s, timeout 15 phút
+    cookie = cookie or bearer
+    if cookie:
+        _bearer = get_session_token(cookie, proxy=proxy)
+        _proj = project
+        if not _proj:
+            _proj = get_project(cookie, proxy=proxy)
+        if _bearer and _proj:
+            _log_api("poll_video: 🌐 Dùng REST API poll (v1.0.6)...")
+            pk, mid_or_reason, cr = poll_video_rest(_bearer, media_id, _proj, proxy=proxy)
+            if pk == "done":
+                return "done", mid_or_reason, cr
+            elif pk == "failed":
+                return "failed", mid_or_reason, cr
+            elif pk == "auth":
+                _log_err("poll_video: REST poll auth fail → fallback BOQ poll")
+            elif pk == "proxy_dead":
+                return "proxy_dead", None, credits
+            # Nếu REST poll thất bại bất thường → fallback BOQ
+            _log_err(f"poll_video: REST poll trả {pk} → fallback BOQ")
+
+    # ★ FALLBACK: BOQ Batchexecute poll (phương thức cũ)
     if initial_wait and initial_wait > 0:
         time.sleep(initial_wait)
 

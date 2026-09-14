@@ -1581,8 +1581,8 @@ def concat_videos(clip_paths, output_path, log=None):
 
 # ==================== XÓA WATERMARK VEO ====================
 
-def remove_veo_watermark(input_path, log=None):
-    """Xóa watermark Veo ở góc dưới bên phải video bằng FFmpeg delogo filter.
+def remove_veo_watermark(input_path, log=None, model="veo_3_1", mode="crop"):
+    """Xóa watermark Veo / Omni Flash bằng watermark_remover (crop Lanczos hoặc delogo).
     Ghi đè file gốc (ghi tạm → replace).
     Trả True nếu thành công.
     """
@@ -1592,7 +1592,18 @@ def remove_veo_watermark(input_path, log=None):
     if not os.path.isfile(input_path):
         return False
 
-    # Lấy kích thước video bằng ffprobe
+    try:
+        import watermark_remover
+        ok, msg = watermark_remover.remove_watermark_video(input_path, mode=mode, model=model, log_fn=_log)
+        if ok:
+            _log(f"🧹 {msg}: {os.path.basename(input_path)}")
+            return True
+        else:
+            _log(f"⚠️ {msg}")
+    except Exception as e:
+        _log(f"⚠️ watermark_remover lỗi: {e}")
+
+    # Fallback delogo truyền thống nếu watermark_remover không dùng được
     try:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -1602,10 +1613,8 @@ def remove_veo_watermark(input_path, log=None):
         parts = probe.stdout.strip().split(",")
         w, h = int(parts[0]), int(parts[1])
     except Exception:
-        w, h = 720, 1280  # fallback portrait 9:16
+        w, h = 720, 1280
 
-    # Veo watermark: góc dưới phải
-    # Kích thước logo ~12% width × 5% height, cách mép ~1.5%
     lw = max(int(w * 0.12), 70)
     lh = max(int(h * 0.05), 28)
     lx = w - lw - max(int(w * 0.015), 8)
@@ -1616,7 +1625,7 @@ def remove_veo_watermark(input_path, log=None):
         "ffmpeg", "-y", "-i", input_path,
         "-vf", f"delogo=x={lx}:y={ly}:w={lw}:h={lh}",
         "-c:v", "libx264", "-preset", "superfast", "-crf", "18",
-        "-threads", "1",
+        "-threads", "2",
         "-c:a", "copy",
         "-movflags", "+faststart",
         tmp_out
@@ -1626,23 +1635,18 @@ def remove_veo_watermark(input_path, log=None):
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000))
         if result.returncode == 0 and os.path.isfile(tmp_out) and os.path.getsize(tmp_out) > 1000:
             os.replace(tmp_out, input_path)
-            _log(f"🧹 Đã xóa watermark Veo: {os.path.basename(input_path)}")
+            _log(f"🧹 Đã xóa watermark Veo (fallback): {os.path.basename(input_path)}")
             return True
         else:
             _log(f"⚠️ Xóa watermark lỗi: {result.stderr[-150:] if result.stderr else 'unknown'}")
-            # Dọn file tạm nếu lỗi
             try: os.remove(tmp_out)
             except Exception: pass
             return False
-    except subprocess.TimeoutExpired:
-        _log("⚠️ Xóa watermark timeout")
-        try: os.remove(tmp_out)
-        except Exception: pass
-        return False
     except Exception as e:
         _log(f"⚠️ Xóa watermark exception: {e}")
         try: os.remove(tmp_out)
         except Exception: pass
+        return False
         return False
 
 

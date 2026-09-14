@@ -46,7 +46,7 @@ def get_chrome_path():
 
 
 def hide_pid_windows_from_taskbar(pid):
-    """Ẩn toàn bộ cửa sổ của tiến trình Chrome khỏi Taskbar Windows (không hiện icon rác)."""
+    """Ẩn toàn bộ cửa sổ của tiến trình Chrome khỏi màn hình và Taskbar Windows (SW_HIDE + ToolWindow)."""
     if not pid:
         return
     try:
@@ -57,9 +57,9 @@ def hide_pid_windows_from_taskbar(pid):
         WS_EX_TOOLWINDOW = 0x00000080
         WS_EX_APPWINDOW = 0x00040000
         SWP_FRAMECHANGED = 0x0020
-        SWP_NOMOVE = 0x0002
         SWP_NOSIZE = 0x0001
         SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
         WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
         hwnds = []
@@ -70,16 +70,23 @@ def hide_pid_windows_from_taskbar(pid):
                 hwnds.append(hwnd)
             return True
 
-        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+        cb = WNDENUMPROC(enum_cb)
+        hdesk = user32.OpenInputDesktop(0, False, 0x0100)
+        if hdesk:
+            user32.EnumDesktopWindows(hdesk, cb, 0)
+            user32.CloseDesktop(hdesk)
+        if not hwnds:
+            user32.EnumWindows(cb, 0)
+
         for hwnd in hwnds:
             try:
                 ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
                 ex_style |= WS_EX_TOOLWINDOW
                 ex_style &= ~WS_EX_APPWINDOW
-                user32.ShowWindow(hwnd, 0)
                 user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
-                user32.ShowWindow(hwnd, 4)
-                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+                # Đẩy hoàn toàn ra khỏi tọa độ màn hình và ẩn vĩnh viễn (SW_HIDE = 0)
+                user32.SetWindowPos(hwnd, 0, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+                user32.ShowWindow(hwnd, 0)
             except Exception:
                 pass
     except Exception:
@@ -115,6 +122,11 @@ class RecaptchaFarm:
         self._lock = threading.Lock()
         self._sessions = {}  # acc_key -> {"page": page, "lock": Lock(), "project": project, "ready": bool}
         self._sessions_lock = threading.Lock()
+        self._need_cookie_reload = False
+
+    def reload_cookies(self):
+        """Báo hiệu cho tất cả worker nạp lại cookie mới từ accounts.json."""
+        self._need_cookie_reload = True
     
     def start(self):
         """Khởi động farm. Trả True nếu thành công."""
@@ -279,6 +291,15 @@ class RecaptchaFarm:
                 if not sess.get("ready") or not sess.get("page"):
                     continue
                 page = sess["page"]
+                
+                # CHẶN LỖI PHANTOM TOKEN: Không lấy token từ trang đăng nhập!
+                try:
+                    curr_url = str(page.url).lower()
+                    if "accounts.google.com" in curr_url or "identityfrontend" in curr_url:
+                        continue
+                except Exception:
+                    pass
+
                 js = """
                 (function() {
                     var w = window.WIZ_global_data || {};
@@ -351,6 +372,7 @@ class RecaptchaFarm:
             # Thay vào đó đẩy cửa sổ ra ngoài màn hình → Chrome render thật 100% nhưng ẩn
             co.set_argument("--window-position=-30000,0")
             co.set_argument("--window-size=1280,900")
+            co.set_argument("--start-minimized")
             co.set_argument("--no-first-run")
             co.set_argument("--no-default-browser-check")
             co.set_argument("--disable-gpu")
@@ -372,24 +394,51 @@ class RecaptchaFarm:
                 page.set.retry_times(2)
                 hide_pid_windows_from_taskbar(getattr(page, "process_id", None))
 
-                if not profile_dir and cookie:
-                    page.get(FLOW_URL)
-                    time.sleep(1.5)
-                    for pair in str(cookie).split(";"):
-                        if "=" in pair:
-                            name, val = pair.strip().split("=", 1)
-                            name, val = name.strip(), val.strip()
-                            try:
-                                if name.startswith("__Host-"):
-                                    page.run_cdp("Network.setCookie", name=name, value=val,
-                                                url="https://flow.google.com", path="/", secure=True, httpOnly=True)
-                                else:
-                                    page.run_cdp("Network.setCookie", name=name, value=val,
-                                                domain=".google.com", path="/", secure=True)
-                            except:
-                                pass
+                # ★ Nạp Stealth Script & BotoxSign Hooking từ TstGoogleFlow v1.0.6
+                try:
+                    import browser_stealth
+                    browser_stealth.apply_stealth(page, log_fn=self._log)
+                    browser_stealth.setup_botox_hook(page, log_fn=self._log)
+                except Exception as _stealth_ex:
+                    self._log(f"⚠️ {tag} Lỗi nạp stealth/botox hook: {_stealth_ex}")
 
-                target_url = f"https://flow.google.com/project/{project}" if project else f"{FLOW_URL}/?pli=1"
+                # Luôn inject cookie mới nhất từ accounts.json qua CDP để đảm bảo không bị dùng cookie cũ trong profile
+                if cookie:
+                    try:
+                        page.get(FLOW_URL)
+                        time.sleep(1.0)
+                        
+                        # ★ Xóa cookie CŨ của google.com trước khi inject mới (chống cookie bán-chết)
+                        # Dùng deleteCookies thay vì clearBrowserCookies (tránh CookieMismatch)
+                        try:
+                            # Lấy danh sách cookie hiện tại và xóa từng cookie google.com
+                            cdp_cookies = page.run_cdp("Network.getCookies", urls=["https://flow.google.com", "https://accounts.google.com", "https://www.google.com"])
+                            for c in cdp_cookies.get("cookies", []):
+                                if "google" in c.get("domain", ""):
+                                    try:
+                                        page.run_cdp("Network.deleteCookies", name=c["name"], domain=c["domain"], path=c.get("path", "/"))
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                        
+                        for pair in str(cookie).split(";"):
+                            if "=" in pair:
+                                name, val = pair.strip().split("=", 1)
+                                name, val = name.strip(), val.strip()
+                                try:
+                                    if name.startswith("__Host-"):
+                                        page.run_cdp("Network.setCookie", name=name, value=val,
+                                                    url="https://flow.google.com", path="/", secure=True, httpOnly=True)
+                                    else:
+                                        page.run_cdp("Network.setCookie", name=name, value=val,
+                                                    domain=".google.com", path="/", secure=True)
+                                except:
+                                    pass
+                    except Exception:
+                        pass
+
+                target_url = f"https://flow.google.com/project/{project}" if project else f"{FLOW_URL}/project/513f3b20-fa17-4be7-89b5-f179860de580"
                 page.get(target_url)
                 self._log(f"🌐 {tag} Đang load project editor...")
 
@@ -406,11 +455,6 @@ class RecaptchaFarm:
                             try: page.quit()
                             except: pass
                             return None
-                        if "404" in curr and "project" in curr:
-                            self._log(f"⚠️ {tag} Project cũ không tồn tại (404) → chuyển về trang chủ Flow...")
-                            page.get(f"{FLOW_URL}/?pli=1")
-                            time.sleep(3)
-                            continue
                         ok = page.run_js("return typeof grecaptcha !== 'undefined' && !!grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function' && !!window.WIZ_global_data && !!window.WIZ_global_data.SNlM0e")
                         if ok:
                             ready = True
@@ -595,192 +639,246 @@ class RecaptchaFarm:
             return
 
         tag = f"[Farm-{worker_id}]"
-        page = None
-
-        try:
-            co = ChromiumOptions()
-            chrome_path = get_chrome_path()
-            if chrome_path:
-                co.set_browser_path(chrome_path)
-            co.set_argument("--disable-extensions")
-            co.set_argument("--mute-audio")
-            co.set_argument("--no-first-run")
-            co.set_argument("--no-default-browser-check")
-            co.set_argument("--disable-gpu")
-            # ★ Kỹ thuật Chiến Hust: Không dùng --headless (reCAPTCHA Enterprise cho điểm thấp)
-            # Đẩy cửa sổ ra ngoài màn hình → Chrome thật nhưng ẩn
-            co.set_argument("--window-position=-30000,0")
-            co.set_argument("--window-size=800,600")
-            co.set_argument("--blink-settings=imagesEnabled=false")
-            co.set_argument("--disable-software-rasterizer")
-            co.set_argument("--disable-dev-shm-usage")
-            co.set_argument("--no-sandbox")
-            co.set_argument("--disable-blink-features=AutomationControlled")
-            co.set_pref("profile.default_content_setting_values.images", 2)
-            co.set_pref("profile.managed_default_content_settings.images", 2)
-            
-            # KHÔNG cần profile — dùng CDP cookie injection
-            co.set_local_port(random.randint(30000, 49999))
-
-            page = ChromiumPage(co)
-            page.set.retry_times(2)
-            hide_pid_windows_from_taskbar(getattr(page, "process_id", None))
-
-            # ★ Lấy cookie + project từ accounts.json
-            cookie_str = None
-            project_id = None
+        while not self._stop:
+            page = None
             try:
-                import json as _json
-                acc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.json")
-                with open(acc_path, "r", encoding="utf-8") as f:
-                    _accs = _json.load(f)
-                enabled = [a for a in _accs if a.get("cookie") and a.get("enabled") in (True, "True")]
-                if enabled:
-                    acc = enabled[worker_id % len(enabled)]
-                    cookie_str = acc["cookie"]
-            except Exception as e:
-                self._log(f"{tag} ❌ Không đọc được accounts.json: {e}")
-                return
-            
-            if not cookie_str:
-                self._log(f"{tag} ❌ Không tìm thấy tài khoản enabled với cookie")
-                return
-            
-            # Lấy project ID
-            try:
-                import sys
-                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-                import engine as _E
-                project_id = _E.get_project(cookie_str)
-            except:
-                pass
-            
-            # Step 1: Navigate to flow.google.com (thiết lập domain)
-            page.get("https://flow.google.com")
-            time.sleep(2)
-            
-            # Step 2: Set cookies via CDP (hỗ trợ HttpOnly, __Host- cookies)
-            cookie_pairs = [p.strip() for p in cookie_str.split(";") if "=" in p]
-            for pair in cookie_pairs:
-                name, value = pair.split("=", 1)
-                name, value = name.strip(), value.strip()
+                co = ChromiumOptions()
+                chrome_path = get_chrome_path()
+                if chrome_path:
+                    co.set_browser_path(chrome_path)
+                co.set_argument("--disable-extensions")
+                co.set_argument("--mute-audio")
+                co.set_argument("--no-first-run")
+                co.set_argument("--no-default-browser-check")
+                co.set_argument("--disable-gpu")
+                # ★ Kỹ thuật Chiến Hust: Không dùng --headless (reCAPTCHA Enterprise cho điểm thấp)
+                # Đẩy cửa sổ ra ngoài màn hình → Chrome thật nhưng ẩn
+                co.set_argument("--window-position=-30000,0")
+                co.set_argument("--window-size=800,600")
+                co.set_argument("--start-minimized")
+                co.set_argument("--blink-settings=imagesEnabled=false")
+                co.set_argument("--disable-software-rasterizer")
+                co.set_argument("--disable-dev-shm-usage")
+                co.set_argument("--no-sandbox")
+                co.set_argument("--disable-blink-features=AutomationControlled")
+                co.set_pref("profile.default_content_setting_values.images", 2)
+                co.set_pref("profile.managed_default_content_settings.images", 2)
+                
+                # KHÔNG cần profile — dùng CDP cookie injection
+                co.set_local_port(random.randint(30000, 49999))
+
+                page = ChromiumPage(co)
+                page.set.retry_times(2)
+                hide_pid_windows_from_taskbar(getattr(page, "process_id", None))
+
+                # ★ Nạp Stealth Script & BotoxSign Hooking từ TstGoogleFlow v1.0.6
                 try:
-                    if name.startswith("__Host-"):
-                        # __Host- cookies: PHẢI set qua url, KHÔNG dùng domain
-                        page.run_cdp("Network.setCookie",
-                                    name=name, value=value,
-                                    url="https://flow.google.com",
-                                    path="/", secure=True, httpOnly=True)
-                    else:
-                        page.run_cdp("Network.setCookie",
-                                    name=name, value=value,
-                                    domain=".google.com",
-                                    path="/", secure=True)
-                except:
-                    pass
-            
-            # Step 3: Navigate đến project page (Angular + reCAPTCHA load tự nhiên)
-            target_url = f"https://flow.google.com/project/{project_id}" if project_id else "https://flow.google.com/?pli=1"
-            self._log(f"{tag} 🌐 Loading {target_url[-50:]}...")
-            page.get(target_url)
-            time.sleep(15)  # Angular cần thời gian bootstrap
-            
-            # Step 4: Chờ reCAPTCHA (thử tối đa 5 lần × 5s = 25s)
-            has_rc = False
-            for attempt in range(5):
+                    import browser_stealth
+                    browser_stealth.apply_stealth(page, log_fn=self._log)
+                    browser_stealth.setup_botox_hook(page, log_fn=self._log)
+                except Exception as _stealth_ex:
+                    self._log(f"{tag} ⚠️ Lỗi nạp stealth/botox hook: {_stealth_ex}")
+
+                # ★ Lấy cookie + project từ accounts.json
+                cookie_str = None
+                project_id = None
                 try:
-                    has_rc = page.run_js("return typeof grecaptcha !== 'undefined' && !!grecaptcha.enterprise")
-                except:
-                    has_rc = False
-                if has_rc:
-                    break
-                time.sleep(5)
-            
-            if not has_rc:
-                self._log(f"{tag} ❌ reCAPTCHA không load được trên flow.google.com (Angular chưa bootstrap?)")
-                return
-            
-            self._log(f"{tag} 🟢 reCAPTCHA native OK trên flow.google.com, bắt đầu farm")
-
-            def _build_exec_js(act):
-                return f"""
-                async function _exec() {{
-                    try {{
-                        if (typeof grecaptcha === 'undefined' || !grecaptcha.enterprise) {{
-                            return 'ERROR:grecaptcha_undefined';
-                        }}
-                        await new Promise(r => grecaptcha.enterprise.ready(r));
-                        var token = await grecaptcha.enterprise.execute('{RECAPTCHA_SITE_KEY}', {{action: '{act}'}});
-                        return token;
-                    }} catch(e) {{
-                        return 'ERROR:' + e;
-                    }}
-                }}
-                return _exec();
-                """
-            exec_js_map = {act: _build_exec_js(act) for act in ["VIDEO_GENERATION", "UPLOAD_IMAGE"]}
-
-            fail_streak = 0
-            _log_counter = 0
-            while not self._stop:
-                try:
-                    any_success = False
-                    all_full = True
-                    for act, js_code in exec_js_map.items():
-                        q = self._queues[act]
-                        if q.qsize() < MAX_QUEUE:
-                            all_full = False
-                            token = page.run_js(js_code)
-                            if token and isinstance(token, str) and len(token) > 20 and not token.startswith("ERROR"):
-                                try:
-                                    q.put_nowait((token, time.time()))
-                                    with self._lock:
-                                        self._total_farmed += 1
-                                    any_success = True
-                                except queue.Full:
-                                    pass
-                            elif token and isinstance(token, str) and token.startswith("ERROR"):
-                                if fail_streak == 0:  # Chỉ log lần đầu lỗi liên tục
-                                    self._log(f"{tag} ⚠️ {act}: {token[:80]}")
-
-                    if all_full:
-                        # Queue đầy → chờ dài hơn, KHÔNG tăng fail_streak
-                        time.sleep(5)
-                        continue
-                    elif any_success:
-                        fail_streak = 0
-                    else:
-                        fail_streak += 1
-                        if fail_streak >= 4:
-                            self._log(f"{tag} 🔄 Reload flow.google.com project page...")
-                            page.get(target_url)
-                            time.sleep(15)  # Chờ Angular + reCAPTCHA load lại
-                            fail_streak = 0
-
-                    # Log thống kê mỗi ~30 vòng (~1-2 phút)
-                    _log_counter += 1
-                    if _log_counter % 30 == 0:
-                        self._log(f"{tag} 📊 Tổng token: {self._total_farmed} | V:{self._queues['VIDEO_GENERATION'].qsize()} U:{self._queues['UPLOAD_IMAGE'].qsize()}")
-
+                    import json as _json
+                    acc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.json")
+                    with open(acc_path, "r", encoding="utf-8") as f:
+                        _accs = _json.load(f)
+                    enabled = [a for a in _accs if a.get("cookie") and a.get("enabled") in (True, "True") and a.get("status") != "dead"]
+                    if not enabled:
+                        enabled = [a for a in _accs if a.get("cookie") and a.get("enabled") in (True, "True")]
+                    if enabled:
+                        acc = enabled[worker_id % len(enabled)]
+                        cookie_str = acc["cookie"]
                 except Exception as e:
-                    fail_streak += 1
-                    if fail_streak <= 2:
-                        self._log(f"{tag} ❌ Worker exception: {str(e)[:80]}")
+                    self._log(f"{tag} ❌ Không đọc được accounts.json: {e}")
+                    time.sleep(5)
+                    continue
+                
+                if not cookie_str:
+                    self._log(f"{tag} ❌ Không tìm thấy tài khoản enabled với cookie")
+                    time.sleep(10)
+                    continue
+                
+                # Lấy project ID
+                try:
+                    import sys
+                    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                    import engine as _E
+                    project_id = _E.get_project(cookie_str)
+                except Exception:
+                    pass
+                
+                # Step 1: Navigate to flow.google.com (thiết lập domain)
+                page.get("https://flow.google.com")
+                time.sleep(2)
+                
+                # Step 2: Set cookies via CDP (hỗ trợ HttpOnly, __Host- cookies)
+                cookie_pairs = [p.strip() for p in cookie_str.split(";") if "=" in p]
+                for pair in cookie_pairs:
+                    name, value = pair.split("=", 1)
+                    name, value = name.strip(), value.strip()
+                    try:
+                        if name.startswith("__Host-"):
+                            page.run_cdp("Network.setCookie",
+                                        name=name, value=value,
+                                        url="https://flow.google.com",
+                                        path="/", secure=True, httpOnly=True)
+                        else:
+                            page.run_cdp("Network.setCookie",
+                                        name=name, value=value,
+                                        domain=".google.com",
+                                        path="/", secure=True)
+                    except Exception:
+                        pass
+                
+                # Step 3: Navigate đến project page (Angular + reCAPTCHA load tự nhiên)
+                target_url = f"https://flow.google.com/project/{project_id}" if project_id else "https://flow.google.com/project/513f3b20-fa17-4be7-89b5-f179860de580"
+                self._log(f"{tag} 🌐 Loading {target_url[-50:]}...")
+                page.get(target_url)
+                time.sleep(15)  # Angular cần thời gian bootstrap
+                
+                # Step 4: Chờ reCAPTCHA (thử tối đa 6 lần × 4s = 24s)
+                has_rc = False
+                for attempt in range(6):
+                    try:
+                        has_rc = page.run_js("return typeof grecaptcha !== 'undefined' && !!grecaptcha.enterprise")
+                    except Exception:
+                        has_rc = False
+                    if has_rc:
+                        break
+                    time.sleep(4)
+                
+                if not has_rc:
+                    self._log(f"{tag} ⚠️ reCAPTCHA chưa sẵn sàng trên flow.google.com, tự động thử lại...")
+                    continue
+                
+                self._log(f"{tag} 🟢 reCAPTCHA native OK trên flow.google.com, bắt đầu farm")
 
-                # Sleep ngắn khi thành công (farm nhanh hơn), dài hơn khi fail liên tục
-                if any_success:
-                    time.sleep(FARM_INTERVAL + random.uniform(-0.5, 1))
-                else:
-                    time.sleep(1.5 + random.uniform(0, 1))
+                def _build_exec_js(act):
+                    return f"""
+                    async function _exec() {{
+                        try {{
+                            if (typeof grecaptcha === 'undefined' || !grecaptcha.enterprise) {{
+                                return 'ERROR:grecaptcha_undefined';
+                            }}
+                            await new Promise(r => grecaptcha.enterprise.ready(r));
+                            var token = await grecaptcha.enterprise.execute('{RECAPTCHA_SITE_KEY}', {{action: '{act}'}});
+                            return token;
+                        }} catch(e) {{
+                            return 'ERROR:' + e;
+                        }}
+                    }}
+                    return _exec();
+                    """
+                exec_js_map = {act: _build_exec_js(act) for act in ["VIDEO_GENERATION", "UPLOAD_IMAGE"]}
 
-        except Exception as e:
-            self._log(f"{tag} ❌ Worker crash: {str(e)[:100]}")
-        finally:
-            try:
-                if page:
-                    page.quit()
-            except Exception:
-                pass
+                fail_streak = 0
+                _log_counter = 0
+                while not self._stop:
+                    try:
+                        any_success = False
+                        all_full = True
+                        for act, js_code in exec_js_map.items():
+                            q = self._queues[act]
+                            if q.qsize() < MAX_QUEUE:
+                                all_full = False
+                                token = page.run_js(js_code)
+                                if token and isinstance(token, str) and len(token) > 20 and not token.startswith("ERROR"):
+                                    try:
+                                        q.put_nowait((token, time.time()))
+                                        with self._lock:
+                                            self._total_farmed += 1
+                                        any_success = True
+                                    except queue.Full:
+                                        pass
+                                elif token and isinstance(token, str) and token.startswith("ERROR"):
+                                    if fail_streak == 0:
+                                        self._log(f"{tag} ⚠️ {act}: {token[:80]}")
+
+                        if all_full:
+                            time.sleep(5)
+                            continue
+                        elif any_success:
+                            fail_streak = 0
+                        else:
+                            fail_streak += 1
+                            need_reload = self._need_cookie_reload or (fail_streak >= 3)
+                            curr_u = ""
+                            try: curr_u = str(page.url).lower()
+                            except Exception: pass
+                            if "about" in curr_u or "accounts.google.com" in curr_u or "signin" in curr_u:
+                                need_reload = True
+
+                            if need_reload:
+                                self._log(f"{tag} 🔄 Nạp lại cookie mới từ accounts.json...")
+                                try:
+                                    with open(acc_path, "r", encoding="utf-8") as f:
+                                        _accs = _json.load(f)
+                                    enabled = [a for a in _accs if a.get("cookie") and a.get("enabled") in (True, "True") and a.get("status") != "dead"]
+                                    if enabled:
+                                        acc = enabled[worker_id % len(enabled)]
+                                        cookie_str = acc["cookie"]
+                                        project_id = _E.get_project(cookie_str) or project_id or "513f3b20-fa17-4be7-89b5-f179860de580"
+                                        target_url = f"https://flow.google.com/project/{project_id}"
+                                except Exception as ex:
+                                    self._log(f"{tag} ⚠️ Lỗi đọc accounts.json: {ex}")
+
+                                try:
+                                    page.get("https://flow.google.com")
+                                    time.sleep(2)
+                                    cookie_pairs = [p.strip() for p in cookie_str.split(";") if "=" in p]
+                                    for pair in cookie_pairs:
+                                        name, value = pair.split("=", 1)
+                                        name, value = name.strip(), value.strip()
+                                        try:
+                                            if name.startswith("__Host-"):
+                                                page.run_cdp("Network.setCookie", name=name, value=value, url="https://flow.google.com", path="/", secure=True, httpOnly=True)
+                                            else:
+                                                page.run_cdp("Network.setCookie", name=name, value=value, domain=".google.com", path="/", secure=True)
+                                        except Exception:
+                                            pass
+                                    self._log(f"{tag} 🌐 Tải lại {target_url[-40:]} với cookie mới...")
+                                    page.get(target_url)
+                                    time.sleep(12)
+                                    fail_streak = 0
+                                    self._need_cookie_reload = False
+                                    self._log(f"{tag} ✅ Đã nạp lại cookie mới thành công!")
+                                except Exception as ex:
+                                    self._log(f"{tag} ❌ Lỗi inject cookie: {ex}")
+                            elif fail_streak >= 5:
+                                self._log(f"{tag} 🔄 Reload flow.google.com project page...")
+                                page.get(target_url)
+                                time.sleep(10)
+                                fail_streak = 0
+
+                        # Log thống kê mỗi ~30 vòng (~1-2 phút)
+                        _log_counter += 1
+                        if _log_counter % 30 == 0:
+                            self._log(f"{tag} 📊 Tổng token: {self._total_farmed} | V:{self._queues['VIDEO_GENERATION'].qsize()} U:{self._queues['UPLOAD_IMAGE'].qsize()}")
+
+                    except Exception as e:
+                        fail_streak += 1
+                        if fail_streak <= 2:
+                            self._log(f"{tag} ❌ Worker exception: {str(e)[:80]}")
+
+                    if any_success:
+                        time.sleep(FARM_INTERVAL + random.uniform(-0.5, 1))
+                    else:
+                        time.sleep(1.5 + random.uniform(0, 1))
+
+            except Exception as e:
+                self._log(f"{tag} ❌ Worker crash: {str(e)[:100]}")
+                time.sleep(5)
+            finally:
+                try:
+                    if page:
+                        page.quit()
+                except Exception:
+                    pass
             
 
 

@@ -33,13 +33,17 @@ def get_chrome_path():
     return None
 
 
-def _opts(profile_dir=None):
+def _opts(profile_dir=None, headless=False):
     from DrissionPage import ChromiumOptions
     co = ChromiumOptions()
     chrome_path = get_chrome_path()
     if chrome_path:
         co.set_browser_path(chrome_path)
     co.set_argument("--no-first-run"); co.set_argument("--no-default-browser-check")
+    if headless:
+        co.set_argument("--window-position=-30000,0")
+        co.set_argument("--window-size=800,600")
+        co.set_argument("--start-minimized")
     if profile_dir:
         try:
             os.makedirs(profile_dir, exist_ok=True)
@@ -408,6 +412,11 @@ def manual_login(log=print, timeout=360, poll=2, profile_dir=None):
                     raise e
             else:
                 raise e
+        try:
+            import browser_stealth
+            browser_stealth.apply_stealth(page, log_fn=log)
+        except Exception:
+            pass
         page.get(LABS)
         log("👉 Đăng nhập Google trong cửa sổ Chrome vừa mở, rồi vào Flow. Tool tự nhận cookie...")
         end = time.time() + timeout
@@ -441,6 +450,20 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
     try:
         if profile_dir:
             check_and_convert_gemlogin_profile(profile_dir, log)
+        # ★ Xóa cookie database cũ trong profile trước khi mở Chrome
+        # Tránh CookieMismatch: profile có cookie hết hạn/xung đột từ session cũ
+        if profile_dir:
+            for ck_path in [
+                os.path.join(profile_dir, "Default", "Network", "Cookies"),
+                os.path.join(profile_dir, "Default", "Cookies"),
+            ]:
+                if os.path.isfile(ck_path):
+                    try:
+                        os.remove(ck_path)
+                        log(f"  🗑 Đã xóa cookie database cũ: {os.path.basename(ck_path)}")
+                    except Exception:
+                        pass
+
         log(f"🔑 Mở Chrome login {email}...")
         try:
             page = ChromiumPage(_opts(profile_dir))
@@ -453,16 +476,18 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
                     raise e
             else:
                 raise e
+        try:
+            import browser_stealth
+            browser_stealth.apply_stealth(page, log_fn=log)
+        except Exception:
+            pass
 
         # ── Vào thẳng LABS → nếu chưa login, Google tự redirect sang trang sign-in ──
         page.get(LABS)
         time.sleep(4)
 
-        # Kiểm tra nhanh: profile cũ có session còn sống và hợp lệ?
-        ck = _labs_cookie(page.cookies(all_domains=True))
-        if _is_cookie_valid(ck):
-            log(f"✅ {email}: profile cũ vẫn có session hợp lệ → lấy cookie luôn.")
-            return ck
+        # ★ KHÔNG kiểm tra cookie cũ từ profile — luôn đăng nhập mới bằng password
+        # Tránh lỗi "cookie bán-chết": profile có session sắp hết hạn → cookie chỉ sống 1-2 phút
 
         # ── Chưa có session → Google sẽ redirect sang trang đăng nhập ──
         log(f"🔑 {email}: chưa có session → đăng nhập bằng email+pass...")
@@ -637,16 +662,26 @@ def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3):
             check_and_convert_gemlogin_profile(profile_dir, log)
         log("🔄 Mở Chrome với profile cũ (không cần password)...")
         try:
-            page = ChromiumPage(_opts(profile_dir))
+            page = ChromiumPage(_opts(profile_dir, headless=True))
         except Exception as e:
             if profile_dir:
                 log(f"⚠️ Trình duyệt lỗi kết nối, đang thử tự động sửa chữa profile...")
                 if repair_corrupted_profile(profile_dir, log):
-                    page = ChromiumPage(_opts(profile_dir))
+                    page = ChromiumPage(_opts(profile_dir, headless=True))
                 else:
                     raise e
             else:
                 raise e
+        try:
+            import recaptcha_farm as RF
+            RF.hide_pid_windows_from_taskbar(getattr(page, "process_id", None))
+        except Exception:
+            pass
+        try:
+            import browser_stealth
+            browser_stealth.apply_stealth(page, log_fn=log)
+        except Exception:
+            pass
         page.get(LABS)
         log("⏳ Chờ Google tự đăng nhập lại từ session cũ...")
         start_time = time.time()
@@ -674,11 +709,11 @@ def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3):
                 except Exception:
                     pass
 
-            # Kiểm tra thoát sớm nếu session đã chết và bị chuyển hướng sang form đăng nhập Google
+            # Kiểm tra thoát sớm nếu session đã chết và bị chuyển hướng sang form đăng nhập/chọn tài khoản Google
             try:
                 curr_url = page.url
-                if "accounts.google.com/v3/signin/identifier" in curr_url or "signin/v2/identifier" in curr_url:
-                    log("⌛ Session Google trong profile đã hết hạn (chuyển sang trang đăng nhập).")
+                if "accounts.google.com" in curr_url and any(k in curr_url for k in ("signin", "challenge", "accountchooser", "ServiceLogin", "rejected")):
+                    log("⌛ Session Google trong profile đã hết hạn → Chuyển ngay sang đăng nhập bằng mật khẩu...")
                     return None
             except Exception:
                 pass
