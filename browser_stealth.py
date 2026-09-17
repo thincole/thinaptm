@@ -164,6 +164,61 @@ def apply_stealth(page, log_fn=None):
             return False
 
 
+def prime_proxy_auth(page, user, pwd, log_fn=None, probe_url="http://www.gstatic.com/generate_204", timeout=10):
+    """Xác thực proxy (Basic auth) ĐÚNG MỘT LẦN qua CDP, rồi TẮT intercept.
+
+    Chrome cache credentials proxy cho cả phiên sau lần trả lời đầu, nên các request sau (kể cả
+    trang nặng như flow.google.com) không cần intercept nữa → không làm chậm/kẹt trang.
+    KHÔNG intercept lâu dài mọi request (đó là thứ làm reCAPTCHA không load được).
+    Trả True nếu đã xử lý được ít nhất 1 auth challenge (hoặc probe xong)."""
+    if not page or not hasattr(page, "driver") or not page.driver:
+        return False
+    done = {"auth": False}
+
+    def _on_auth(**params):
+        rid = params.get("requestId")
+        try:
+            page.run_cdp("Fetch.continueWithAuth", requestId=rid, authChallengeResponse={
+                "response": "ProvideCredentials", "username": user, "password": (pwd or "")})
+            done["auth"] = True
+        except Exception:
+            pass
+
+    def _on_req(**params):
+        rid = params.get("requestId")
+        if rid:
+            try:
+                page.run_cdp("Fetch.continueRequest", requestId=rid)
+            except Exception:
+                pass
+
+    try:
+        page.driver.set_callback("Fetch.authRequired", _on_auth)
+        page.driver.set_callback("Fetch.requestPaused", _on_req)
+        page.run_cdp("Fetch.enable", handleAuthRequests=True, patterns=[{"urlPattern": "*", "requestStage": "Request"}])
+        try:
+            page.get(probe_url)
+        except Exception:
+            pass
+        import time as _t
+        t0 = _t.time()
+        while _t.time() - t0 < timeout and not done["auth"]:
+            _t.sleep(0.3)
+    finally:
+        try:
+            page.run_cdp("Fetch.disable")
+        except Exception:
+            pass
+        try:
+            page.driver.set_callback("Fetch.authRequired", None)
+            page.driver.set_callback("Fetch.requestPaused", None)
+        except Exception:
+            pass
+    if log_fn:
+        log_fn(f"🔐 [Proxy] {'Đã xác thực proxy' if done['auth'] else 'Probe proxy xong (không thấy auth challenge)'}")
+    return True
+
+
 def setup_botox_hook(page, log_fn=None):
     """Kích hoạt CDP Fetch Interception để tự động vá (patch) chunk JS chứa botoxSign
     thành `(window.dgtSign=(0,$1.botoxSign))(` theo chuẩn TstGoogleFlow v1.0.6.

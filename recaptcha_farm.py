@@ -29,6 +29,8 @@ MAX_QUEUE = 20
 TOKEN_TTL = 100
 # Thời gian chờ giữa các lần farm (giây)
 FARM_INTERVAL = 3
+# Số trình duyệt farm tối đa mở đồng thời (mỗi tài khoản 1 Chrome ẩn ~150-250MB RAM)
+MAX_FARM_BROWSERS = 6
 
 
 def get_chrome_path():
@@ -93,6 +95,37 @@ def hide_pid_windows_from_taskbar(pid):
         pass
 
 
+def _inject_cookies(page, cookie_str, url=FLOW_URL, clear_old=False):
+    """Set cookie vào ChromiumPage qua CDP Network.setCookie (hỗ trợ HttpOnly/__Host- cookies) —
+    dùng chung cho mọi nơi cần inject cookie tài khoản vào 1 session browser đang mở.
+    clear_old=True: xoá cookie google.com cũ trước khi inject (chống cookie bán-chết)."""
+    if not cookie_str:
+        return
+    if clear_old:
+        try:
+            cdp_cookies = page.run_cdp("Network.getCookies", urls=["https://flow.google.com", "https://accounts.google.com", "https://www.google.com"])
+            for c in cdp_cookies.get("cookies", []):
+                if "google" in c.get("domain", ""):
+                    try:
+                        page.run_cdp("Network.deleteCookies", name=c["name"], domain=c["domain"], path=c.get("path", "/"))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    for pair in str(cookie_str).split(";"):
+        if "=" not in pair:
+            continue
+        name, val = pair.strip().split("=", 1)
+        name, val = name.strip(), val.strip()
+        try:
+            if name.startswith("__Host-"):
+                page.run_cdp("Network.setCookie", name=name, value=val, url=url, path="/", secure=True, httpOnly=True)
+            else:
+                page.run_cdp("Network.setCookie", name=name, value=val, domain=".google.com", path="/", secure=True)
+        except Exception:
+            pass
+
+
 class RecaptchaFarm:
     """Trại Token reCAPTCHA — farm token tươi bằng headless Chrome.
     
@@ -110,11 +143,11 @@ class RecaptchaFarm:
             except Exception:
                 print(f"[RecaptchaFarm] {str(m).encode('ascii', 'replace').decode()}")
         self._log = log_func or _safe_print
-        self._queues = {
-            "VIDEO_GENERATION": queue.Queue(maxsize=MAX_QUEUE),
-            "UPLOAD_IMAGE": queue.Queue(maxsize=MAX_QUEUE),
-        }
-        self._queue = self._queues["VIDEO_GENERATION"]
+        # Hàng đợi token GẮN THEO TÀI KHOẢN: acc_key -> {action: Queue}. Token của tài khoản nào
+        # chỉ dùng cho submit của tài khoản đó (cùng IP proxy + cùng phiên → khớp bối cảnh reCAPTCHA).
+        self._acc_queues = {}          # acc_key -> {"VIDEO_GENERATION": Queue, "UPLOAD_IMAGE": Queue}
+        self._acc_queues_lock = threading.Lock()
+        self._proxy_resolver = None    # fn(email) -> proxy_str (lấy live từ ProxyPool, xử lý cả xoay proxy)
         self._stop = False
         self._workers = []
         self._started = False
@@ -124,33 +157,73 @@ class RecaptchaFarm:
         self._sessions_lock = threading.Lock()
         self._need_cookie_reload = False
 
+    def set_proxy_resolver(self, fn):
+        """App gắn callback email->proxy_str (từ ProxyPool). Worker gọi để lấy đúng proxy hiện tại."""
+        self._proxy_resolver = fn
+
+    def _acc_queues_for(self, acc_key):
+        with self._acc_queues_lock:
+            q = self._acc_queues.get(acc_key)
+            if q is None:
+                q = {"VIDEO_GENERATION": queue.Queue(maxsize=MAX_QUEUE),
+                     "UPLOAD_IMAGE": queue.Queue(maxsize=MAX_QUEUE)}
+                self._acc_queues[acc_key] = q
+            return q
+
     def reload_cookies(self):
         """Báo hiệu cho tất cả worker nạp lại cookie mới từ accounts.json."""
         self._need_cookie_reload = True
     
     def start(self):
-        """Khởi động farm. Trả True nếu thành công."""
+        """Khởi động farm: MỖI TÀI KHOẢN enabled 1 trình duyệt riêng (bind cố định, chạy qua đúng
+        proxy của tài khoản đó). Trả True nếu thành công."""
         if self._started:
             return True
         self._stop = False
-        self._log(f"🐑 Khởi động Trại Token: {self.num_workers} luồng...")
-        
-        # Kiểm tra DrissionPage
+
         try:
             from DrissionPage import ChromiumOptions, ChromiumPage
         except ImportError:
             self._log("❌ Thiếu DrissionPage — không thể farm token.")
             return False
-        
-        for i in range(self.num_workers):
-            t = threading.Thread(target=self._worker, args=(i,), daemon=True,
+
+        # Danh sách tài khoản sẽ farm (mỗi tài khoản 1 browser). Đọc từ accounts.json.
+        try:
+            acc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.json")
+            with open(acc_path, "r", encoding="utf-8") as f:
+                _accs = json.load(f)
+            enabled = [a for a in _accs if a.get("cookie") and a.get("enabled") in (True, "True")
+                       and a.get("status") != "dead" and a.get("role", "main") == "main"]
+        except Exception as e:
+            self._log(f"❌ Không đọc được accounts.json: {e}")
+            return False
+        if not enabled:
+            self._log("⚠️ Không có tài khoản enabled nào để farm token.")
+            return False
+
+        if len(enabled) > MAX_FARM_BROWSERS:
+            self._log(f"⚠️ Có {len(enabled)} tài khoản nhưng chỉ mở tối đa {MAX_FARM_BROWSERS} trình duyệt farm "
+                      f"(giới hạn RAM). {len(enabled) - MAX_FARM_BROWSERS} tài khoản dư sẽ thiếu token — "
+                      f"nên bật ≤ {MAX_FARM_BROWSERS} tài khoản, hoặc tăng MAX_FARM_BROWSERS.")
+            enabled = enabled[:MAX_FARM_BROWSERS]
+
+        try:
+            from thin_aptm import get_acc_email
+        except Exception:
+            get_acc_email = lambda a: str(a.get("email") or a.get("id") or "").strip().lower()
+
+        self.num_workers = len(enabled)
+        self._log(f"🐑 Khởi động Trại Token: {self.num_workers} trình duyệt (mỗi tài khoản 1 browser qua proxy riêng)...")
+        for i, acc in enumerate(enabled):
+            email = get_acc_email(acc)
+            t = threading.Thread(target=self._worker, args=(i, email, acc.get("cookie")), daemon=True,
                                  name=f"RecaptchaFarm-{i}")
             t.start()
             self._workers.append(t)
             time.sleep(0.5)
-        
+
         self._started = True
-        self._log(f"✅ Trại Token đã khởi động — {self.num_workers}/{self.num_workers} luồng sẵn sàng")
+        self._log(f"✅ Trại Token đã khởi động — {self.num_workers} trình duyệt sẵn sàng")
         return True
     
     def stop(self):
@@ -167,50 +240,61 @@ class RecaptchaFarm:
             self._sessions.clear()
         self._log(f"⏹ Trại Token đã dừng. Tổng token đã farm: {self._total_farmed}")
     
-    def get_token(self, timeout=15, action="VIDEO_GENERATION"):
-        """Lấy 1 token tươi từ queue cho action tương ứng (VIDEO_GENERATION hoặc UPLOAD_IMAGE).
-        Trả token string hoặc None nếu timeout. Tự bỏ token quá hạn.
-        Tự động fallback sang queue còn lại nếu queue yêu cầu đang tạm hết."""
-        q = self._queues.get(action, self._queue)
-        alt_action = "UPLOAD_IMAGE" if action == "VIDEO_GENERATION" else "VIDEO_GENERATION"
-        alt_q = self._queues.get(alt_action)
+    def _collect_queues(self, action, email):
+        """Trả danh sách (queue chính, queue phụ) sẽ lấy token.
+        Có email → CHỈ queue của tài khoản đó (token phải khớp bối cảnh, không lấy nhầm tài khoản khác).
+        Không email → gộp tất cả queue (luồng phụ/legacy)."""
+        alt = "UPLOAD_IMAGE" if action == "VIDEO_GENERATION" else "VIDEO_GENERATION"
+        if email:
+            qs = self._acc_queues_for(self._get_acc_key(None, email=email))
+            return [qs.get(action)], [qs.get(alt)]
+        with self._acc_queues_lock:
+            mains = [qs.get(action) for qs in self._acc_queues.values() if qs.get(action)]
+            alts = [qs.get(alt) for qs in self._acc_queues.values() if qs.get(alt)]
+        return mains, alts
+
+    def get_token(self, timeout=15, action="VIDEO_GENERATION", email=None):
+        """Lấy 1 token tươi cho action, GẮN THEO TÀI KHOẢN nếu có email.
+        Trả token string hoặc None nếu timeout. Tự bỏ token quá hạn."""
+        mains, alts = self._collect_queues(action, email)
         deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                item = q.get(timeout=min(1.0, max(0.1, deadline - time.time())))
+        def _drain(qlist):
+            for q in qlist:
+                if not q:
+                    continue
+                try:
+                    item = q.get_nowait()
+                except queue.Empty:
+                    continue
                 if isinstance(item, tuple):
                     token, ts = item
                     if time.time() - ts < TOKEN_TTL:
                         return token
                 elif isinstance(item, str):
                     return item
-            except queue.Empty:
-                if alt_q and not alt_q.empty():
-                    try:
-                        item = alt_q.get_nowait()
-                        if isinstance(item, tuple):
-                            token, ts = item
-                            if time.time() - ts < TOKEN_TTL:
-                                return token
-                        elif isinstance(item, str):
-                            return item
-                    except queue.Empty:
-                        pass
-                continue
+            return None
+        while time.time() < deadline:
+            tok = _drain(mains)
+            if tok:
+                return tok
+            tok = _drain(alts)          # cùng tài khoản, action còn lại (token reCAPTCHA dùng chung action được)
+            if tok:
+                return tok
+            time.sleep(min(0.3, max(0.05, deadline - time.time())))
         return None
-    
-    def qsize(self, action="VIDEO_GENERATION"):
+
+    def qsize(self, action="VIDEO_GENERATION", email=None):
         """Số token tươi hiện có trong queue."""
-        return self._queues.get(action, self._queue).qsize()
-    
+        mains, _ = self._collect_queues(action, email)
+        return sum(q.qsize() for q in mains if q)
+
     def stats(self):
         """Thống kê farm."""
         return {
             "workers": len(self._workers),
             "started": self._started,
-            "queued_video": self._queues["VIDEO_GENERATION"].qsize(),
-            "queued_upload": self._queues["UPLOAD_IMAGE"].qsize(),
-            "queued": self._queue.qsize(),
+            "queued_video": self.qsize("VIDEO_GENERATION"),
+            "queued_upload": self.qsize("UPLOAD_IMAGE"),
             "total_farmed": self._total_farmed,
         }
 
@@ -287,11 +371,16 @@ class RecaptchaFarm:
                 candidates = [s for s in self._sessions.values() if s.get("ready") and s.get("page")]
 
         for sess in candidates:
+            # Khoá session trước khi thao tác page — tránh 2 thread cùng dùng chung 1 ChromiumPage
+            # đồng thời (vd. submit_video_native đang chạy trên cùng session này).
+            lock = sess.get("lock")
+            if lock and not lock.acquire(timeout=5):
+                continue
             try:
                 if not sess.get("ready") or not sess.get("page"):
                     continue
                 page = sess["page"]
-                
+
                 # CHẶN LỖI PHANTOM TOKEN: Không lấy token từ trang đăng nhập!
                 try:
                     curr_url = str(page.url).lower()
@@ -323,6 +412,9 @@ class RecaptchaFarm:
             except Exception as ex:
                 self._log(f"get_wiz_tokens_from_browser error: {ex}")
                 continue
+            finally:
+                if lock:
+                    lock.release()
         return None, None, None, None
 
     def _get_or_create_session(self, cookie, project, email=None):
@@ -407,34 +499,7 @@ class RecaptchaFarm:
                     try:
                         page.get(FLOW_URL)
                         time.sleep(1.0)
-                        
-                        # ★ Xóa cookie CŨ của google.com trước khi inject mới (chống cookie bán-chết)
-                        # Dùng deleteCookies thay vì clearBrowserCookies (tránh CookieMismatch)
-                        try:
-                            # Lấy danh sách cookie hiện tại và xóa từng cookie google.com
-                            cdp_cookies = page.run_cdp("Network.getCookies", urls=["https://flow.google.com", "https://accounts.google.com", "https://www.google.com"])
-                            for c in cdp_cookies.get("cookies", []):
-                                if "google" in c.get("domain", ""):
-                                    try:
-                                        page.run_cdp("Network.deleteCookies", name=c["name"], domain=c["domain"], path=c.get("path", "/"))
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
-                        
-                        for pair in str(cookie).split(";"):
-                            if "=" in pair:
-                                name, val = pair.strip().split("=", 1)
-                                name, val = name.strip(), val.strip()
-                                try:
-                                    if name.startswith("__Host-"):
-                                        page.run_cdp("Network.setCookie", name=name, value=val,
-                                                    url="https://flow.google.com", path="/", secure=True, httpOnly=True)
-                                    else:
-                                        page.run_cdp("Network.setCookie", name=name, value=val,
-                                                    domain=".google.com", path="/", secure=True)
-                                except:
-                                    pass
+                        _inject_cookies(page, cookie, clear_old=True)
                     except Exception:
                         pass
 
@@ -621,16 +686,10 @@ class RecaptchaFarm:
                 sess["submit_count"] = sess.get("submit_count", 0) + 1
             return status, ops
     
-    def _worker(self, worker_id):
-        """Worker thread: CDP cookie injection → flow.google.com project page → native reCAPTCHA farm.
-        
-        ★ Cơ chế ĐÃ VERIFIED thành công:
-        1. Mở headless Chrome MỚI (không cần profile)
-        2. Set cookies từ accounts.json qua CDP Network.setCookie
-        3. Navigate đến flow.google.com/project/{project_id}
-        4. Angular bootstrap → reCAPTCHA load tự nhiên
-        5. Farm token bằng grecaptcha.enterprise.execute() native
-        """
+    def _worker(self, worker_id, acc_email, acc_cookie):
+        """Worker: MỖI TÀI KHOẢN 1 trình duyệt, chạy qua ĐÚNG proxy của tài khoản đó, farm token
+        gắn theo tài khoản. Token sinh ra cùng IP proxy + cùng phiên với lệnh submit REST → khớp bối
+        cảnh reCAPTCHA Enterprise → không bị PUBLIC_ERROR_UNUSUAL_ACTIVITY."""
         import random
         try:
             from DrissionPage import ChromiumOptions, ChromiumPage
@@ -638,21 +697,37 @@ class RecaptchaFarm:
             self._log("❌ Thiếu DrissionPage — không thể farm token.")
             return
 
-        tag = f"[Farm-{worker_id}]"
+        acc_key = self._get_acc_key(acc_cookie, email=acc_email)
+        acc_q = self._acc_queues_for(acc_key)
+        short = (acc_email or acc_key)[:16]
+        tag = f"[Farm {short}]"
+
+        def _resolve_proxy():
+            try:
+                return self._proxy_resolver(acc_email) if self._proxy_resolver else None
+            except Exception:
+                return None
+
         while not self._stop:
             page = None
             try:
+                # Lấy proxy hiện tại của tài khoản (chờ tối đa ~20s nếu app chưa gán xong)
+                proxy_str = _resolve_proxy()
+                for _ in range(20):
+                    if proxy_str or self._stop:
+                        break
+                    time.sleep(1)
+                    proxy_str = _resolve_proxy()
+
+                proxy_creds = None
                 co = ChromiumOptions()
                 chrome_path = get_chrome_path()
                 if chrome_path:
                     co.set_browser_path(chrome_path)
-                co.set_argument("--disable-extensions")
                 co.set_argument("--mute-audio")
                 co.set_argument("--no-first-run")
                 co.set_argument("--no-default-browser-check")
                 co.set_argument("--disable-gpu")
-                # ★ Kỹ thuật Chiến Hust: Không dùng --headless (reCAPTCHA Enterprise cho điểm thấp)
-                # Đẩy cửa sổ ra ngoài màn hình → Chrome thật nhưng ẩn
                 co.set_argument("--window-position=-30000,0")
                 co.set_argument("--window-size=800,600")
                 co.set_argument("--start-minimized")
@@ -663,46 +738,90 @@ class RecaptchaFarm:
                 co.set_argument("--disable-blink-features=AutomationControlled")
                 co.set_pref("profile.default_content_setting_values.images", 2)
                 co.set_pref("profile.managed_default_content_settings.images", 2)
-                
-                # KHÔNG cần profile — dùng CDP cookie injection
                 co.set_local_port(random.randint(30000, 49999))
+
+                # ★ Cắm proxy của tài khoản. Auth (user:pass) xử lý bằng CDP trong setup_botox_hook.
+                if proxy_str:
+                    import re as _re
+                    _pd = None
+                    try:
+                        import thin_aptm as _T
+                        _pd = _T.ProxyPool._to_dict(proxy_str)
+                    except Exception:
+                        _pd = None
+                    _url = (_pd or {}).get("http") or ""
+                    if _url.startswith("socks"):
+                        co.set_argument("--proxy-server", _url.split("#")[0])   # WARP socks5, không auth
+                    elif _url:
+                        _m = _re.match(r"https?://(?:([^:]+):([^@]+)@)?([^:]+):(\d+)", _url)
+                        if _m:
+                            _u, _p, _h, _pt = _m.group(1), _m.group(2), _m.group(3), _m.group(4)
+                            co.set_argument("--proxy-server", f"http://{_h}:{_pt}")
+                            if _u:
+                                proxy_creds = (_u, _p or "")
+                    self._log(f"{tag} 🌐 Farm qua proxy {(_url.split('@')[-1] if _url else '?')[:34]}")
+                else:
+                    self._log(f"{tag} ⚠️ Không có proxy → farm bằng IP máy (có thể bị gắn cờ do lệch IP với submit)")
 
                 page = ChromiumPage(co)
                 page.set.retry_times(2)
                 hide_pid_windows_from_taskbar(getattr(page, "process_id", None))
 
-                # ★ Nạp Stealth Script & BotoxSign Hooking từ TstGoogleFlow v1.0.6
+                # ★ Stealth
                 try:
                     import browser_stealth
                     browser_stealth.apply_stealth(page, log_fn=self._log)
-                    browser_stealth.setup_botox_hook(page, log_fn=self._log)
                 except Exception as _stealth_ex:
-                    self._log(f"{tag} ⚠️ Lỗi nạp stealth/botox hook: {_stealth_ex}")
+                    self._log(f"{tag} ⚠️ Lỗi nạp stealth: {_stealth_ex}")
 
-                # ★ Lấy cookie + project từ accounts.json
-                cookie_str = None
+                # ★ Xác thực proxy MỘT LẦN (Chrome cache creds cả phiên) — làm TRƯỚC, rồi mới bật botox
+                if proxy_creds:
+                    try:
+                        browser_stealth.prime_proxy_auth(page, proxy_creds[0], proxy_creds[1], log_fn=self._log)
+                    except Exception as _pex:
+                        self._log(f"{tag} ⚠️ Lỗi xác thực proxy: {_pex}")
+
+                # ★ Xác nhận IP thật Chrome đang dùng (sau khi proxy sẵn sàng)
+                if proxy_str:
+                    try:
+                        page.get("https://api.ipify.org?format=json")
+                        time.sleep(1.0)
+                        _ipbody = page.run_js("return document.body ? document.body.innerText : ''") or ""
+                        _ip = ""
+                        try:
+                            import json as _j; _ip = _j.loads(_ipbody).get("ip", "")
+                        except Exception:
+                            pass
+                        if _ip:
+                            self._log(f"{tag} ✅ IP farm = {_ip}")
+                    except Exception:
+                        pass
+
+                # ★ BotoxSign hook (pattern hẹp — chỉ vá js, không làm chậm trang)
+                try:
+                    browser_stealth.setup_botox_hook(page, log_fn=self._log)
+                except Exception as _bex:
+                    self._log(f"{tag} ⚠️ Lỗi nạp botox hook: {_bex}")
+
+                # Cookie CỐ ĐỊNH theo tài khoản của worker này (đọc bản mới nhất từ accounts.json)
+                cookie_str = acc_cookie
                 project_id = None
                 try:
-                    import json as _json
                     acc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.json")
                     with open(acc_path, "r", encoding="utf-8") as f:
-                        _accs = _json.load(f)
-                    enabled = [a for a in _accs if a.get("cookie") and a.get("enabled") in (True, "True") and a.get("status") != "dead"]
-                    if not enabled:
-                        enabled = [a for a in _accs if a.get("cookie") and a.get("enabled") in (True, "True")]
-                    if enabled:
-                        acc = enabled[worker_id % len(enabled)]
-                        cookie_str = acc["cookie"]
-                except Exception as e:
-                    self._log(f"{tag} ❌ Không đọc được accounts.json: {e}")
-                    time.sleep(5)
-                    continue
-                
+                        _accs = json.load(f)
+                    for a in _accs:
+                        if str(a.get("email") or a.get("id") or "").strip().lower() == str(acc_email).strip().lower() and a.get("cookie"):
+                            cookie_str = a["cookie"]
+                            break
+                except Exception:
+                    pass
+
                 if not cookie_str:
-                    self._log(f"{tag} ❌ Không tìm thấy tài khoản enabled với cookie")
+                    self._log(f"{tag} ❌ Không có cookie")
                     time.sleep(10)
                     continue
-                
+
                 # Lấy project ID
                 try:
                     import sys
@@ -717,23 +836,7 @@ class RecaptchaFarm:
                 time.sleep(2)
                 
                 # Step 2: Set cookies via CDP (hỗ trợ HttpOnly, __Host- cookies)
-                cookie_pairs = [p.strip() for p in cookie_str.split(";") if "=" in p]
-                for pair in cookie_pairs:
-                    name, value = pair.split("=", 1)
-                    name, value = name.strip(), value.strip()
-                    try:
-                        if name.startswith("__Host-"):
-                            page.run_cdp("Network.setCookie",
-                                        name=name, value=value,
-                                        url="https://flow.google.com",
-                                        path="/", secure=True, httpOnly=True)
-                        else:
-                            page.run_cdp("Network.setCookie",
-                                        name=name, value=value,
-                                        domain=".google.com",
-                                        path="/", secure=True)
-                    except Exception:
-                        pass
+                _inject_cookies(page, cookie_str)
                 
                 # Step 3: Navigate đến project page (Angular + reCAPTCHA load tự nhiên)
                 target_url = f"https://flow.google.com/project/{project_id}" if project_id else "https://flow.google.com/project/513f3b20-fa17-4be7-89b5-f179860de580"
@@ -783,7 +886,7 @@ class RecaptchaFarm:
                         any_success = False
                         all_full = True
                         for act, js_code in exec_js_map.items():
-                            q = self._queues[act]
+                            q = acc_q[act]          # queue GẮN THEO TÀI KHOẢN của worker này
                             if q.qsize() < MAX_QUEUE:
                                 all_full = False
                                 token = page.run_js(js_code)
@@ -814,33 +917,25 @@ class RecaptchaFarm:
                                 need_reload = True
 
                             if need_reload:
-                                self._log(f"{tag} 🔄 Nạp lại cookie mới từ accounts.json...")
+                                self._log(f"{tag} 🔄 Nạp lại cookie mới của tài khoản từ accounts.json...")
                                 try:
-                                    with open(acc_path, "r", encoding="utf-8") as f:
-                                        _accs = _json.load(f)
-                                    enabled = [a for a in _accs if a.get("cookie") and a.get("enabled") in (True, "True") and a.get("status") != "dead"]
-                                    if enabled:
-                                        acc = enabled[worker_id % len(enabled)]
-                                        cookie_str = acc["cookie"]
-                                        project_id = _E.get_project(cookie_str) or project_id or "513f3b20-fa17-4be7-89b5-f179860de580"
-                                        target_url = f"https://flow.google.com/project/{project_id}"
+                                    _acc_path2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.json")
+                                    with open(_acc_path2, "r", encoding="utf-8") as f:
+                                        _accs = json.load(f)
+                                    # CHỈ nạp cookie mới của CHÍNH tài khoản này (không round-robin sang TK khác)
+                                    for a in _accs:
+                                        if str(a.get("email") or a.get("id") or "").strip().lower() == str(acc_email).strip().lower() and a.get("cookie"):
+                                            cookie_str = a["cookie"]
+                                            break
+                                    project_id = _E.get_project(cookie_str) or project_id or "513f3b20-fa17-4be7-89b5-f179860de580"
+                                    target_url = f"https://flow.google.com/project/{project_id}"
                                 except Exception as ex:
                                     self._log(f"{tag} ⚠️ Lỗi đọc accounts.json: {ex}")
 
                                 try:
                                     page.get("https://flow.google.com")
                                     time.sleep(2)
-                                    cookie_pairs = [p.strip() for p in cookie_str.split(";") if "=" in p]
-                                    for pair in cookie_pairs:
-                                        name, value = pair.split("=", 1)
-                                        name, value = name.strip(), value.strip()
-                                        try:
-                                            if name.startswith("__Host-"):
-                                                page.run_cdp("Network.setCookie", name=name, value=value, url="https://flow.google.com", path="/", secure=True, httpOnly=True)
-                                            else:
-                                                page.run_cdp("Network.setCookie", name=name, value=value, domain=".google.com", path="/", secure=True)
-                                        except Exception:
-                                            pass
+                                    _inject_cookies(page, cookie_str)
                                     self._log(f"{tag} 🌐 Tải lại {target_url[-40:]} với cookie mới...")
                                     page.get(target_url)
                                     time.sleep(12)
@@ -858,7 +953,7 @@ class RecaptchaFarm:
                         # Log thống kê mỗi ~30 vòng (~1-2 phút)
                         _log_counter += 1
                         if _log_counter % 30 == 0:
-                            self._log(f"{tag} 📊 Tổng token: {self._total_farmed} | V:{self._queues['VIDEO_GENERATION'].qsize()} U:{self._queues['UPLOAD_IMAGE'].qsize()}")
+                            self._log(f"{tag} 📊 Token TK: V:{acc_q['VIDEO_GENERATION'].qsize()} U:{acc_q['UPLOAD_IMAGE'].qsize()} | tổng farm {self._total_farmed}")
 
                     except Exception as e:
                         fail_streak += 1

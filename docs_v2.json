@@ -1,0 +1,4038 @@
+{
+  "success": true,
+  "status": 200,
+  "message": null,
+  "data": {
+    "version": "2.0",
+    "early_access": true,
+    "base_url": "https://seedvis.com/api/v1",
+    "google_base_url": "https://seedvis.com/api/v1/google",
+    "rate_limit_per_minute": 120,
+    "authentication": {
+      "bearer": "Authorization: Bearer YOUR_API_KEY",
+      "direct": "X-API-Key: YOUR_API_KEY",
+      "google": "x-goog-api-key: YOUR_API_KEY"
+    },
+    "models": [
+      {
+        "id": "gpt-image-2",
+        "label": "GPT Image 2.5",
+        "family": "gpt-image",
+        "provider_model": "gpt-image-2",
+        "type": "image",
+        "status": "active",
+        "status_label": "Đang hoạt động",
+        "api_notice": null,
+        "available": true,
+        "protocol": "openai-images",
+        "endpoints": [
+          "/images/generations",
+          "/images/edits"
+        ],
+        "modes": [
+          {
+            "mode": "text-to-image",
+            "method": "POST",
+            "endpoint": "/images/generations",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            }
+          },
+          {
+            "mode": "image-to-image",
+            "method": "POST",
+            "endpoint": "/images/edits",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "image"
+              ],
+              "roles": []
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "aspect_ratio",
+            "type": "select",
+            "label": "Tỉ lệ",
+            "options": [
+              "auto",
+              "1:1",
+              "3:4",
+              "9:16",
+              "4:3",
+              "16:9",
+              "2:3",
+              "3:2",
+              "21:9"
+            ]
+          },
+          {
+            "name": "reference_images",
+            "type": "image[]",
+            "label": "Ảnh tham chiếu"
+          }
+        ],
+        "credit_cost": 4,
+        "show_quantity": true,
+        "quantity_field": null,
+        "documentation": {
+          "mode": "text-to-image",
+          "method": "POST",
+          "path": "/images/generations",
+          "images": {
+            "min": 0,
+            "max": 0,
+            "fields": [],
+            "roles": []
+          },
+          "parameters": [
+            {
+              "name": "model",
+              "type": "string",
+              "required": true,
+              "values": [
+                "gpt-image-2"
+              ],
+              "default": "gpt-image-2",
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "prompt",
+              "type": "string",
+              "required": true,
+              "values": null,
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "n",
+              "type": "integer",
+              "required": false,
+              "values": null,
+              "default": 1,
+              "min": 1,
+              "max": 8,
+              "description": null
+            },
+            {
+              "name": "size",
+              "type": "string",
+              "required": false,
+              "values": [
+                "auto",
+                "1:1",
+                "3:4",
+                "9:16",
+                "4:3",
+                "16:9",
+                "2:3",
+                "3:2",
+                "21:9"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Tỉ lệ"
+            },
+            {
+              "name": "quality",
+              "type": "string",
+              "required": false,
+              "values": [
+                "auto"
+              ],
+              "default": "auto",
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "response_format",
+              "type": "string",
+              "required": false,
+              "values": [
+                "url"
+              ],
+              "default": "url",
+              "min": null,
+              "max": null,
+              "description": null
+            }
+          ],
+          "request_example": {
+            "model": "gpt-image-2",
+            "prompt": "A cinematic product photo",
+            "n": 1,
+            "size": "auto",
+            "quality": "auto",
+            "response_format": "url"
+          },
+          "response_example": {
+            "created": 1788192000,
+            "data": [
+              {
+                "url": "https://cdn.seedvis.com/result.png"
+              }
+            ]
+          }
+        },
+        "documentation_modes": [
+          {
+            "mode": "text-to-image",
+            "method": "POST",
+            "path": "/images/generations",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "gpt-image-2"
+                ],
+                "default": "gpt-image-2",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "n",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": null
+              },
+              {
+                "name": "size",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "auto",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "4:3",
+                  "16:9",
+                  "2:3",
+                  "3:2",
+                  "21:9"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "quality",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "auto"
+                ],
+                "default": "auto",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "response_format",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "url"
+                ],
+                "default": "url",
+                "min": null,
+                "max": null,
+                "description": null
+              }
+            ],
+            "request_example": {
+              "model": "gpt-image-2",
+              "prompt": "A cinematic product photo",
+              "n": 1,
+              "size": "auto",
+              "quality": "auto",
+              "response_format": "url"
+            },
+            "response_example": {
+              "created": 1788192000,
+              "data": [
+                {
+                  "url": "https://cdn.seedvis.com/result.png"
+                }
+              ]
+            }
+          },
+          {
+            "mode": "image-to-image",
+            "method": "POST",
+            "path": "/images/edits",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "image"
+              ],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "gpt-image-2"
+                ],
+                "default": "gpt-image-2",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "image",
+                "type": "image[] (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": 1,
+                "max": 10,
+                "description": "1–10 images, URLs and base64 may be mixed. Aliases: images."
+              },
+              {
+                "name": "image[].file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "n",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": null
+              },
+              {
+                "name": "size",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "auto",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "4:3",
+                  "16:9",
+                  "2:3",
+                  "3:2",
+                  "21:9"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "quality",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "auto"
+                ],
+                "default": "auto",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "response_format",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "url"
+                ],
+                "default": "url",
+                "min": null,
+                "max": null,
+                "description": null
+              }
+            ],
+            "request_example": {
+              "model": "gpt-image-2",
+              "prompt": "A cinematic product photo",
+              "image": [
+                "https://cdn.seedvis.com/reference.png",
+                {
+                  "data": "iVBORw0KGgo…",
+                  "file_name": "photo.png"
+                }
+              ],
+              "n": 1,
+              "size": "auto",
+              "quality": "auto",
+              "response_format": "url"
+            },
+            "response_example": {
+              "created": 1788192000,
+              "data": [
+                {
+                  "url": "https://cdn.seedvis.com/result.png"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "GEM_PIX_2",
+        "label": "Nano Banana Pro",
+        "family": "nano-banana",
+        "provider_model": "GEM_PIX_2",
+        "type": "image",
+        "status": "active",
+        "status_label": "Đang hoạt động",
+        "api_notice": null,
+        "available": true,
+        "protocol": "google-interactions",
+        "endpoints": [
+          "/google/v1beta/interactions"
+        ],
+        "modes": [
+          {
+            "mode": "text-to-image",
+            "method": "POST",
+            "endpoint": "/google/v1beta/interactions",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            }
+          },
+          {
+            "mode": "image-to-image",
+            "method": "POST",
+            "endpoint": "/google/v1beta/interactions",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "max": 9,
+            "name": "reference_images",
+            "type": "image[]",
+            "label": "Ảnh tham chiếu"
+          },
+          {
+            "max": 8,
+            "min": 1,
+            "name": "num_images",
+            "type": "number",
+            "label": "Số ảnh",
+            "default": 1
+          },
+          {
+            "name": "aspect_ratio",
+            "type": "select",
+            "label": "Tỉ lệ",
+            "default": "16:9",
+            "options": [
+              "16:9",
+              "9:16",
+              "1:1",
+              "4:3",
+              "3:4"
+            ]
+          },
+          {
+            "name": "upscale_image",
+            "type": "select",
+            "label": "Upscale",
+            "default": "none",
+            "options": [
+              "none",
+              "2k",
+              "4k"
+            ],
+            "label_position": "outside"
+          }
+        ],
+        "credit_cost": 4,
+        "show_quantity": false,
+        "quantity_field": "num_images",
+        "documentation": {
+          "mode": "text-to-image",
+          "method": "POST",
+          "path": "/google/v1beta/interactions",
+          "images": {
+            "min": 0,
+            "max": 0,
+            "fields": [],
+            "roles": []
+          },
+          "parameters": [
+            {
+              "name": "model",
+              "type": "string",
+              "required": true,
+              "values": [
+                "GEM_PIX_2"
+              ],
+              "default": "GEM_PIX_2",
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "input",
+              "type": "string or content[]",
+              "required": true,
+              "values": null,
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+            },
+            {
+              "name": "mode",
+              "type": "string",
+              "required": false,
+              "values": [
+                "text-to-image"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+            },
+            {
+              "name": "count",
+              "type": "integer",
+              "required": false,
+              "values": null,
+              "default": 1,
+              "min": 1,
+              "max": 8,
+              "description": "Số ảnh"
+            },
+            {
+              "name": "aspect_ratio",
+              "type": "select",
+              "required": false,
+              "values": [
+                "16:9",
+                "9:16",
+                "1:1",
+                "4:3",
+                "3:4"
+              ],
+              "default": "16:9",
+              "min": null,
+              "max": null,
+              "description": "Tỉ lệ"
+            },
+            {
+              "name": "upscale_image",
+              "type": "select",
+              "required": false,
+              "values": [
+                "none",
+                "2k",
+                "4k"
+              ],
+              "default": "none",
+              "min": null,
+              "max": null,
+              "description": "Upscale"
+            }
+          ],
+          "request_example": {
+            "model": "GEM_PIX_2",
+            "input": "Create a clean product poster",
+            "aspect_ratio": "16:9",
+            "upscale_image": "none",
+            "count": 1
+          },
+          "response_example": {
+            "id": "REQUEST_ID",
+            "status": "completed",
+            "is_final": true,
+            "model": "GEM_PIX_2",
+            "mode": "text-to-image",
+            "outputs": [
+              {
+                "type": "image",
+                "url": "https://cdn.seedvis.com/result.png"
+              }
+            ],
+            "references": []
+          },
+          "status_path": "/developer/generations/{id}"
+        },
+        "documentation_modes": [
+          {
+            "mode": "text-to-image",
+            "method": "POST",
+            "path": "/google/v1beta/interactions",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "GEM_PIX_2"
+                ],
+                "default": "GEM_PIX_2",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "input",
+                "type": "string or content[]",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "text-to-image"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": "Số ảnh"
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "default": "16:9",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "upscale_image",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "2k",
+                  "4k"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "GEM_PIX_2",
+              "input": "Create a clean product poster",
+              "aspect_ratio": "16:9",
+              "upscale_image": "none",
+              "count": 1
+            },
+            "response_example": {
+              "id": "REQUEST_ID",
+              "status": "completed",
+              "is_final": true,
+              "model": "GEM_PIX_2",
+              "mode": "text-to-image",
+              "outputs": [
+                {
+                  "type": "image",
+                  "url": "https://cdn.seedvis.com/result.png"
+                }
+              ],
+              "references": []
+            },
+            "status_path": "/developer/generations/{id}"
+          },
+          {
+            "mode": "image-to-image",
+            "method": "POST",
+            "path": "/google/v1beta/interactions",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "GEM_PIX_2"
+                ],
+                "default": "GEM_PIX_2",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "input",
+                "type": "string or content[]",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+              },
+              {
+                "name": "reference_images",
+                "type": "image[] (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": 1,
+                "max": 10,
+                "description": "1–10 images, URLs and base64 may be mixed. Aliases: images, image parts inside input."
+              },
+              {
+                "name": "reference_images[].file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "image-to-image"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": "Số ảnh"
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "default": "16:9",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "upscale_image",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "2k",
+                  "4k"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "GEM_PIX_2",
+              "input": "Create a clean product poster",
+              "reference_images": [
+                "https://cdn.seedvis.com/reference.png",
+                {
+                  "data": "iVBORw0KGgo…",
+                  "file_name": "photo.png"
+                }
+              ],
+              "aspect_ratio": "16:9",
+              "upscale_image": "none",
+              "count": 1
+            },
+            "response_example": {
+              "id": "REQUEST_ID",
+              "status": "completed",
+              "is_final": true,
+              "model": "GEM_PIX_2",
+              "mode": "image-to-image",
+              "outputs": [
+                {
+                  "type": "image",
+                  "url": "https://cdn.seedvis.com/result.png"
+                }
+              ],
+              "references": [
+                {
+                  "field": "reference_images",
+                  "index": 0,
+                  "role": null,
+                  "source": "url",
+                  "url": "https://cdn.seedvis.com/references/…png"
+                }
+              ]
+            },
+            "status_path": "/developer/generations/{id}"
+          }
+        ]
+      },
+      {
+        "id": "NARWHAL",
+        "label": "Nano Banana 2",
+        "family": "nano-banana",
+        "provider_model": "NARWHAL",
+        "type": "image",
+        "status": "active",
+        "status_label": "Đang hoạt động",
+        "api_notice": null,
+        "available": true,
+        "protocol": "google-interactions",
+        "endpoints": [
+          "/google/v1beta/interactions"
+        ],
+        "modes": [
+          {
+            "mode": "text-to-image",
+            "method": "POST",
+            "endpoint": "/google/v1beta/interactions",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            }
+          },
+          {
+            "mode": "image-to-image",
+            "method": "POST",
+            "endpoint": "/google/v1beta/interactions",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "max": 9,
+            "name": "reference_images",
+            "type": "image[]",
+            "label": "Ảnh tham chiếu"
+          },
+          {
+            "max": 8,
+            "min": 1,
+            "name": "num_images",
+            "type": "number",
+            "label": "Số ảnh",
+            "default": 1
+          },
+          {
+            "name": "aspect_ratio",
+            "type": "select",
+            "label": "Tỉ lệ",
+            "default": "16:9",
+            "options": [
+              "16:9",
+              "9:16",
+              "1:1",
+              "4:3",
+              "3:4"
+            ]
+          },
+          {
+            "name": "upscale_image",
+            "type": "select",
+            "label": "Upscale",
+            "default": "none",
+            "options": [
+              "none",
+              "2k",
+              "4k"
+            ],
+            "label_position": "outside"
+          }
+        ],
+        "credit_cost": 4,
+        "show_quantity": false,
+        "quantity_field": "num_images",
+        "documentation": {
+          "mode": "text-to-image",
+          "method": "POST",
+          "path": "/google/v1beta/interactions",
+          "images": {
+            "min": 0,
+            "max": 0,
+            "fields": [],
+            "roles": []
+          },
+          "parameters": [
+            {
+              "name": "model",
+              "type": "string",
+              "required": true,
+              "values": [
+                "NARWHAL"
+              ],
+              "default": "NARWHAL",
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "input",
+              "type": "string or content[]",
+              "required": true,
+              "values": null,
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+            },
+            {
+              "name": "mode",
+              "type": "string",
+              "required": false,
+              "values": [
+                "text-to-image"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+            },
+            {
+              "name": "count",
+              "type": "integer",
+              "required": false,
+              "values": null,
+              "default": 1,
+              "min": 1,
+              "max": 8,
+              "description": "Số ảnh"
+            },
+            {
+              "name": "aspect_ratio",
+              "type": "select",
+              "required": false,
+              "values": [
+                "16:9",
+                "9:16",
+                "1:1",
+                "4:3",
+                "3:4"
+              ],
+              "default": "16:9",
+              "min": null,
+              "max": null,
+              "description": "Tỉ lệ"
+            },
+            {
+              "name": "upscale_image",
+              "type": "select",
+              "required": false,
+              "values": [
+                "none",
+                "2k",
+                "4k"
+              ],
+              "default": "none",
+              "min": null,
+              "max": null,
+              "description": "Upscale"
+            }
+          ],
+          "request_example": {
+            "model": "NARWHAL",
+            "input": "Create a clean product poster",
+            "aspect_ratio": "16:9",
+            "upscale_image": "none",
+            "count": 1
+          },
+          "response_example": {
+            "id": "REQUEST_ID",
+            "status": "completed",
+            "is_final": true,
+            "model": "NARWHAL",
+            "mode": "text-to-image",
+            "outputs": [
+              {
+                "type": "image",
+                "url": "https://cdn.seedvis.com/result.png"
+              }
+            ],
+            "references": []
+          },
+          "status_path": "/developer/generations/{id}"
+        },
+        "documentation_modes": [
+          {
+            "mode": "text-to-image",
+            "method": "POST",
+            "path": "/google/v1beta/interactions",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "NARWHAL"
+                ],
+                "default": "NARWHAL",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "input",
+                "type": "string or content[]",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "text-to-image"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": "Số ảnh"
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "default": "16:9",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "upscale_image",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "2k",
+                  "4k"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "NARWHAL",
+              "input": "Create a clean product poster",
+              "aspect_ratio": "16:9",
+              "upscale_image": "none",
+              "count": 1
+            },
+            "response_example": {
+              "id": "REQUEST_ID",
+              "status": "completed",
+              "is_final": true,
+              "model": "NARWHAL",
+              "mode": "text-to-image",
+              "outputs": [
+                {
+                  "type": "image",
+                  "url": "https://cdn.seedvis.com/result.png"
+                }
+              ],
+              "references": []
+            },
+            "status_path": "/developer/generations/{id}"
+          },
+          {
+            "mode": "image-to-image",
+            "method": "POST",
+            "path": "/google/v1beta/interactions",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "NARWHAL"
+                ],
+                "default": "NARWHAL",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "input",
+                "type": "string or content[]",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+              },
+              {
+                "name": "reference_images",
+                "type": "image[] (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": 1,
+                "max": 10,
+                "description": "1–10 images, URLs and base64 may be mixed. Aliases: images, image parts inside input."
+              },
+              {
+                "name": "reference_images[].file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "image-to-image"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": "Số ảnh"
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "default": "16:9",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "upscale_image",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "2k",
+                  "4k"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "NARWHAL",
+              "input": "Create a clean product poster",
+              "reference_images": [
+                "https://cdn.seedvis.com/reference.png",
+                {
+                  "data": "iVBORw0KGgo…",
+                  "file_name": "photo.png"
+                }
+              ],
+              "aspect_ratio": "16:9",
+              "upscale_image": "none",
+              "count": 1
+            },
+            "response_example": {
+              "id": "REQUEST_ID",
+              "status": "completed",
+              "is_final": true,
+              "model": "NARWHAL",
+              "mode": "image-to-image",
+              "outputs": [
+                {
+                  "type": "image",
+                  "url": "https://cdn.seedvis.com/result.png"
+                }
+              ],
+              "references": [
+                {
+                  "field": "reference_images",
+                  "index": 0,
+                  "role": null,
+                  "source": "url",
+                  "url": "https://cdn.seedvis.com/references/…png"
+                }
+              ]
+            },
+            "status_path": "/developer/generations/{id}"
+          }
+        ]
+      },
+      {
+        "id": "HARBOR_SEAL",
+        "label": "Nano Banana Lite",
+        "family": "nano-banana",
+        "provider_model": "HARBOR_SEAL",
+        "type": "image",
+        "status": "active",
+        "status_label": "Đang hoạt động",
+        "api_notice": null,
+        "available": true,
+        "protocol": "google-interactions",
+        "endpoints": [
+          "/google/v1beta/interactions"
+        ],
+        "modes": [
+          {
+            "mode": "text-to-image",
+            "method": "POST",
+            "endpoint": "/google/v1beta/interactions",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            }
+          },
+          {
+            "mode": "image-to-image",
+            "method": "POST",
+            "endpoint": "/google/v1beta/interactions",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "max": 9,
+            "name": "reference_images",
+            "type": "image[]",
+            "label": "Ảnh tham chiếu"
+          },
+          {
+            "max": 8,
+            "min": 1,
+            "name": "num_images",
+            "type": "number",
+            "label": "Số ảnh",
+            "default": 1
+          },
+          {
+            "name": "aspect_ratio",
+            "type": "select",
+            "label": "Tỉ lệ",
+            "default": "16:9",
+            "options": [
+              "16:9",
+              "9:16",
+              "1:1",
+              "4:3",
+              "3:4"
+            ]
+          },
+          {
+            "name": "upscale_image",
+            "type": "select",
+            "label": "Upscale",
+            "default": "none",
+            "options": [
+              "none",
+              "2k",
+              "4k"
+            ],
+            "label_position": "outside"
+          }
+        ],
+        "credit_cost": 3,
+        "show_quantity": false,
+        "quantity_field": "num_images",
+        "documentation": {
+          "mode": "text-to-image",
+          "method": "POST",
+          "path": "/google/v1beta/interactions",
+          "images": {
+            "min": 0,
+            "max": 0,
+            "fields": [],
+            "roles": []
+          },
+          "parameters": [
+            {
+              "name": "model",
+              "type": "string",
+              "required": true,
+              "values": [
+                "HARBOR_SEAL"
+              ],
+              "default": "HARBOR_SEAL",
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "input",
+              "type": "string or content[]",
+              "required": true,
+              "values": null,
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+            },
+            {
+              "name": "mode",
+              "type": "string",
+              "required": false,
+              "values": [
+                "text-to-image"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+            },
+            {
+              "name": "count",
+              "type": "integer",
+              "required": false,
+              "values": null,
+              "default": 1,
+              "min": 1,
+              "max": 8,
+              "description": "Số ảnh"
+            },
+            {
+              "name": "aspect_ratio",
+              "type": "select",
+              "required": false,
+              "values": [
+                "16:9",
+                "9:16",
+                "1:1",
+                "4:3",
+                "3:4"
+              ],
+              "default": "16:9",
+              "min": null,
+              "max": null,
+              "description": "Tỉ lệ"
+            },
+            {
+              "name": "upscale_image",
+              "type": "select",
+              "required": false,
+              "values": [
+                "none",
+                "2k",
+                "4k"
+              ],
+              "default": "none",
+              "min": null,
+              "max": null,
+              "description": "Upscale"
+            }
+          ],
+          "request_example": {
+            "model": "HARBOR_SEAL",
+            "input": "Create a clean product poster",
+            "aspect_ratio": "16:9",
+            "upscale_image": "none",
+            "count": 1
+          },
+          "response_example": {
+            "id": "REQUEST_ID",
+            "status": "completed",
+            "is_final": true,
+            "model": "HARBOR_SEAL",
+            "mode": "text-to-image",
+            "outputs": [
+              {
+                "type": "image",
+                "url": "https://cdn.seedvis.com/result.png"
+              }
+            ],
+            "references": []
+          },
+          "status_path": "/developer/generations/{id}"
+        },
+        "documentation_modes": [
+          {
+            "mode": "text-to-image",
+            "method": "POST",
+            "path": "/google/v1beta/interactions",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "HARBOR_SEAL"
+                ],
+                "default": "HARBOR_SEAL",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "input",
+                "type": "string or content[]",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "text-to-image"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": "Số ảnh"
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "default": "16:9",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "upscale_image",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "2k",
+                  "4k"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "HARBOR_SEAL",
+              "input": "Create a clean product poster",
+              "aspect_ratio": "16:9",
+              "upscale_image": "none",
+              "count": 1
+            },
+            "response_example": {
+              "id": "REQUEST_ID",
+              "status": "completed",
+              "is_final": true,
+              "model": "HARBOR_SEAL",
+              "mode": "text-to-image",
+              "outputs": [
+                {
+                  "type": "image",
+                  "url": "https://cdn.seedvis.com/result.png"
+                }
+              ],
+              "references": []
+            },
+            "status_path": "/developer/generations/{id}"
+          },
+          {
+            "mode": "image-to-image",
+            "method": "POST",
+            "path": "/google/v1beta/interactions",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "HARBOR_SEAL"
+                ],
+                "default": "HARBOR_SEAL",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "input",
+                "type": "string or content[]",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Prompt text, or Gemini-style parts (text + inlineData/fileData images)."
+              },
+              {
+                "name": "reference_images",
+                "type": "image[] (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": 1,
+                "max": 10,
+                "description": "1–10 images, URLs and base64 may be mixed. Aliases: images, image parts inside input."
+              },
+              {
+                "name": "reference_images[].file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "image-to-image"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": "Số ảnh"
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "default": "16:9",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "upscale_image",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "2k",
+                  "4k"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "HARBOR_SEAL",
+              "input": "Create a clean product poster",
+              "reference_images": [
+                "https://cdn.seedvis.com/reference.png",
+                {
+                  "data": "iVBORw0KGgo…",
+                  "file_name": "photo.png"
+                }
+              ],
+              "aspect_ratio": "16:9",
+              "upscale_image": "none",
+              "count": 1
+            },
+            "response_example": {
+              "id": "REQUEST_ID",
+              "status": "completed",
+              "is_final": true,
+              "model": "HARBOR_SEAL",
+              "mode": "image-to-image",
+              "outputs": [
+                {
+                  "type": "image",
+                  "url": "https://cdn.seedvis.com/result.png"
+                }
+              ],
+              "references": [
+                {
+                  "field": "reference_images",
+                  "index": 0,
+                  "role": null,
+                  "source": "url",
+                  "url": "https://cdn.seedvis.com/references/…png"
+                }
+              ]
+            },
+            "status_path": "/developer/generations/{id}"
+          }
+        ]
+      },
+      {
+        "id": "Veo-3.1",
+        "label": "Google Veo 3.1",
+        "family": "veo-3.1",
+        "provider_model": null,
+        "type": "video",
+        "status": "active",
+        "status_label": "Đang hoạt động",
+        "api_notice": "",
+        "available": true,
+        "protocol": "google-veo",
+        "endpoints": [
+          "/developer/generations"
+        ],
+        "modes": [
+          {
+            "mode": "text-to-video",
+            "method": "POST",
+            "endpoint": "/developer/generations",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            }
+          },
+          {
+            "mode": "image-to-video",
+            "method": "POST",
+            "endpoint": "/developer/generations",
+            "images": {
+              "min": 1,
+              "max": 1,
+              "fields": [
+                "image"
+              ],
+              "roles": [
+                "start"
+              ]
+            }
+          },
+          {
+            "mode": "multi-image-to-video",
+            "method": "POST",
+            "endpoint": "/developer/generations",
+            "images": {
+              "min": 1,
+              "max": 3,
+              "fields": [
+                "referenceImages"
+              ],
+              "roles": []
+            }
+          },
+          {
+            "mode": "batch-frame",
+            "method": "POST",
+            "endpoint": "/developer/generations",
+            "images": {
+              "min": 2,
+              "max": 2,
+              "fields": [
+                "image",
+                "lastFrame"
+              ],
+              "roles": [
+                "start",
+                "end"
+              ]
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "start_image",
+            "type": "image",
+            "label": "Bắt đầu"
+          },
+          {
+            "name": "end_image",
+            "type": "image",
+            "label": "Kết thúc"
+          },
+          {
+            "name": "aspect_ratio",
+            "type": "select",
+            "label": "Tỉ lệ",
+            "default": "16:9",
+            "options": [
+              "16:9",
+              "9:16"
+            ],
+            "user_default": "9:16"
+          },
+          {
+            "max": 4,
+            "min": 1,
+            "name": "count",
+            "type": "number",
+            "label": "Số video",
+            "default": 1
+          },
+          {
+            "name": "duration",
+            "type": "select",
+            "label": "Thời lượng",
+            "default": "8s",
+            "options": [
+              "4s",
+              "6s",
+              "8s"
+            ],
+            "user_default": "8s"
+          },
+          {
+            "name": "upscale_video",
+            "type": "select",
+            "label": "Upscale",
+            "default": "none",
+            "options": [
+              "none",
+              "1080p"
+            ],
+            "label_position": "outside"
+          },
+          {
+            "max": 3,
+            "name": "images",
+            "type": "image[]",
+            "label": "Ảnh tham chiếu",
+            "required": true
+          }
+        ],
+        "credit_cost": 6,
+        "show_quantity": false,
+        "quantity_field": "count",
+        "documentation": {
+          "mode": "text-to-video",
+          "method": "POST",
+          "path": "/developer/generations",
+          "images": {
+            "min": 0,
+            "max": 0,
+            "fields": [],
+            "roles": []
+          },
+          "parameters": [
+            {
+              "name": "model",
+              "type": "string",
+              "required": true,
+              "values": [
+                "Veo-3.1"
+              ],
+              "default": "Veo-3.1",
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "prompt",
+              "type": "string",
+              "required": true,
+              "values": null,
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "mode",
+              "type": "string",
+              "required": false,
+              "values": [
+                "text-to-video"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+            },
+            {
+              "name": "aspect_ratio",
+              "type": "select",
+              "required": false,
+              "values": [
+                "16:9",
+                "9:16"
+              ],
+              "default": "9:16",
+              "min": null,
+              "max": null,
+              "description": "Tỉ lệ"
+            },
+            {
+              "name": "count",
+              "type": "number",
+              "required": false,
+              "values": null,
+              "default": 1,
+              "min": 1,
+              "max": 4,
+              "description": "Số video"
+            },
+            {
+              "name": "duration",
+              "type": "select",
+              "required": false,
+              "values": [
+                "4s",
+                "6s",
+                "8s"
+              ],
+              "default": "8s",
+              "min": null,
+              "max": null,
+              "description": "Thời lượng"
+            },
+            {
+              "name": "upscale_video",
+              "type": "select",
+              "required": false,
+              "values": [
+                "none",
+                "1080p"
+              ],
+              "default": "none",
+              "min": null,
+              "max": null,
+              "description": "Upscale"
+            }
+          ],
+          "request_example": {
+            "model": "Veo-3.1",
+            "prompt": "A cinematic sunrise over the sea",
+            "mode": "text-to-video",
+            "aspect_ratio": "9:16",
+            "count": 1,
+            "duration": "8s",
+            "upscale_video": "none"
+          },
+          "response_example": {
+            "success": true,
+            "status": 202,
+            "message": null,
+            "data": {
+              "id": "REQUEST_ID",
+              "object": "generation",
+              "status": "queued",
+              "is_final": false,
+              "model": "Veo-3.1",
+              "mode": "text-to-video",
+              "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+              "next": {
+                "action": "poll",
+                "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                "after_seconds": 10
+              },
+              "outputs": [],
+              "references": []
+            },
+            "_then_after_polling": {
+              "id": "REQUEST_ID",
+              "object": "generation",
+              "status": "completed",
+              "is_final": true,
+              "model": "Veo-3.1",
+              "mode": "text-to-video",
+              "message": "Completed.",
+              "next": {
+                "action": "done"
+              },
+              "outputs": [
+                {
+                  "type": "video",
+                  "url": "https://cdn.seedvis.com/result.mp4"
+                }
+              ],
+              "references": []
+            }
+          },
+          "alternate_path": "/google/v1beta/models/Veo-3.1:predictLongRunning",
+          "status_path": "/developer/generations/{id}"
+        },
+        "documentation_modes": [
+          {
+            "mode": "text-to-video",
+            "method": "POST",
+            "path": "/developer/generations",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "Veo-3.1"
+                ],
+                "default": "Veo-3.1",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "text-to-video"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "default": "9:16",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "count",
+                "type": "number",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 4,
+                "description": "Số video"
+              },
+              {
+                "name": "duration",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "4s",
+                  "6s",
+                  "8s"
+                ],
+                "default": "8s",
+                "min": null,
+                "max": null,
+                "description": "Thời lượng"
+              },
+              {
+                "name": "upscale_video",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "1080p"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "Veo-3.1",
+              "prompt": "A cinematic sunrise over the sea",
+              "mode": "text-to-video",
+              "aspect_ratio": "9:16",
+              "count": 1,
+              "duration": "8s",
+              "upscale_video": "none"
+            },
+            "response_example": {
+              "success": true,
+              "status": 202,
+              "message": null,
+              "data": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "queued",
+                "is_final": false,
+                "model": "Veo-3.1",
+                "mode": "text-to-video",
+                "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+                "next": {
+                  "action": "poll",
+                  "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                  "after_seconds": 10
+                },
+                "outputs": [],
+                "references": []
+              },
+              "_then_after_polling": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "completed",
+                "is_final": true,
+                "model": "Veo-3.1",
+                "mode": "text-to-video",
+                "message": "Completed.",
+                "next": {
+                  "action": "done"
+                },
+                "outputs": [
+                  {
+                    "type": "video",
+                    "url": "https://cdn.seedvis.com/result.mp4"
+                  }
+                ],
+                "references": []
+              }
+            },
+            "alternate_path": "/google/v1beta/models/Veo-3.1:predictLongRunning",
+            "status_path": "/developer/generations/{id}"
+          },
+          {
+            "mode": "image-to-video",
+            "method": "POST",
+            "path": "/developer/generations",
+            "images": {
+              "min": 1,
+              "max": 1,
+              "fields": [
+                "image"
+              ],
+              "roles": [
+                "start"
+              ]
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "Veo-3.1"
+                ],
+                "default": "Veo-3.1",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "image",
+                "type": "image (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Exactly one image. Aliases: reference_images, images, image_url."
+              },
+              {
+                "name": "image.file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "image-to-video"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "default": "9:16",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "count",
+                "type": "number",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 4,
+                "description": "Số video"
+              },
+              {
+                "name": "duration",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "4s",
+                  "6s",
+                  "8s"
+                ],
+                "default": "8s",
+                "min": null,
+                "max": null,
+                "description": "Thời lượng"
+              },
+              {
+                "name": "upscale_video",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "1080p"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "Veo-3.1",
+              "prompt": "A cinematic sunrise over the sea",
+              "mode": "image-to-video",
+              "image": {
+                "data": "iVBORw0KGgo…",
+                "file_name": "photo.png"
+              },
+              "aspect_ratio": "9:16",
+              "count": 1,
+              "duration": "8s",
+              "upscale_video": "none"
+            },
+            "response_example": {
+              "success": true,
+              "status": 202,
+              "message": null,
+              "data": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "queued",
+                "is_final": false,
+                "model": "Veo-3.1",
+                "mode": "image-to-video",
+                "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+                "next": {
+                  "action": "poll",
+                  "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                  "after_seconds": 10
+                },
+                "outputs": [],
+                "references": [
+                  {
+                    "field": "image",
+                    "index": 0,
+                    "role": "start",
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              },
+              "_then_after_polling": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "completed",
+                "is_final": true,
+                "model": "Veo-3.1",
+                "mode": "image-to-video",
+                "message": "Completed.",
+                "next": {
+                  "action": "done"
+                },
+                "outputs": [
+                  {
+                    "type": "video",
+                    "url": "https://cdn.seedvis.com/result.mp4"
+                  }
+                ],
+                "references": [
+                  {
+                    "field": "image",
+                    "index": 0,
+                    "role": "start",
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              }
+            },
+            "alternate_path": "/google/v1beta/models/Veo-3.1:predictLongRunning",
+            "status_path": "/developer/generations/{id}"
+          },
+          {
+            "mode": "multi-image-to-video",
+            "method": "POST",
+            "path": "/developer/generations",
+            "images": {
+              "min": 1,
+              "max": 3,
+              "fields": [
+                "referenceImages"
+              ],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "Veo-3.1"
+                ],
+                "default": "Veo-3.1",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "referenceImages",
+                "type": "image[] (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": 1,
+                "max": 3,
+                "description": "1–3 images, URLs and base64 may be mixed. Aliases: reference_images, images, image_url."
+              },
+              {
+                "name": "referenceImages[].file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "multi-image-to-video"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "default": "9:16",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "count",
+                "type": "number",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 4,
+                "description": "Số video"
+              },
+              {
+                "name": "duration",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "4s",
+                  "6s",
+                  "8s"
+                ],
+                "default": "8s",
+                "min": null,
+                "max": null,
+                "description": "Thời lượng"
+              },
+              {
+                "name": "upscale_video",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "1080p"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "Veo-3.1",
+              "prompt": "A cinematic sunrise over the sea",
+              "mode": "multi-image-to-video",
+              "referenceImages": [
+                "https://cdn.seedvis.com/reference.png",
+                {
+                  "data": "iVBORw0KGgo…",
+                  "file_name": "photo.png"
+                }
+              ],
+              "aspect_ratio": "9:16",
+              "count": 1,
+              "duration": "8s",
+              "upscale_video": "none"
+            },
+            "response_example": {
+              "success": true,
+              "status": 202,
+              "message": null,
+              "data": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "queued",
+                "is_final": false,
+                "model": "Veo-3.1",
+                "mode": "multi-image-to-video",
+                "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+                "next": {
+                  "action": "poll",
+                  "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                  "after_seconds": 10
+                },
+                "outputs": [],
+                "references": [
+                  {
+                    "field": "referenceImages",
+                    "index": 0,
+                    "role": null,
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              },
+              "_then_after_polling": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "completed",
+                "is_final": true,
+                "model": "Veo-3.1",
+                "mode": "multi-image-to-video",
+                "message": "Completed.",
+                "next": {
+                  "action": "done"
+                },
+                "outputs": [
+                  {
+                    "type": "video",
+                    "url": "https://cdn.seedvis.com/result.mp4"
+                  }
+                ],
+                "references": [
+                  {
+                    "field": "referenceImages",
+                    "index": 0,
+                    "role": null,
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              }
+            },
+            "alternate_path": "/google/v1beta/models/Veo-3.1:predictLongRunning",
+            "status_path": "/developer/generations/{id}"
+          },
+          {
+            "mode": "batch-frame",
+            "method": "POST",
+            "path": "/developer/generations",
+            "images": {
+              "min": 2,
+              "max": 2,
+              "fields": [
+                "image",
+                "lastFrame"
+              ],
+              "roles": [
+                "start",
+                "end"
+              ]
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "Veo-3.1"
+                ],
+                "default": "Veo-3.1",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "image",
+                "type": "image (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Start frame. Alias: start_image."
+              },
+              {
+                "name": "image.file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "lastFrame",
+                "type": "image (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "End frame. Alias: end_image."
+              },
+              {
+                "name": "lastFrame.file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "batch-frame"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "default": "9:16",
+                "min": null,
+                "max": null,
+                "description": "Tỉ lệ"
+              },
+              {
+                "name": "count",
+                "type": "number",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 4,
+                "description": "Số video"
+              },
+              {
+                "name": "duration",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "4s",
+                  "6s",
+                  "8s"
+                ],
+                "default": "8s",
+                "min": null,
+                "max": null,
+                "description": "Thời lượng"
+              },
+              {
+                "name": "upscale_video",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "none",
+                  "1080p"
+                ],
+                "default": "none",
+                "min": null,
+                "max": null,
+                "description": "Upscale"
+              }
+            ],
+            "request_example": {
+              "model": "Veo-3.1",
+              "prompt": "A cinematic product photo",
+              "mode": "batch-frame",
+              "image": "https://cdn.seedvis.com/reference.png",
+              "lastFrame": {
+                "data": "iVBORw0KGgo…",
+                "file_name": "last-frame.png"
+              },
+              "aspect_ratio": "9:16",
+              "count": 1,
+              "duration": "8s",
+              "upscale_video": "none"
+            },
+            "response_example": {
+              "success": true,
+              "status": 202,
+              "message": null,
+              "data": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "queued",
+                "is_final": false,
+                "model": "Veo-3.1",
+                "mode": "batch-frame",
+                "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+                "next": {
+                  "action": "poll",
+                  "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                  "after_seconds": 10
+                },
+                "outputs": [],
+                "references": [
+                  {
+                    "field": "image",
+                    "index": 0,
+                    "role": "start",
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              },
+              "_then_after_polling": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "completed",
+                "is_final": true,
+                "model": "Veo-3.1",
+                "mode": "batch-frame",
+                "message": "Completed.",
+                "next": {
+                  "action": "done"
+                },
+                "outputs": [
+                  {
+                    "type": "video",
+                    "url": "https://cdn.seedvis.com/result.mp4"
+                  }
+                ],
+                "references": [
+                  {
+                    "field": "image",
+                    "index": 0,
+                    "role": "start",
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              }
+            },
+            "alternate_path": "/google/v1beta/models/Veo-3.1:predictLongRunning",
+            "status_path": "/developer/generations/{id}"
+          }
+        ]
+      },
+      {
+        "id": "seedance_2.0_fast",
+        "label": "Seedance 2.0 fast",
+        "family": "seedance",
+        "provider_model": "seedance_2.0_fast",
+        "type": "video",
+        "status": "active",
+        "status_label": "Đang hoạt động",
+        "api_notice": "<h2><span style=\"font-size: 24px\"><span><b>LƯU Ý MODEL SEEDANCE:</b></span></span></h2><div><ul><li><span>Nguồn</span>: Seedance 2.5/2.0 Fast từ <span><b>Dola</b></span>.</li><li><span>Tham chiếu người thật: <b>không hỗ trợ</b></span><span> </span>(thỉnh thoảng vẫn tạo được).</li><li><span>Kiểm duyệt</span>: Dola<span> duyệt gắt</span>, cần tối ưu prompt (có hướng dẫn). Dola hay gặp lỗi vặt hoặc bị duyệt nhầm, tạo lại vài lần sẽ qua.</li><li><span>Khuyên dùng</span>: Phù hợp nhất để tích hợp dự án riêng, nên có sẵn cơ chế retry để chạy ổn định.</li></ul></div>",
+        "available": true,
+        "protocol": "seedvis",
+        "endpoints": [
+          "/developer/generations"
+        ],
+        "modes": [
+          {
+            "mode": "text-to-video",
+            "method": "POST",
+            "endpoint": "/developer/generations",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            }
+          },
+          {
+            "mode": "image-to-video",
+            "method": "POST",
+            "endpoint": "/developer/generations",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "aspect_ratio",
+            "type": "select",
+            "label": "Tỷ lệ",
+            "options": [
+              "9:16",
+              "16:9",
+              "1:1",
+              "3:4",
+              "4:3",
+              "21:9"
+            ]
+          },
+          {
+            "name": "duration",
+            "type": "select",
+            "label": "Thời lượng (giây)",
+            "user_default": 5,
+            "options": [
+              5,
+              10,
+              15
+            ],
+            "default": 5
+          },
+          {
+            "max": 10,
+            "name": "reference_images",
+            "type": "image[]",
+            "label": "Ảnh tham chiếu"
+          }
+        ],
+        "credit_cost": 20,
+        "show_quantity": true,
+        "quantity_field": null,
+        "documentation": {
+          "mode": "text-to-video",
+          "method": "POST",
+          "path": "/developer/generations",
+          "images": {
+            "min": 0,
+            "max": 0,
+            "fields": [],
+            "roles": []
+          },
+          "parameters": [
+            {
+              "name": "model",
+              "type": "string",
+              "required": true,
+              "values": [
+                "seedance_2.0_fast"
+              ],
+              "default": "seedance_2.0_fast",
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "prompt",
+              "type": "string",
+              "required": true,
+              "values": null,
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "mode",
+              "type": "string",
+              "required": false,
+              "values": [
+                "text-to-video"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+            },
+            {
+              "name": "aspect_ratio",
+              "type": "select",
+              "required": false,
+              "values": [
+                "9:16",
+                "16:9",
+                "1:1",
+                "3:4",
+                "4:3",
+                "21:9"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Tỷ lệ"
+            },
+            {
+              "name": "duration",
+              "type": "select",
+              "required": false,
+              "values": [
+                5,
+                10,
+                15
+              ],
+              "default": 5,
+              "min": null,
+              "max": null,
+              "description": "Thời lượng (giây)"
+            },
+            {
+              "name": "count",
+              "type": "integer",
+              "required": false,
+              "values": null,
+              "default": 1,
+              "min": 1,
+              "max": 8,
+              "description": null
+            }
+          ],
+          "request_example": {
+            "model": "seedance_2.0_fast",
+            "prompt": "A cinematic sunrise over the sea",
+            "mode": "text-to-video",
+            "aspect_ratio": "9:16",
+            "duration": 5
+          },
+          "response_example": {
+            "success": true,
+            "status": 202,
+            "message": null,
+            "data": {
+              "id": "REQUEST_ID",
+              "object": "generation",
+              "status": "queued",
+              "is_final": false,
+              "model": "seedance_2.0_fast",
+              "mode": "text-to-video",
+              "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+              "next": {
+                "action": "poll",
+                "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                "after_seconds": 10
+              },
+              "outputs": [],
+              "references": []
+            },
+            "_then_after_polling": {
+              "id": "REQUEST_ID",
+              "object": "generation",
+              "status": "completed",
+              "is_final": true,
+              "model": "seedance_2.0_fast",
+              "mode": "text-to-video",
+              "message": "Completed.",
+              "next": {
+                "action": "done"
+              },
+              "outputs": [
+                {
+                  "type": "video",
+                  "url": "https://cdn.seedvis.com/result.mp4"
+                }
+              ],
+              "references": []
+            }
+          },
+          "status_path": "/developer/generations/{id}"
+        },
+        "documentation_modes": [
+          {
+            "mode": "text-to-video",
+            "method": "POST",
+            "path": "/developer/generations",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "seedance_2.0_fast"
+                ],
+                "default": "seedance_2.0_fast",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "text-to-video"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "9:16",
+                  "16:9",
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "21:9"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Tỷ lệ"
+              },
+              {
+                "name": "duration",
+                "type": "select",
+                "required": false,
+                "values": [
+                  5,
+                  10,
+                  15
+                ],
+                "default": 5,
+                "min": null,
+                "max": null,
+                "description": "Thời lượng (giây)"
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": null
+              }
+            ],
+            "request_example": {
+              "model": "seedance_2.0_fast",
+              "prompt": "A cinematic sunrise over the sea",
+              "mode": "text-to-video",
+              "aspect_ratio": "9:16",
+              "duration": 5
+            },
+            "response_example": {
+              "success": true,
+              "status": 202,
+              "message": null,
+              "data": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "queued",
+                "is_final": false,
+                "model": "seedance_2.0_fast",
+                "mode": "text-to-video",
+                "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+                "next": {
+                  "action": "poll",
+                  "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                  "after_seconds": 10
+                },
+                "outputs": [],
+                "references": []
+              },
+              "_then_after_polling": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "completed",
+                "is_final": true,
+                "model": "seedance_2.0_fast",
+                "mode": "text-to-video",
+                "message": "Completed.",
+                "next": {
+                  "action": "done"
+                },
+                "outputs": [
+                  {
+                    "type": "video",
+                    "url": "https://cdn.seedvis.com/result.mp4"
+                  }
+                ],
+                "references": []
+              }
+            },
+            "status_path": "/developer/generations/{id}"
+          },
+          {
+            "mode": "image-to-video",
+            "method": "POST",
+            "path": "/developer/generations",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "seedance_2.0_fast"
+                ],
+                "default": "seedance_2.0_fast",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "reference_images",
+                "type": "image[] (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": 1,
+                "max": 10,
+                "description": "1–10 images, URLs and base64 may be mixed. Aliases: reference_images, images, image_url."
+              },
+              {
+                "name": "reference_images[].file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "image-to-video"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "9:16",
+                  "16:9",
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "21:9"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Tỷ lệ"
+              },
+              {
+                "name": "duration",
+                "type": "select",
+                "required": false,
+                "values": [
+                  5,
+                  10,
+                  15
+                ],
+                "default": 5,
+                "min": null,
+                "max": null,
+                "description": "Thời lượng (giây)"
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": null
+              }
+            ],
+            "request_example": {
+              "model": "seedance_2.0_fast",
+              "prompt": "A cinematic sunrise over the sea",
+              "mode": "image-to-video",
+              "reference_images": [
+                "https://cdn.seedvis.com/reference.png",
+                {
+                  "data": "iVBORw0KGgo…",
+                  "file_name": "photo.png"
+                }
+              ],
+              "aspect_ratio": "9:16",
+              "duration": 5
+            },
+            "response_example": {
+              "success": true,
+              "status": 202,
+              "message": null,
+              "data": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "queued",
+                "is_final": false,
+                "model": "seedance_2.0_fast",
+                "mode": "image-to-video",
+                "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+                "next": {
+                  "action": "poll",
+                  "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                  "after_seconds": 10
+                },
+                "outputs": [],
+                "references": [
+                  {
+                    "field": "reference_images",
+                    "index": 0,
+                    "role": "start",
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              },
+              "_then_after_polling": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "completed",
+                "is_final": true,
+                "model": "seedance_2.0_fast",
+                "mode": "image-to-video",
+                "message": "Completed.",
+                "next": {
+                  "action": "done"
+                },
+                "outputs": [
+                  {
+                    "type": "video",
+                    "url": "https://cdn.seedvis.com/result.mp4"
+                  }
+                ],
+                "references": [
+                  {
+                    "field": "reference_images",
+                    "index": 0,
+                    "role": "start",
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              }
+            },
+            "status_path": "/developer/generations/{id}"
+          }
+        ]
+      },
+      {
+        "id": "seedance_2.5",
+        "label": "Seedance 2.5",
+        "family": "seedance",
+        "provider_model": "seedance_2.5",
+        "type": "video",
+        "status": "active",
+        "status_label": "Đang hoạt động",
+        "api_notice": "<h2><span style=\"font-size: 24px\"><span><b>LƯU Ý MODEL SEEDANCE:</b></span></span></h2><div><ul><li><span>Nguồn</span>: Seedance 2.5/2.0 Fast từ <span><b>Dola</b></span>.</li><li><span>Tham chiếu người thật: <b>không hỗ trợ</b></span><span> </span>(thỉnh thoảng vẫn tạo được).</li><li><span>Kiểm duyệt</span>: Dola<span> duyệt gắt</span>, cần tối ưu prompt (có hướng dẫn). Dola hay gặp lỗi vặt hoặc bị duyệt nhầm, tạo lại vài lần sẽ qua.</li><li><span>Khuyên dùng</span>: Phù hợp nhất để tích hợp dự án riêng, nên có sẵn cơ chế retry để chạy ổn định.</li></ul></div>",
+        "available": true,
+        "protocol": "seedvis",
+        "endpoints": [
+          "/developer/generations"
+        ],
+        "modes": [
+          {
+            "mode": "text-to-video",
+            "method": "POST",
+            "endpoint": "/developer/generations",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            }
+          },
+          {
+            "mode": "image-to-video",
+            "method": "POST",
+            "endpoint": "/developer/generations",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "aspect_ratio",
+            "type": "select",
+            "label": "Tỷ lệ",
+            "options": [
+              "9:16",
+              "16:9",
+              "1:1",
+              "3:4",
+              "4:3",
+              "21:9"
+            ]
+          },
+          {
+            "name": "duration",
+            "type": "select",
+            "label": "Thời lượng (giây)",
+            "options": [
+              5,
+              10,
+              15,
+              20,
+              25,
+              30
+            ],
+            "user_default": 5,
+            "default": 5
+          },
+          {
+            "max": 10,
+            "name": "reference_images",
+            "type": "image[]",
+            "label": "Ảnh tham chiếu"
+          }
+        ],
+        "credit_cost": 40,
+        "show_quantity": true,
+        "quantity_field": null,
+        "documentation": {
+          "mode": "text-to-video",
+          "method": "POST",
+          "path": "/developer/generations",
+          "images": {
+            "min": 0,
+            "max": 0,
+            "fields": [],
+            "roles": []
+          },
+          "parameters": [
+            {
+              "name": "model",
+              "type": "string",
+              "required": true,
+              "values": [
+                "seedance_2.5"
+              ],
+              "default": "seedance_2.5",
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "prompt",
+              "type": "string",
+              "required": true,
+              "values": null,
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": null
+            },
+            {
+              "name": "mode",
+              "type": "string",
+              "required": false,
+              "values": [
+                "text-to-video"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+            },
+            {
+              "name": "aspect_ratio",
+              "type": "select",
+              "required": false,
+              "values": [
+                "9:16",
+                "16:9",
+                "1:1",
+                "3:4",
+                "4:3",
+                "21:9"
+              ],
+              "default": null,
+              "min": null,
+              "max": null,
+              "description": "Tỷ lệ"
+            },
+            {
+              "name": "duration",
+              "type": "select",
+              "required": false,
+              "values": [
+                5,
+                10,
+                15,
+                20,
+                25,
+                30
+              ],
+              "default": 5,
+              "min": null,
+              "max": null,
+              "description": "Thời lượng (giây)"
+            },
+            {
+              "name": "count",
+              "type": "integer",
+              "required": false,
+              "values": null,
+              "default": 1,
+              "min": 1,
+              "max": 8,
+              "description": null
+            }
+          ],
+          "request_example": {
+            "model": "seedance_2.5",
+            "prompt": "A cinematic sunrise over the sea",
+            "mode": "text-to-video",
+            "aspect_ratio": "9:16",
+            "duration": 5
+          },
+          "response_example": {
+            "success": true,
+            "status": 202,
+            "message": null,
+            "data": {
+              "id": "REQUEST_ID",
+              "object": "generation",
+              "status": "queued",
+              "is_final": false,
+              "model": "seedance_2.5",
+              "mode": "text-to-video",
+              "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+              "next": {
+                "action": "poll",
+                "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                "after_seconds": 10
+              },
+              "outputs": [],
+              "references": []
+            },
+            "_then_after_polling": {
+              "id": "REQUEST_ID",
+              "object": "generation",
+              "status": "completed",
+              "is_final": true,
+              "model": "seedance_2.5",
+              "mode": "text-to-video",
+              "message": "Completed.",
+              "next": {
+                "action": "done"
+              },
+              "outputs": [
+                {
+                  "type": "video",
+                  "url": "https://cdn.seedvis.com/result.mp4"
+                }
+              ],
+              "references": []
+            }
+          },
+          "status_path": "/developer/generations/{id}"
+        },
+        "documentation_modes": [
+          {
+            "mode": "text-to-video",
+            "method": "POST",
+            "path": "/developer/generations",
+            "images": {
+              "min": 0,
+              "max": 0,
+              "fields": [],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "seedance_2.5"
+                ],
+                "default": "seedance_2.5",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "text-to-video"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "9:16",
+                  "16:9",
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "21:9"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Tỷ lệ"
+              },
+              {
+                "name": "duration",
+                "type": "select",
+                "required": false,
+                "values": [
+                  5,
+                  10,
+                  15,
+                  20,
+                  25,
+                  30
+                ],
+                "default": 5,
+                "min": null,
+                "max": null,
+                "description": "Thời lượng (giây)"
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": null
+              }
+            ],
+            "request_example": {
+              "model": "seedance_2.5",
+              "prompt": "A cinematic sunrise over the sea",
+              "mode": "text-to-video",
+              "aspect_ratio": "9:16",
+              "duration": 5
+            },
+            "response_example": {
+              "success": true,
+              "status": 202,
+              "message": null,
+              "data": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "queued",
+                "is_final": false,
+                "model": "seedance_2.5",
+                "mode": "text-to-video",
+                "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+                "next": {
+                  "action": "poll",
+                  "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                  "after_seconds": 10
+                },
+                "outputs": [],
+                "references": []
+              },
+              "_then_after_polling": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "completed",
+                "is_final": true,
+                "model": "seedance_2.5",
+                "mode": "text-to-video",
+                "message": "Completed.",
+                "next": {
+                  "action": "done"
+                },
+                "outputs": [
+                  {
+                    "type": "video",
+                    "url": "https://cdn.seedvis.com/result.mp4"
+                  }
+                ],
+                "references": []
+              }
+            },
+            "status_path": "/developer/generations/{id}"
+          },
+          {
+            "mode": "image-to-video",
+            "method": "POST",
+            "path": "/developer/generations",
+            "images": {
+              "min": 1,
+              "max": 10,
+              "fields": [
+                "reference_images"
+              ],
+              "roles": []
+            },
+            "parameters": [
+              {
+                "name": "model",
+                "type": "string",
+                "required": true,
+                "values": [
+                  "seedance_2.5"
+                ],
+                "default": "seedance_2.5",
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "prompt",
+                "type": "string",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": null
+              },
+              {
+                "name": "reference_images",
+                "type": "image[] (URL or base64)",
+                "required": true,
+                "values": null,
+                "default": null,
+                "min": 1,
+                "max": 10,
+                "description": "1–10 images, URLs and base64 may be mixed. Aliases: reference_images, images, image_url."
+              },
+              {
+                "name": "reference_images[].file_name",
+                "type": "string",
+                "required": false,
+                "values": null,
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Only for base64 images: send the image as {\"data\": \"<base64>\", \"file_name\": \"photo.png\"} and the stored reference URL keeps that name (…/references/{user}/photo.png, then photo-1.png, photo-2.png for repeats). Without file_name a base64 image gets a random name. Image URLs and multipart files keep their own name.",
+                "example": false
+              },
+              {
+                "name": "mode",
+                "type": "string",
+                "required": false,
+                "values": [
+                  "image-to-video"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Optional. Inferred from the images you send; set it to be explicit — a mismatch is rejected with 400."
+              },
+              {
+                "name": "aspect_ratio",
+                "type": "select",
+                "required": false,
+                "values": [
+                  "9:16",
+                  "16:9",
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "21:9"
+                ],
+                "default": null,
+                "min": null,
+                "max": null,
+                "description": "Tỷ lệ"
+              },
+              {
+                "name": "duration",
+                "type": "select",
+                "required": false,
+                "values": [
+                  5,
+                  10,
+                  15,
+                  20,
+                  25,
+                  30
+                ],
+                "default": 5,
+                "min": null,
+                "max": null,
+                "description": "Thời lượng (giây)"
+              },
+              {
+                "name": "count",
+                "type": "integer",
+                "required": false,
+                "values": null,
+                "default": 1,
+                "min": 1,
+                "max": 8,
+                "description": null
+              }
+            ],
+            "request_example": {
+              "model": "seedance_2.5",
+              "prompt": "A cinematic sunrise over the sea",
+              "mode": "image-to-video",
+              "reference_images": [
+                "https://cdn.seedvis.com/reference.png",
+                {
+                  "data": "iVBORw0KGgo…",
+                  "file_name": "photo.png"
+                }
+              ],
+              "aspect_ratio": "9:16",
+              "duration": 5
+            },
+            "response_example": {
+              "success": true,
+              "status": 202,
+              "message": null,
+              "data": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "queued",
+                "is_final": false,
+                "model": "seedance_2.5",
+                "mode": "image-to-video",
+                "message": "Accepted. Generation is running. Poll next.url until is_final is true; do not resend this request.",
+                "next": {
+                  "action": "poll",
+                  "url": "https://seedvis.com/api/v1/developer/generations/REQUEST_ID?wait=60",
+                  "after_seconds": 10
+                },
+                "outputs": [],
+                "references": [
+                  {
+                    "field": "reference_images",
+                    "index": 0,
+                    "role": "start",
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              },
+              "_then_after_polling": {
+                "id": "REQUEST_ID",
+                "object": "generation",
+                "status": "completed",
+                "is_final": true,
+                "model": "seedance_2.5",
+                "mode": "image-to-video",
+                "message": "Completed.",
+                "next": {
+                  "action": "done"
+                },
+                "outputs": [
+                  {
+                    "type": "video",
+                    "url": "https://cdn.seedvis.com/result.mp4"
+                  }
+                ],
+                "references": [
+                  {
+                    "field": "reference_images",
+                    "index": 0,
+                    "role": "start",
+                    "source": "url",
+                    "url": "https://cdn.seedvis.com/references/…png"
+                  }
+                ]
+              }
+            },
+            "status_path": "/developer/generations/{id}"
+          }
+        ]
+      }
+    ],
+    "plans": [
+      {
+        "code": "unlimited-basic",
+        "name": "Unlimited Basic",
+        "kind": "unlimited",
+        "price_vnd": 199000,
+        "price_usd_cents": 900,
+        "credits_granted": 0,
+        "duration_days": 30,
+        "concurrency_limit": 1,
+        "queue_limit": 4
+      },
+      {
+        "code": "credit-basic",
+        "name": "Credit Basic",
+        "kind": "payg",
+        "price_vnd": 299000,
+        "price_usd_cents": 1200,
+        "credits_granted": 8000,
+        "duration_days": 0,
+        "concurrency_limit": 4,
+        "queue_limit": 8
+      },
+      {
+        "code": "unlimited-pro",
+        "name": "Unlimited Pro",
+        "kind": "unlimited",
+        "price_vnd": 349000,
+        "price_usd_cents": 1600,
+        "credits_granted": 0,
+        "duration_days": 30,
+        "concurrency_limit": 2,
+        "queue_limit": 8
+      },
+      {
+        "code": "unlimited-ultra",
+        "name": "Unlimited Ultra",
+        "kind": "unlimited",
+        "price_vnd": 599000,
+        "price_usd_cents": 2700,
+        "credits_granted": 0,
+        "duration_days": 30,
+        "concurrency_limit": 4,
+        "queue_limit": 16
+      },
+      {
+        "code": "credit-plus",
+        "name": "Credit Plus",
+        "kind": "payg",
+        "price_vnd": 599000,
+        "price_usd_cents": 2400,
+        "credits_granted": 18000,
+        "duration_days": 0,
+        "concurrency_limit": 8,
+        "queue_limit": 16
+      },
+      {
+        "code": "unlimited-max",
+        "name": "Unlimited Max",
+        "kind": "unlimited",
+        "price_vnd": 999000,
+        "price_usd_cents": 4300,
+        "credits_granted": 0,
+        "duration_days": 30,
+        "concurrency_limit": 8,
+        "queue_limit": 32
+      },
+      {
+        "code": "credit-pro",
+        "name": "Credit Pro",
+        "kind": "payg",
+        "price_vnd": 999000,
+        "price_usd_cents": 3900,
+        "credits_granted": 34000,
+        "duration_days": 0,
+        "concurrency_limit": 12,
+        "queue_limit": 24
+      },
+      {
+        "code": "credit-max",
+        "name": "Credit Max",
+        "kind": "payg",
+        "price_vnd": 1499000,
+        "price_usd_cents": 5900,
+        "credits_granted": 60000,
+        "duration_days": 0,
+        "concurrency_limit": 18,
+        "queue_limit": 36
+      },
+      {
+        "code": "starter",
+        "name": "Starter",
+        "kind": "credit",
+        "price_vnd": 149000,
+        "price_usd_cents": 700,
+        "credits_granted": 6800,
+        "duration_days": 30,
+        "concurrency_limit": 4,
+        "queue_limit": 8
+      },
+      {
+        "code": "pro",
+        "name": "Pro",
+        "kind": "credit",
+        "price_vnd": 399000,
+        "price_usd_cents": 1800,
+        "credits_granted": 21000,
+        "duration_days": 30,
+        "concurrency_limit": 8,
+        "queue_limit": 16
+      },
+      {
+        "code": "business",
+        "name": "Business",
+        "kind": "credit",
+        "price_vnd": 799000,
+        "price_usd_cents": 3600,
+        "credits_granted": 54000,
+        "duration_days": 30,
+        "concurrency_limit": 16,
+        "queue_limit": 32
+      }
+    ],
+    "webhook_events": [
+      "generation.completed",
+      "generation.failed"
+    ],
+    "downloads": {
+      "markdown": "https://seedvis.com/api/v1/developer-api/docs.md?early_access=1",
+      "postman": "https://seedvis.com/api/v1/developer-api/postman.json"
+    }
+  }
+}

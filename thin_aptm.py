@@ -22,7 +22,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.26"
+APP_VERSION = "ThinAPTM 1.2.27"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -46,6 +46,28 @@ def get_acc_email(a):
     return (aem or aid or "?").lower()
 
 
+def _bearer_and_email(cookie, proxy=None):
+    """Gọi E.bearer_from_cookie() và giải nén (bearer, email) an toàn — dùng chung thay vì lặp lại
+    kiểm tra isinstance/len ở nhiều nơi."""
+    res = E.bearer_from_cookie(cookie, proxy=proxy)
+    b = res[0] if isinstance(res, tuple) else res
+    em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+    return b, em
+
+
+def _apply_acc_email(a, em, fallback_email=None):
+    """Cập nhật a['email'] từ email mới lấy được (em), fallback nếu em không hợp lệ (@google)."""
+    if em and not str(em).endswith("@google"):
+        a["email"] = em
+    elif fallback_email and not str(fallback_email).endswith("@google"):
+        a["email"] = fallback_email
+
+
+def _profile_dir(email):
+    """Thư mục Chrome profile tương ứng 1 tài khoản Google, theo email."""
+    return os.path.join(HERE, "_profiles", str(email).replace("@", "_"))
+
+
 def load_accs():
     try:
         accs = json.load(open(ACC_FILE, encoding="utf-8"))
@@ -54,7 +76,8 @@ def load_accs():
             if real_em and real_em != "?" and not real_em.endswith("@google"):
                 a["email"] = real_em
         return accs
-    except Exception:
+    except Exception as e:
+        print(f"[load_accs] Lỗi đọc {ACC_FILE}: {e}")
         return []
 
 def save_accs(a):
@@ -82,6 +105,37 @@ def clean_filename(s):
         s = s.replace(c, "_")
     s = s.replace("\n", " ").replace("\r", " ")
     return s.strip()
+
+
+def _sv_build_out_name(naming_mode, item_id, idx, prompts):
+    """Đặt tên file output video theo naming_mode — dùng chung giữa các luồng xử lý job (Local/ShopAPI)."""
+    if naming_mode == "Theo Item ID":
+        return f"{item_id}.mp4"
+    elif naming_mode == "15 ký tự đầu prompt":
+        return clean_filename(prompts[0][:15]) + ".mp4"
+    else:
+        return f"{idx+1:04d}.mp4"
+
+
+def _sv_cleanup_temp(item_id, temp_dir, img_path, clip_paths, del_img, composite_path=None):
+    """Dọn file tạm (ảnh/clip/composite) sau khi xử lý xong 1 job — dùng chung giữa các luồng xử lý job."""
+    try:
+        if composite_path and os.path.exists(composite_path):
+            try: os.remove(composite_path)
+            except Exception: pass
+        if del_img and img_path and os.path.exists(img_path):
+            try: os.remove(img_path)
+            except Exception: pass
+        for cp in clip_paths:
+            if cp and os.path.exists(cp):
+                try: os.remove(cp)
+                except Exception: pass
+        import glob
+        for f_tmp in glob.glob(os.path.join(temp_dir, f"sv_{item_id}_*")):
+            try: os.remove(f_tmp)
+            except Exception: pass
+    except Exception:
+        pass
 
 
 _ACCENTS_MAP = {
@@ -149,6 +203,10 @@ SUBMIT_DOWN = 0.5          # gặp throttle thì nhân giới hạn với số n
 BYPASS_QUICK = 0.4         # bypass/token trượt -> thử lại NHANH (giây)
 THROTTLE_SLEEP = 8.0       # 429 → nghỉ 8s (trước để 3s quá nhanh khiến máy chủ Google ghim 429 liên tục)
 THROTTLE_429_REST = 3600   # v1.0.6: TK bị HTTP 429 → nghỉ 1 giờ (was 30-150s exponential)
+# Bậc thang cooldown khi bị 429 (autoveo3.md §5.3, tham khảo throttle_ladder AutoVeo3): tăng dần theo
+# số lần liên tiếp thay vì nghỉ cố định 1 giờ ngay từ lần 1 — 429 lần đầu thường chỉ là chạm nhịp tạm
+# thời (thundering herd), lần sau mới đáng nghi bị giới hạn thật. Streak reset về 0 khi submit lại OK.
+THROTTLE_LADDER = [10, 30, 120, 600, 1800]   # giây, theo streak 1, 2, 3, 4, 5+
 QUOTA_HARD_REST = 2 * 3600 # v1.0.6: TK hết quota → nghỉ 2 giờ (was 6 giờ)
 AUTH_REST = 1800           # nghỉ 30' khi 401 không cứu được bằng refresh cookie
 BEARER_TTL = 1200          # refresh bearer từ cookie sau 20' (bearer Google chết ~30')
@@ -158,9 +216,28 @@ AUTO_RETRY_ROUNDS = 2      # sau khi chạy xong, TỰ retry các job lỗi thê
 MAX_REWRITES = 3           # prompt vi phạm -> nhờ Gemini viết lại tối đa bao nhiêu lần trước khi bỏ
 # LƯU Ý: model lite (t2v_lite / r2v_lite) MIỄN PHÍ -> không tốn credit -> KHÔNG cách ly theo credit.
 # Account chỉ bị throttle (giới hạn tốc độ) và tự hồi; AIMD tự giảm tốc là đủ.
+# User-Agent bắt buộc cho mọi request tới seedvis.com — thiếu header này Cloudflare chặn 100%
+# request bằng HTTP 403 "error code: 1010" trước khi chạm tới API (đã kiểm chứng thực nghiệm).
+SEEDVIS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
 UPLOAD_MIN_THREADS = 1          # Luồng upload tối thiểu / khởi đầu (sàn: 1 luồng)
 UPLOAD_MAX_THREADS = 4          # Luồng upload tối đa (trần: 4 luồng)
 UPLOAD_UP_AFTER = 5             # Cứ 5 lần thành công liên tiếp thì tăng +1 luồng (1 -> 2 -> 3 -> 4)
+# --- Bộ điều tốc chống gắn cờ UNUSUAL_ACTIVITY (đo theo SỐ VIDEO trong 1 khung thời gian) ---
+# Google gắn cờ theo lưu lượng/khung thời gian của từng tài khoản, không theo số luồng.
+# Đo thực tế: 1 TK chạy liên tục ~3-4 video/phút trong ~12 phút → bị gắn cờ.
+RATE_WINDOW = 600               # đếm số submit trong cửa sổ 10 phút
+RATE_START = 10                 # hồ sơ An toàn: 10 video/10p (~1/phút)
+RATE_FLOOR = 4                  # sàn tốc độ
+RATE_HARD_MAX = 30              # trần cứng 30/10p (~3/phút — mức đã thấy bị gắn cờ)
+RATE_UP_EVERY = 1800            # êm 30 phút liên tục → tăng +1 video/10p
+RATE_CEIL_SAFETY = 0.8          # trần học được = 80% tốc độ lúc bị gắn cờ
+RATE_CUT = 0.6                  # bị gắn cờ → tốc độ còn 60% tốc độ lúc bị gắn cờ
+CEIL_RELAX_EVERY = 6 * 3600     # êm 6 giờ → nới trần +1
+BREAK_RUN = (50 * 60, 70 * 60)  # chạy bao lâu thì nghỉ ngắn (ngẫu nhiên)
+BREAK_LEN = (5 * 60, 10 * 60)   # nghỉ ngắn bao lâu (ngẫu nhiên)
+UNUSUAL_LADDER = [300, 1800, 7200]  # bị gắn cờ lần 1/2/3+ → nghỉ 5p / 30p / 2h
+UNUSUAL_RESET = 2 * 3600        # êm 2 giờ thì bậc thang nghỉ quay về lần 1
 # --- Circuit Breakers toàn cục (v1.0.6) ---
 MODEL_DENIED_CIRCUIT = 10       # v1.0.6: 10 lỗi MODEL_ACCESS_DENIED → dừng toàn bộ queue
 DOWNLOAD_FAIL_CIRCUIT = 20      # v1.0.6: 20 download thất bại liên tiếp → dừng queue
@@ -415,13 +492,24 @@ class AccountState:
         self._circuit_broken = False       # True khi bị ngắt mạch
         # --- Proxy health tracking ---
         self.proxy_fail_streak = 0         # số lần proxy fail liên tiếp (DNS/connection)
-        # --- Unusual Activity tracking (lũy tiến: 300s → 600s → 1200s) ---
-        self.unusual_streak = 0            # số lần unusual liên tiếp → tăng thời gian nghỉ
         # --- Upload Rate Limit & Luồng Upload thông minh (Khởi đầu 1, Min 1, Max 4) ---
         self.upload_threads = UPLOAD_MIN_THREADS
         self.upload_inflight = 0
         self._upload_ok_streak = 0
-        self._video_ok_streak = 0
+        # --- Bộ điều tốc theo cửa sổ thời gian (nhớ qua các lần khởi động qua acc["rate_gov"]) ---
+        self.submit_times = collections.deque()
+        self._rate_lock = threading.Lock()
+        self._next_slot_at = 0.0           # mốc sớm nhất cho lần submit kế (giãn đều + jitter)
+        _g = acc.get("rate_gov") if isinstance(acc.get("rate_gov"), dict) else {}
+        _now = time.time()
+        self.rate_limit = int(min(RATE_HARD_MAX, max(RATE_FLOOR, _g.get("limit", RATE_START))))
+        self.rate_ceiling = _g.get("ceiling")          # None cho tới lần bị gắn cờ đầu tiên
+        self.last_unusual_ts = float(_g.get("last_unusual", 0.0))
+        self.unusual_count = int(_g.get("unusual_count", 0))
+        self.last_rate_change = _now       # tính "êm" kể từ lúc bắt đầu phiên chạy
+        self.last_ceil_relax = _now
+        self.run_started_at = _now
+        self.next_break_at = _now + random.uniform(*BREAK_RUN)
         self._upload_gate = threading.Condition()
         self.last_upload_ts = 0.0          # thời điểm upload gần nhất của tài khoản này
         self.upload_lock = threading.Lock() # khóa giãn cách 6-8s giữa các lần upload của cùng 1 tài khoản
@@ -453,15 +541,22 @@ class AccountState:
 
     def busy_dec(self):
         with self.blk: self.busy = max(0, self.busy - 1)
+        # Đánh thức sớm các worker đang chờ slot ở _gate (giống acquire_submit/acquire_upload)
+        # thay vì luôn chờ đủ 0.5s cố định.
+        with self._gate: self._gate.notify_all()
 
     def wait_upload_spacing(self, min_interval=6.0, max_interval=8.0):
-        """Bắt buộc mỗi lần upload của CÙNG 1 tài khoản phải cách nhau ngẫu nhiên từ 6-8 giây."""
+        """Bắt buộc mỗi lần BẮT ĐẦU upload của CÙNG 1 tài khoản phải cách nhau ngẫu nhiên từ 6-8 giây.
+        KHÔNG giữ upload_lock trong lúc sleep — chỉ giữ đủ lâu để "đặt chỗ" mốc giờ kế tiếp, để nhiều
+        luồng upload cùng tài khoản (upload_threads > 1) thực sự chạy song song đúng như UI hiển thị,
+        thay vì bị serialize ngầm về 1 upload/6-8s."""
         with self.upload_lock:
             target_wait = random.uniform(min_interval, max_interval) if max_interval > min_interval else min_interval
             elapsed = time.time() - self.last_upload_ts
-            if elapsed < target_wait:
-                time.sleep(target_wait - elapsed)
-            self.last_upload_ts = time.time()
+            wait_s = target_wait - elapsed if elapsed < target_wait else 0.0
+            self.last_upload_ts = time.time() + wait_s
+        if wait_s > 0:
+            time.sleep(wait_s)
 
     def wait_submit_spacing(self, min_interval=4.0, max_interval=6.0):
         """Bắt buộc mỗi lệnh submit video của CÙNG 1 tài khoản phải cách nhau ngẫu nhiên từ 4-6 giây theo Rule #2."""
@@ -472,18 +567,23 @@ class AccountState:
                 time.sleep(target_wait - elapsed)
             self.last_submit_ts = time.time()
 
-    def submit_guard(self, min_spacing=4.0, max_spacing=6.0):
-        """Context manager giữ khóa độc quyền submit của CÙNG 1 tài khoản trong suốt quá trình gửi và đảm bảo giãn cách 4-6s."""
+    def submit_guard(self, min_spacing=4.0, max_spacing=6.0, stop_check=lambda: False):
+        """Context manager giữ khóa độc quyền submit của CÙNG 1 tài khoản: chờ tới lượt theo bộ điều tốc
+        (số video/10p + giãn đều), rồi đảm bảo giãn cách tối thiểu. Yield True nếu được submit,
+        False nếu bị dừng trong lúc chờ lượt (caller phải bỏ qua submit)."""
         import contextlib
         @contextlib.contextmanager
         def _cm():
             with self.submit_lock:
+                if not self.acquire_rate_slot(stop_check):
+                    yield False
+                    return
                 target_wait = random.uniform(min_spacing, max_spacing)
                 elapsed = time.time() - self.last_submit_ts
                 if elapsed < target_wait:
                     time.sleep(target_wait - elapsed)
                 try:
-                    yield
+                    yield True
                 finally:
                     self.last_submit_ts = time.time()
         return _cm()
@@ -515,12 +615,15 @@ class AccountState:
                 self._gate.notify_all()
 
     def on_throttle(self):
-        """Bị throttle → giảm giới hạn + cho TK nghỉ 1 giờ (v1.0.6: flat 1h thay vì exponential 30-150s)."""
+        """Bị throttle 429 → giảm giới hạn + nghỉ theo BẬC THANG tăng dần (10s→30s→120s→600s→1800s)
+        thay vì nghỉ cố định 1 giờ ngay từ lần đầu. Trả về số giây đã đặt nghỉ."""
         with self._gate:
             self._ok_streak = 0
             self.submit_limit = max(SUBMIT_MIN, self.submit_limit * SUBMIT_DOWN)
             self.submit_throttle_streak += 1
-            self.rest(THROTTLE_429_REST, "submit_throttle")  # v1.0.6: 1 giờ flat
+            wait_s = THROTTLE_LADDER[min(self.submit_throttle_streak, len(THROTTLE_LADDER)) - 1]
+            self.rest(wait_s, "submit_throttle")
+            return wait_s
 
     def should_log_throttle(self):
         """True nếu nên ghi 1 dòng log throttle (giới hạn 1 dòng / 30s / account) — tránh ngập log."""
@@ -537,63 +640,160 @@ class AccountState:
         self.resume_at = time.time() + max(0, seconds)
         self.rest_reason = reason
 
+    def _recalc_submit_rate(self):
+        """Tạo & Tốc độ = upload_threads + 3 (Min 2, Max 20) — đồng bộ lại max_busy/_submit_max/submit_limit
+        sau khi upload_threads đổi, tự acquire _gate nên gọi an toàn từ bất kỳ đâu."""
+        calc_rate = max(2, min(20, self.upload_threads + 3))
+        self.max_busy = calc_rate
+        with self._gate:
+            self._submit_max = float(calc_rate)
+            self.submit_limit = float(calc_rate)
+            self._gate.notify_all()
+
     def on_upload_throttle(self):
         """Upload bị 429 → tăng streak lỗi. Dính 2 lần liên tiếp mới hạ về sàn UPLOAD_MIN_THREADS (1 luồng)."""
         self.upload_throttle_streak += 1
         n = self.upload_throttle_streak
         with self._upload_gate:
             self._upload_ok_streak = 0
-            self._video_ok_streak = 0
             if n >= 2 and self.upload_threads > UPLOAD_MIN_THREADS:
                 self.upload_threads = UPLOAD_MIN_THREADS
                 self.acc["upload_threads"] = self.upload_threads
-                calc_rate = max(2, min(20, self.upload_threads + 3))
-                self.max_busy = calc_rate
-                with self._gate:
-                    self._submit_max = float(calc_rate)
-                    self.submit_limit = float(calc_rate)
-                    self._gate.notify_all()
+                self._recalc_submit_rate()
                 self._upload_gate.notify_all()
         secs = min(15.0 * (1.5 ** (n - 1)), 90.0)  # 15, 22, 34, 51, 76, 90 (max 90s)
         self.rest(secs, "throttle")
         return secs
 
+    # --- Bộ điều tốc theo cửa sổ thời gian ---
+    def _prune_submits(self, now):
+        while self.submit_times and now - self.submit_times[0] >= RATE_WINDOW:
+            self.submit_times.popleft()
+
+    def _rate_wait_locked(self, now):
+        self._prune_submits(now)
+        wait = 0.0
+        if len(self.submit_times) >= self.rate_limit:
+            wait = self.submit_times[0] + RATE_WINDOW - now
+        return max(0.0, wait, self._next_slot_at - now)
+
+    def rate_wait_seconds(self):
+        """Số giây phải chờ trước lần submit kế (cửa sổ 10p đã đầy, hoặc chưa tới lượt giãn đều)."""
+        with self._rate_lock:
+            return self._rate_wait_locked(time.time())
+
+    def acquire_rate_slot(self, stop_check=lambda: False):
+        """Chờ tới lượt submit rồi giữ chỗ (nguyên tử dưới lock, nhiều worker không giành trùng 1 lượt).
+        Giãn đều RATE_WINDOW/rate_limit ± 30% để không bao giờ dồn nhiều SP submit cùng lúc."""
+        while True:
+            with self._rate_lock:
+                now = time.time()
+                wait = self._rate_wait_locked(now)
+                if wait <= 0:
+                    self.submit_times.append(now)
+                    interval = RATE_WINDOW / max(1, self.rate_limit)
+                    self._next_slot_at = now + interval * random.uniform(0.7, 1.3)
+                    return True
+            if stop_check():
+                return False
+            time.sleep(min(1.0, wait))
+
+    def rate_submits_in_window(self):
+        with self._rate_lock:
+            self._prune_submits(time.time())
+            return len(self.submit_times)
+
+    def _save_rate_gov(self):
+        self.acc["rate_gov"] = {"limit": self.rate_limit, "ceiling": self.rate_ceiling,
+                                "last_unusual": self.last_unusual_ts, "unusual_count": self.unusual_count}
+
+    def on_rate_unusual(self):
+        """Google báo UNUSUAL_ACTIVITY → hạ tốc độ còn 60%, hạ về 1 luồng upload, nghỉ theo bậc thang
+        5p → 30p → 2h. Chỉ HỌC TRẦN (80% tốc độ lúc bị gắn cờ) khi lúc đó tài khoản đang chạy chạm giới hạn;
+        bị gắn cờ khi đang chạy chậm hơn giới hạn nghĩa là tài khoản còn trong thời gian bị phạt từ trước
+        (không phải do tốc độ) → chỉ nghỉ lâu hơn, không ghi trần thấp oan.
+        Trả về (số giây nghỉ, tốc độ lúc bị gắn cờ). Nhiều worker cùng dính trong 60s chỉ tính 1 lần."""
+        now = time.time()
+        with self._rate_lock:
+            self._prune_submits(now)
+            observed = len(self.submit_times)
+            if self.last_unusual_ts and now - self.last_unusual_ts < 60:
+                return max(self.rest_remaining(), float(UNUSUAL_LADDER[0])), observed
+            if now - self.last_unusual_ts > UNUSUAL_RESET:
+                self.unusual_count = 0
+            self.unusual_count += 1
+            base = max(observed, self.rate_limit, RATE_FLOOR)
+            if observed >= self.rate_limit:
+                learned = max(RATE_FLOOR, int(base * RATE_CEIL_SAFETY))
+                self.rate_ceiling = learned if self.rate_ceiling is None else min(self.rate_ceiling, learned)
+            self.rate_limit = max(RATE_FLOOR, int(base * RATE_CUT))
+            if self.rate_ceiling is not None:
+                self.rate_limit = min(self.rate_limit, self.rate_ceiling)
+            self.last_unusual_ts = now
+            self.last_rate_change = now
+            self.last_ceil_relax = now
+            rest_s = float(UNUSUAL_LADDER[min(self.unusual_count, len(UNUSUAL_LADDER)) - 1])
+        with self._upload_gate:
+            self._upload_ok_streak = 0
+            if self.upload_threads > UPLOAD_MIN_THREADS:
+                self.upload_threads = UPLOAD_MIN_THREADS
+                self.acc["upload_threads"] = self.upload_threads
+                self._recalc_submit_rate()
+                self._upload_gate.notify_all()
+        self._save_rate_gov()
+        return rest_s, observed
+
+    def break_due(self):
+        return time.time() >= self.next_break_at and self.rest_remaining() <= 0
+
+    def start_break(self):
+        """Nghỉ ngắn ngẫu nhiên giống người thật. Trả về (đã chạy bao lâu, nghỉ bao lâu) hoặc None nếu worker khác đã bắt đầu."""
+        with self._rate_lock:
+            now = time.time()
+            if now < self.next_break_at or self.rest_remaining() > 0:
+                return None
+            ran = now - self.run_started_at
+            secs = random.uniform(*BREAK_LEN)
+            self.rest(secs, "break")
+            self.run_started_at = now + secs
+            self.next_break_at = now + secs + random.uniform(*BREAK_RUN)
+            return ran, secs
+
     def on_upload_ok(self):
-        """Upload thành công → reset streak lỗi. Cứ 5 lần thành công liên tiếp thì tăng +1 luồng upload (tối đa 4)."""
+        """Upload thành công → reset streak lỗi. Cứ 5 lần thành công liên tiếp thì tăng +1 luồng upload,
+        nhưng không vượt số luồng mà tốc độ cho phép (10/10p → 2 luồng, 20 → 3, 30 → 4)."""
         self.upload_throttle_streak = 0
         with self._upload_gate:
             self._upload_ok_streak += 1
-            if self._upload_ok_streak >= UPLOAD_UP_AFTER and self.upload_threads < UPLOAD_MAX_THREADS:
+            cap = min(UPLOAD_MAX_THREADS, 1 + self.rate_limit // 10)
+            if self._upload_ok_streak >= UPLOAD_UP_AFTER and self.upload_threads < cap:
                 self.upload_threads += 1
                 self._upload_ok_streak = 0
                 self.acc["upload_threads"] = self.upload_threads
-                calc_rate = max(2, min(20, self.upload_threads + 3))
-                self.max_busy = calc_rate
-                with self._gate:
-                    self._submit_max = float(calc_rate)
-                    self.submit_limit = float(calc_rate)
-                    self._gate.notify_all()
+                self._recalc_submit_rate()
                 self._upload_gate.notify_all()
                 return True
         return False
 
     def on_video_ok(self):
-        """Khi 1 video tạo thành công -> tăng streak, đủ UPLOAD_UP_AFTER (5 video) thì tăng +1 luồng upload (tối đa 4)."""
-        with self._upload_gate:
-            self._video_ok_streak += 1
-            if self._video_ok_streak >= UPLOAD_UP_AFTER and self.upload_threads < UPLOAD_MAX_THREADS:
-                self.upload_threads += 1
-                self._video_ok_streak = 0
-                self.acc["upload_threads"] = self.upload_threads
-                calc_rate = max(2, min(20, self.upload_threads + 3))
-                self.max_busy = calc_rate
-                with self._gate:
-                    self._submit_max = float(calc_rate)
-                    self.submit_limit = float(calc_rate)
-                    self._gate.notify_all()
-                self._upload_gate.notify_all()
-                return True
-        return False
+        """Video thành công → nếu đã êm (không bị gắn cờ) đủ RATE_UP_EVERY thì tăng +1 video/10p,
+        không vượt trần học được / RATE_HARD_MAX; êm đủ CEIL_RELAX_EVERY thì nới trần +1. True nếu vừa tăng tốc.
+        (Không tăng luồng upload ở đây nữa — trước kia 2 bộ đếm cùng tăng luồng khiến 1→4 luồng trong ~70 giây.)"""
+        now = time.time()
+        raised = False
+        with self._rate_lock:
+            if (self.rate_ceiling is not None
+                    and now - max(self.last_ceil_relax, self.last_unusual_ts) >= CEIL_RELAX_EVERY):
+                self.rate_ceiling = min(RATE_HARD_MAX, self.rate_ceiling + 1)
+                self.last_ceil_relax = now
+            cap = RATE_HARD_MAX if self.rate_ceiling is None else min(RATE_HARD_MAX, self.rate_ceiling)
+            if now - max(self.last_rate_change, self.last_unusual_ts) >= RATE_UP_EVERY and self.rate_limit < cap:
+                self.rate_limit += 1
+                self.last_rate_change = now
+                raised = True
+        if raised:
+            self._save_rate_gov()
+        return raised
 
     def acquire_upload(self, stop_check=lambda: False):
         """Giới hạn số luồng upload đồng thời của riêng tài khoản này."""
@@ -617,12 +817,7 @@ class AccountState:
         with self._upload_gate:
             self.upload_threads = max(1, min(20, int(val)))
             self.acc["upload_threads"] = self.upload_threads
-            calc_rate = max(2, min(20, self.upload_threads + 3))
-            self.max_busy = calc_rate
-            with self._gate:
-                self._submit_max = float(calc_rate)
-                self.submit_limit = float(calc_rate)
-                self._gate.notify_all()
+            self._recalc_submit_rate()
             self._upload_gate.notify_all()
 
     def clear_rest(self):
@@ -646,7 +841,7 @@ class AccountState:
             return None
         self._last_recover_time = now
 
-        profile_dir = os.path.join(HERE, "_profiles", str(email).replace("@", "_"))
+        profile_dir = _profile_dir(email)
         fresh_ck = None
         
         # 1. Thử mở lại Chrome profile cũ (rất nhanh, 3-5 giây, không cần gõ pass)
@@ -723,6 +918,11 @@ class AccountState:
                 self.email = em
             if not self.project:
                 self.project = E.get_project(self.cookie, proxy=self.proxy)
+            # Đồng bộ cookie mới nhất từ engine nếu đã refresh
+            _ref = E.get_refreshed_cookie(self.cookie)
+            if _ref and _ref != self.cookie:
+                self.cookie = _ref
+                self.acc["cookie"] = _ref
             return bool(self.project)
 
     # --- Circuit Breaker methods (Lớp 1) ---
@@ -817,6 +1017,9 @@ class App(ctk.CTk):
         self._health_check_timer = None
         self._health_checking = False  # đang chạy health check
         self._hc_attempted_accs = set()  # Các tài khoản đã thử bật Chrome auto health check 1 lần
+        # Giới hạn số tiến trình FFmpeg hậu kỳ (lồng tiếng/ghép sub) chạy song song — tránh nhiều
+        # thread ffmpeg nặng cùng lúc khi nhiều thư mục hoàn thành gần nhau, oversubscribe CPU.
+        self._postprocess_sem = threading.Semaphore(2)
         # Telegram report
         self._tg_token_saved = self.settings.get("tg_token", "")
         self._tg_chatid_saved = self.settings.get("tg_chatid", "")
@@ -843,6 +1046,15 @@ class App(ctk.CTk):
         except Exception as e:
             print(f"Không thể khởi tạo log.txt: {e}")
 
+        # Khởi tạo file logseedvis.txt riêng cho tab Seedvis
+        self.seedvis_log_path = os.path.join(HERE, "logseedvis.txt")
+        try:
+            with open(self.seedvis_log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n--- BẮT ĐẦU PHIÊN SEEDVIS ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
+        except Exception as e:
+            print(f"Không thể khởi tạo logseedvis.txt: {e}")
+
+
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         E.ERROR_LOG_FUNC = self._log
         E.ON_PROXY_ERROR_CALLBACK = self._on_global_proxy_error
@@ -863,7 +1075,7 @@ class App(ctk.CTk):
         else:
             ctk.CTkLabel(side, text="", height=6).pack()
         self.nav = {}
-        for key, txt, icon in [("acc", "Tài khoản", "👤"), ("gen", "Tạo video", "🎬"), ("queue", "Hàng đợi", "📋"), ("shopee", "Tạo Video Shopee", "🛒"), ("server_video", "Veo3 Local", "🌐"), ("shopapi_tab", "ShopAPI", "⚡")]:
+        for key, txt, icon in [("acc", "Tài khoản", "👤"), ("gen", "Tạo video", "🎬"), ("queue", "Hàng đợi", "📋"), ("shopee", "Tạo Video Shopee", "🛒"), ("server_video", "Veo3 Local", "🌐"), ("shopapi_tab", "ShopAPI", "⚡"), ("seedvis_tab", "Seedvis", "🌱")]:
             b = ctk.CTkButton(side, text=f"  {icon}  {txt}", anchor="w", height=44, corner_radius=8,
                                fg_color="transparent", text_color=T1, hover_color="#eef2fb", font=("", 14),
                                command=lambda k=key: self._show(k))
@@ -897,7 +1109,7 @@ class App(ctk.CTk):
         # ----- CONTENT -----
         self.content = ctk.CTkFrame(self, fg_color=BG); self.content.pack(side="left", fill="both", expand=True)
         self.frames = {}
-        self._build_acc(); self._build_gen(); self._build_queue(); self._build_shopee(); self._build_server_video(); self._build_shopapi_tab()
+        self._build_acc(); self._build_gen(); self._build_queue(); self._build_shopee(); self._build_server_video(); self._build_shopapi_tab(); self._build_seedvis_tab()
         self._show("acc")
         self.after(500, self._update_pool)        # panel trạng thái pool video (live)
         self.after(600, self._sp_update_pool)     # panel trạng thái pool Shopee (live)
@@ -1284,11 +1496,15 @@ class App(ctk.CTk):
         # 4. Cập nhật UI & Hiển thị cảnh báo lỗi nếu không có proxy nào hoạt động
         if proxy_lines:
             is_real = not proxy_lines[0].startswith("#")
+            if is_real:
+                # Nạp pool NGAY (đồng bộ) — không đợi vòng lặp UI xử lý self.after, để code gọi
+                # _fetch_homeproxy() rồi gán proxy cho account ngay sau đó (vd. work() lúc start queue)
+                # không bị dính race — gán proxy TRƯỚC khi pool thật sự có proxy mới.
+                self.proxy_pool.load(proxy_lines)
             def _update_ui():
                 if is_real:
                     self.txt_proxy.delete("1.0", "end")
                     self.txt_proxy.insert("1.0", "\n".join(proxy_lines))
-                    self.proxy_pool.load(proxy_lines)
                     self._update_proxy_stats()
                     self.lbl_hp_status.configure(text=f"✅ {len(proxy_lines)} proxy", text_color="#66BB6A")
                 else:
@@ -1319,6 +1535,9 @@ class App(ctk.CTk):
             num_workers = int(self._rc_workers.get().strip() or "3")
             num_workers = max(1, min(num_workers, 10))  # clamp 1-10
             farm = RF.get_farm(num_workers=num_workers, log_func=lambda m: self._log(f"[🐑] {m}"))
+            # Gắn resolver để mỗi trình duyệt farm chạy qua ĐÚNG proxy của tài khoản (lấy live từ ProxyPool,
+            # tự cập nhật khi proxy xoay). Nhờ vậy token reCAPTCHA khớp IP với lệnh submit → hết UNUSUAL_ACTIVITY.
+            farm.set_proxy_resolver(lambda em: (self.proxy_pool.get_str(em) if self.proxy_pool else None))
             if farm.start():
                 E.set_recaptcha_farm(farm)
                 self._rc_status_lbl.configure(text=f"🟢 Token Farm đang chạy ({num_workers} luồng)", text_color="#00897B")
@@ -1479,7 +1698,7 @@ class App(ctk.CTk):
                 for i, a in enumerate(need_login, 1):
                     if self._stop: break
                     email = get_acc_email(a)
-                    profile_dir = os.path.join(HERE, "_profiles", email.replace("@", "_"))
+                    profile_dir = _profile_dir(email)
                     logp(f"🔑 [{i}/{len(need_login)}] Đang login {email} (auto-fill email+pass+2FA)...")
                     try:
                         ck = L.login_get_cookie(email, a["password"], a.get("totp", ""),
@@ -1488,14 +1707,9 @@ class App(ctk.CTk):
                         logp(f"❌ [{i}/{len(need_login)}] Lỗi login {email}: {ex}")
                         ck = None
                     if ck:
-                        res = E.bearer_from_cookie(ck)
-                        b = res[0] if isinstance(res, tuple) else res
-                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                        b, em = _bearer_and_email(ck)
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
-                        if em and not em.endswith("@google"):
-                            a["email"] = em
-                        elif email and not email.endswith("@google"):
-                            a["email"] = email
+                        _apply_acc_email(a, em, email)
                         if b:
                             logp(f"✅ [{i}/{len(need_login)}] {email}: login thành công!")
                         else:
@@ -1515,9 +1729,7 @@ class App(ctk.CTk):
                     logp(f"❌ Lỗi mở Chrome: {ex}")
                     ck = None
                 if ck:
-                    res = E.bearer_from_cookie(ck)
-                    b = res[0] if isinstance(res, tuple) else res
-                    em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                    b, em = _bearer_and_email(ck)
                     if b:
                         found = next((a for a in self.accounts if a.get("email") == em), None)
                         if found:
@@ -1540,9 +1752,7 @@ class App(ctk.CTk):
         def work():
             def one(a):
                 if a.get("cookie"):
-                    res = E.bearer_from_cookie(a["cookie"])
-                    b = res[0] if isinstance(res, tuple) else res
-                    em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                    b, em = _bearer_and_email(a["cookie"])
                     a["status"] = "ok" if b else "dead"
                     if em: a["email"] = em
                 return a
@@ -1567,8 +1777,7 @@ class App(ctk.CTk):
                 if not (a.get("enabled", True) or a.get("role") == "donor"):
                     continue
                 if a.get("cookie") and a.get("status") == "ok":
-                    res = E.bearer_from_cookie(a["cookie"])
-                    b = res[0] if isinstance(res, tuple) else res
+                    b, _em = _bearer_and_email(a["cookie"])
                     if not b:
                         a["status"] = "dead"
                         logp(f"🩺 {a.get('email', '?')}: cookie đã hết hạn → cần login lại.")
@@ -1586,7 +1795,7 @@ class App(ctk.CTk):
             for i, a in enumerate(todo, 1):
                 if self._stop: break
                 email = a.get('email') or a.get('id') or '?'
-                profile_dir = os.path.join(HERE, "_profiles", email.replace("@", "_"))
+                profile_dir = _profile_dir(email)
 
                 # Pha 1: Thử mở profile cũ (CHỈ khi KHÔNG có password)
                 # Nếu có password → bỏ qua profile cũ, đi thẳng Pha 2 để lấy cookie tươi 100% (session mới hoàn toàn)
@@ -1595,9 +1804,7 @@ class App(ctk.CTk):
                     logp(f"🔄 [{i}/{len(todo)}] Thử profile cũ cho {email} (không có password)...")
                     ck = L.reopen_profile_cookie(profile_dir, log=logp, timeout=90, poll=3)
                     if ck:
-                        res = E.bearer_from_cookie(ck)
-                        b = res[0] if isinstance(res, tuple) else res
-                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                        b, em = _bearer_and_email(ck)
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         if em: a["email"] = em
                         if b:
@@ -1611,9 +1818,7 @@ class App(ctk.CTk):
                     ck = L.login_get_cookie(a["email"], a["password"], a.get("totp", ""),
                                             profile_dir=profile_dir, log=logp)
                     if ck:
-                        res = E.bearer_from_cookie(ck)
-                        b = res[0] if isinstance(res, tuple) else res
-                        em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                        b, em = _bearer_and_email(ck)
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         if em: a["email"] = em
                     else:
@@ -1677,6 +1882,17 @@ class App(ctk.CTk):
             self.after(0, lambda: self._hc_status_lbl.configure(text="⏳ Đang check cookie...", text_color="#F9A825"))
             self._log("🩺 [Health Check] Bắt đầu kiểm tra cookie...")
 
+            # Debounce save_accs()/_refresh_acc(): trước đây gọi sau MỖI tài khoản trong vòng lặp
+            # re-login (O(N) lần ghi đĩa + rebuild toàn bộ UI), khiến tổng chi phí ~O(N²) với N lớn.
+            # Giờ chỉ lưu/refresh tối đa mỗi 3s, và luôn lưu ngay khi force=True (cuối mỗi pha).
+            _last_save_ts = [0.0]
+            def _debounced_save_refresh(force=False):
+                now = time.time()
+                if force or now - _last_save_ts[0] >= 3.0:
+                    save_accs(self.accounts)
+                    self.after(0, self._refresh_acc)
+                    _last_save_ts[0] = now
+
             # Bước 1: Kiểm tra cookie song song
             accs_with_cookie = [a for a in self.accounts if a.get("cookie") and (a.get("enabled", True) or a.get("role") == "donor")]
             if not accs_with_cookie:
@@ -1689,16 +1905,10 @@ class App(ctk.CTk):
                 # Xóa cache cũ trước khi kiểm tra — tránh "phantom token" từ cache 10 phút
                 try: E.invalidate_wiz_cache(a["cookie"])
                 except Exception: pass
-                res = E.bearer_from_cookie(a["cookie"])
-                b = res[0] if isinstance(res, tuple) else res
-                em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                b, em = _bearer_and_email(a["cookie"])
                 if b:
                     a["status"] = "ok"
-                    real_em = get_acc_email(a)
-                    if em and not em.endswith("@google"):
-                        a["email"] = em
-                    elif real_em and not real_em.endswith("@google"):
-                        a["email"] = real_em
+                    _apply_acc_email(a, em, get_acc_email(a))
                 else:
                     a["status"] = "dead"
                     dead_accs.append(a)
@@ -1717,31 +1927,37 @@ class App(ctk.CTk):
             # Pha 2: Nếu profile fail + có password → dùng password login lại
             if dead_accs and L is not None:
                 still_dead = []
+                still_dead_lock = threading.Lock()
                 self._log(f"🔄 [Health Check] Pha 1: Thử mở Chrome profile cũ cho {len(dead_accs)} tài khoản chết (không cần password)...")
                 self.after(0, lambda: self._hc_status_lbl.configure(
                     text=f"🔄 Profile re-login {len(dead_accs)} tk...", text_color="#F9A825"))
-                for i, a in enumerate(dead_accs, 1):
+                if not hasattr(self, "_hc_attempted_accs") or isinstance(self._hc_attempted_accs, set):
+                    self._hc_attempted_accs = {}
+                _hc_attempted_lock = threading.Lock()
+
+                def _try_profile_relogin(item):
+                    i, a = item
                     email = get_acc_email(a)
-                    profile_dir = os.path.join(HERE, "_profiles", email.replace("@", "_"))
-                    if not hasattr(self, "_hc_attempted_accs") or isinstance(self._hc_attempted_accs, set):
-                        self._hc_attempted_accs = {}
+                    profile_dir = _profile_dir(email)
                     now = time.time()
-                    last_try = self._hc_attempted_accs.get(email, 0.0)
+                    with _hc_attempted_lock:
+                        last_try = self._hc_attempted_accs.get(email, 0.0)
                     if now - last_try < 300:
                         self._log(f"  [{i}/{len(dead_accs)}] {email}: Đã thử khôi phục gần đây ({int(now - last_try)}s trước) → Tạm dừng để tránh vòng lặp bật/tắt.")
-                        still_dead.append(a)
-                        continue
+                        with still_dead_lock: still_dead.append(a)
+                        return
                     if not os.path.exists(profile_dir):
                         self._log(f"  [{i}/{len(dead_accs)}] {email}: chưa có profile → bỏ qua pha 1.")
-                        still_dead.append(a)
-                        continue
+                        with still_dead_lock: still_dead.append(a)
+                        return
                     # ★ Nếu có password → bỏ qua profile cũ, đi thẳng Pha 2 (login tươi 100%)
                     # Tránh lỗi "cookie bán-chết": profile cũ có session sắp hết hạn → cookie chỉ sống 1-2 phút
                     if a.get("password"):
                         self._log(f"  [{i}/{len(dead_accs)}] {email}: có password → bỏ qua profile cũ, dùng password login tươi.")
-                        still_dead.append(a)
-                        continue
-                    self._hc_attempted_accs[email] = now
+                        with still_dead_lock: still_dead.append(a)
+                        return
+                    with _hc_attempted_lock:
+                        self._hc_attempted_accs[email] = now
                     self._log(f"  [{i}/{len(dead_accs)}] {email}: đang mở profile cũ...")
                     try:
                         ck = L.reopen_profile_cookie(
@@ -1750,28 +1966,28 @@ class App(ctk.CTk):
                             timeout=90, poll=3
                         )
                         if ck:
-                            res = E.bearer_from_cookie(ck)
-                            b = res[0] if isinstance(res, tuple) else res
-                            em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                            b, em = _bearer_and_email(ck)
                             a["cookie"] = ck
                             a["status"] = "ok" if b else "dead"
-                            if em and not em.endswith("@google"):
-                                a["email"] = em
-                            elif email and not email.endswith("@google"):
-                                a["email"] = email
+                            _apply_acc_email(a, em, email)
                             if b:
                                 self._log(f"✅ [Health Check] {email}: profile re-login thành công! (không cần password)")
                             else:
                                 self._log(f"⚠️ [Health Check] {email}: có cookie mới nhưng không dùng được.")
-                                still_dead.append(a)
+                                with still_dead_lock: still_dead.append(a)
                         else:
-                            still_dead.append(a)
+                            with still_dead_lock: still_dead.append(a)
                             self._log(f"⚠️ [Health Check] {email}: profile hết session → cần password.")
                     except Exception as ex:
-                        still_dead.append(a)
+                        with still_dead_lock: still_dead.append(a)
                         self._log(f"⚠️ [Health Check] {email}: lỗi profile: {ex}")
-                    save_accs(self.accounts)
-                    self.after(0, self._refresh_acc)
+                    _debounced_save_refresh()
+
+                # Song song hoá (tối đa 4 Chrome cùng lúc) thay vì tuần tự từng tài khoản (90s/tk) —
+                # trước đây N tài khoản chết có thể mất tới N×90s.
+                with ThreadPoolExecutor(max_workers=4) as ex_pool:
+                    list(ex_pool.map(_try_profile_relogin, enumerate(dead_accs, 1)))
+                _debounced_save_refresh(force=True)
 
                 # Pha 2: Fallback dùng password cho các acc vẫn còn chết
                 relogin_accs = [a for a in still_dead if a.get("password")]
@@ -1785,19 +2001,14 @@ class App(ctk.CTk):
                         try:
                             ck = L.login_get_cookie(
                                 email, a["password"], a.get("totp", ""),
-                                profile_dir=os.path.join(HERE, "_profiles", email.replace("@", "_")),
+                                profile_dir=_profile_dir(email),
                                 log=lambda m: self._log(f"  [Health Check] {m}")
                             )
                             if ck:
-                                res = E.bearer_from_cookie(ck)
-                                b = res[0] if isinstance(res, tuple) else res
-                                em = res[1] if (isinstance(res, tuple) and len(res) > 1) else None
+                                b, em = _bearer_and_email(ck)
                                 a["cookie"] = ck
                                 a["status"] = "ok" if b else "dead"
-                                if em and not em.endswith("@google"):
-                                    a["email"] = em
-                                elif email and not email.endswith("@google"):
-                                    a["email"] = email
+                                _apply_acc_email(a, em, email)
                                 if b:
                                     self._log(f"✅ [Health Check] {email}: password re-login thành công!")
                                 else:
@@ -1807,8 +2018,8 @@ class App(ctk.CTk):
                                 self._log(f"❌ [Health Check] {email}: password re-login thất bại.")
                         except Exception as ex:
                             self._log(f"❌ [Health Check] {email}: lỗi re-login: {ex}")
-                        save_accs(self.accounts)
-                        self.after(0, self._refresh_acc)
+                        _debounced_save_refresh()
+                    _debounced_save_refresh(force=True)
                 elif still_dead:
                     no_pass = [a.get("email", "?") for a in still_dead if not a.get("password")]
                     if no_pass:
@@ -2716,8 +2927,13 @@ class App(ctk.CTk):
                             _set(r["s"], f"m_{e}_s", text=f"😴 nghỉ {int(rem)}s", text_color="#F9A825")
                     else:
                         _set(r["s"], f"m_{e}_s", text="🟢 đang chạy", text_color=GR)
-        except Exception:
-            pass
+        except Exception as e:
+            # Giới hạn 1 dòng log / 30s để tránh spam nếu lỗi lặp lại mỗi 2s
+            now = time.time()
+            if now - getattr(self, "_pool_update_err_ts", 0) > 30:
+                self._pool_update_err_ts = now
+                import traceback
+                self._log(f"⚠️ [_update_pool] Lỗi: {e}\n{traceback.format_exc(limit=3)}")
         finally:
             self.after(2000, self._update_pool)
 
@@ -3409,9 +3625,11 @@ class App(ctk.CTk):
                             self._log(f"  ⚠️ {st.email[:16]}: ảnh đầu vào vi phạm chính sách Google")
                             return ("fail", "vi phạm cs")
                         if ref_mid == "proxy_dead":
+                            reason = E.get_last_proxy_error()
+                            reason_sfx = f" [{reason[:80]}]" if reason else ""
                             new_px = self.proxy_pool.mark_dead(st.email)
                             st.proxy = self.proxy_pool.get_dict(st.email) if new_px else None
-                            self._log(f"  🔄 {st.email[:16]}: proxy chết khi upload → {'đổi proxy mới' if new_px else 'hết proxy, dùng IP máy'}")
+                            self._log(f"  🔄 {st.email[:16]}: proxy chết khi upload{reason_sfx} → {'đổi proxy mới' if new_px else 'hết proxy, dùng IP máy'}")
                             return "retry_soft"
                         if ref_mid == "net_fail":
                             # Kết nối bị cắt / TLS rác / timeout → requeue, KHÔNG đánh lỗi job
@@ -3477,9 +3695,11 @@ class App(ctk.CTk):
                                 self._log(f"  ⚠️ {st.email[:16]}: ảnh đầu vào vi phạm chính sách Google (retry)")
                                 return ("fail", "vi phạm cs")
                             if ref_mid == "proxy_dead":
+                                reason = E.get_last_proxy_error()
+                                reason_sfx = f" [{reason[:80]}]" if reason else ""
                                 new_px = self.proxy_pool.mark_dead(st.email)
                                 st.proxy = self.proxy_pool.get_dict(st.email) if new_px else None
-                                self._log(f"  🔄 {st.email[:16]}: proxy chết khi upload (retry) → {'đổi proxy mới' if new_px else 'hết proxy, dùng IP máy'}")
+                                self._log(f"  🔄 {st.email[:16]}: proxy chết khi upload (retry){reason_sfx} → {'đổi proxy mới' if new_px else 'hết proxy, dùng IP máy'}")
                                 return "retry_soft"
                             if ref_mid in ("net_fail", "unauthorized"):
                                 self._log(f"  🌐 {st.email[:16]}: upload ảnh thất bại ({ref_mid}) → trả job về hàng đợi")
@@ -3538,7 +3758,9 @@ class App(ctk.CTk):
                     if not st.acquire_submit(lambda: self._stop):
                         return "retry_soft"
                     try:
-                        with st.submit_guard(4.0, 6.0):
+                        with st.submit_guard(4.0, 6.0, stop_check=lambda: self._stop) as _slot:
+                            if not _slot:
+                                return "retry_soft"
                             kind, ops = E.submit_video(bearer, project, job["prompt"], seed, aspect, model, ref_mid, proxy=st.proxy, cookie=st.cookie, email=st.email)
                     finally:
                         st.release_submit()
@@ -3548,9 +3770,10 @@ class App(ctk.CTk):
                         _refreshed = E.get_refreshed_cookie(st.cookie)
                         if _refreshed:
                             st.cookie = _refreshed
+                            st.acc["cookie"] = _refreshed
                             cookie = _refreshed
                             self._log(f"  🔄 {st.email[:16]}: Cookie đã được Headless OAuth Refresh tự động!")
-                        pk, mid, _ = E.poll_video(bearer, ops, cookie=cookie, max_attempts=POLL_MAX, interval=8, proxy=st.proxy)
+                        pk, mid, _ = E.poll_video(bearer, ops, cookie=cookie, max_attempts=POLL_MAX, interval=8, proxy=st.proxy, project=project)
                         if pk == "done":
                             n = E.download_video(mid, cookie, job["out"], proxy=st.proxy)
                             if n == E.DL_PROXY_DEAD:
@@ -3666,9 +3889,9 @@ class App(ctk.CTk):
                         time.sleep(min(w, 3)); continue        # account đang nghỉ -> không pull job
                     if not st.ensure_auth():
                         time.sleep(2); continue
-                    with st.blk:
+                    with st._gate:
                         if st.busy >= st.get_current_max_busy():
-                            time.sleep(0.5); continue
+                            st._gate.wait(0.5); continue
                     try:
                         job = jobq.get(timeout=2)
                     except queue.Empty:
@@ -3698,7 +3921,7 @@ class App(ctk.CTk):
                     if outcome == "success":
                         job["status"] = "xong"; st.wins += 1; st.clear_rest()
                         if st.on_video_ok():
-                            self._log(f"  ⚡ [{st.email[:12]}] {UPLOAD_UP_AFTER} video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
+                            self._log(f"  📈 [{st.email[:12]}] chạy êm {RATE_UP_EVERY // 60}p ➜ tăng tốc lên {st.rate_limit} video/10p")
                         ts_deque = getattr(self, "_done_timestamps", None)
                         if ts_deque is not None: ts_deque.append(time.time())
                     elif outcome == "retry_soft":
@@ -3857,15 +4080,17 @@ class App(ctk.CTk):
                     # 3) Gọi build video hoàn chỉnh (Chạy trong thread riêng để không treo UI)
                     def _do_build(c_list=clips, va_list=voice_audios, vt_list=voice_texts, out_p=final, bp=bgm_path):
                         try:
-                            success = auto_voice_sub.build_final_video(
-                                clips=c_list,
-                                voice_audios=va_list,
-                                voice_texts=vt_list,
-                                output_path=out_p,
-                                bgm_path=bp,
-                                bgm_volume=0.15,
-                                log_cb=self._log
-                            )
+                            # Giới hạn tối đa 2 tiến trình hậu kỳ FFmpeg chạy song song trên toàn app
+                            with self._postprocess_sem:
+                                success = auto_voice_sub.build_final_video(
+                                    clips=c_list,
+                                    voice_audios=va_list,
+                                    voice_texts=vt_list,
+                                    output_path=out_p,
+                                    bgm_path=bp,
+                                    bgm_volume=0.15,
+                                    log_cb=self._log
+                                )
                             # Dọn dẹp các file audio voice tạm
                             for path in va_list:
                                 try:
@@ -5498,7 +5723,9 @@ class App(ctk.CTk):
                             if not st.acquire_submit(lambda: self._shopee_stop_flag):
                                 return "retry_soft"
                             try:
-                                with st.submit_guard(4.0, 6.0):
+                                with st.submit_guard(4.0, 6.0, stop_check=lambda: self._shopee_stop_flag) as _slot:
+                                    if not _slot:
+                                        return "retry_soft"
                                     v_status, ops = E.submit_video(
                                         bearer, project, vid_prompt,
                                         seed=vid_seed, aspect=aspect_key,
@@ -5512,6 +5739,7 @@ class App(ctk.CTk):
                                 _refreshed = E.get_refreshed_cookie(st.cookie)
                                 if _refreshed:
                                     st.cookie = _refreshed
+                                    st.acc["cookie"] = _refreshed
                                     cookie = _refreshed
                                 vid_ok = True; break
                             elif v_status == "throttle":
@@ -5557,7 +5785,7 @@ class App(ctk.CTk):
                     for seg_i, clip_path, ops in submitted_ops:
                         if self._shopee_stop_flag: break
                         self._sp_log_msg(f"  ⏳ Đoạn {seg_i+1}: Chờ render...")
-                        kind, poll_result, _ = E.poll_video(bearer, ops, cookie=cookie, max_attempts=POLL_MAX, interval=8, proxy=st.proxy)
+                        kind, poll_result, _ = E.poll_video(bearer, ops, cookie=cookie, max_attempts=POLL_MAX, interval=8, proxy=st.proxy, project=project)
                         if kind != "done":
                             self._sp_log_msg(f"  ❌ Đoạn {seg_i+1} render thất bại: {kind} — {poll_result}")
                             # Vi phạm chính sách → retry vô ích, dừng SP này luôn
@@ -5674,9 +5902,9 @@ class App(ctk.CTk):
                         time.sleep(min(w, 3)); continue
                     if not st.ensure_auth():
                         time.sleep(2); continue
-                    with st.blk:
+                    with st._gate:
                         if st.busy >= st.get_current_max_busy():
-                            time.sleep(0.5); continue
+                            st._gate.wait(0.5); continue
                     try:
                         prod = jobq.get(timeout=2)
                     except queue.Empty:
@@ -5713,7 +5941,7 @@ class App(ctk.CTk):
                         prod["_status"] = "success"
                         st.wins += 1; st.clear_rest()
                         if st.on_video_ok():
-                            self._sp_log_msg(f"  ⚡ [{st.email[:12]}] {UPLOAD_UP_AFTER} video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
+                            self._sp_log_msg(f"  📈 [{st.email[:12]}] chạy êm {RATE_UP_EVERY // 60}p ➜ tăng tốc lên {st.rate_limit} video/10p")
                         self._sp_update_line_status(line_idx, "success")
                         ts_deque = getattr(self, "_sp_done_timestamps", None)
                         if ts_deque is not None: ts_deque.append(time.time())
@@ -6226,7 +6454,7 @@ class App(ctk.CTk):
                                  font=("", 11), text_color=T2).pack(anchor="w", pady=6)
                 else:
                     cols = [("Tài khoản", 130), ("✅ Xong", 50), ("❌ Lỗi", 45),
-                            ("⚡ Tạo", 40), ("🚀 Tốc độ", 55), ("Trạng thái", 105), ("🌐 Proxy", 150), ("Hành động", 65), ("📤 Upload", 60)]
+                            ("⚡ Tạo", 40), ("🚀 Video/10p", 75), ("Trạng thái", 105), ("🌐 Proxy", 150), ("Hành động", 65), ("📤 Upload", 60)]
                     hdr = ctk.CTkFrame(self._sv_pool_rows_frame, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 2))
                     for txt, w in cols:
                         ctk.CTkLabel(hdr, text=txt, font=("", 10, "bold"), text_color=T2, width=w, anchor="w").pack(side="left", padx=(2, 0))
@@ -6237,7 +6465,7 @@ class App(ctk.CTk):
                         wl = ctk.CTkLabel(row, text="0", font=("", 11, "bold"), text_color=GR, width=50, anchor="w"); wl.pack(side="left", padx=(2, 0))
                         fl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=RD, width=45, anchor="w"); fl.pack(side="left", padx=(2, 0))
                         bl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=T1, width=40, anchor="w"); bl.pack(side="left", padx=(2, 0))
-                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=55, anchor="w"); rl.pack(side="left", padx=(2, 0))
+                        rl = ctk.CTkLabel(row, text="0", font=("", 11), text_color=AC, width=75, anchor="w"); rl.pack(side="left", padx=(2, 0))
                         sl = ctk.CTkLabel(row, text="", font=("", 11), text_color=GR, width=105, anchor="w"); sl.pack(side="left", padx=(2, 0))
                         pl = ctk.CTkLabel(row, text="—", font=("Consolas", 10), text_color=T2, width=150, anchor="w"); pl.pack(side="left", padx=(2, 0))
                         ab = ctk.CTkButton(row, text="⏹ Dừng", fg_color="#E57373", hover_color="#EF5350", width=60, height=24, font=("", 11, "bold"),
@@ -6257,7 +6485,10 @@ class App(ctk.CTk):
                 _set(r["w"], f"{e}_w", text=str(s.wins))
                 _set(r["f"], f"{e}_f", text=str(s.fails))
                 _set(r["b"], f"{e}_b", text=str(s.busy))
-                _set(r["r"], f"{e}_r", text=str(int(s.submit_limit)))
+                _rate_txt = f"{s.rate_submits_in_window()}/{s.rate_limit}"
+                if s.rate_ceiling is not None:
+                    _rate_txt += f" ≤{s.rate_ceiling}"
+                _set(r["r"], f"{e}_r", text=_rate_txt)
                 cur_up = str(getattr(s, "upload_threads", 1))
                 if r.get("u") and r["u"].get() != cur_up:
                     r["u"].set(cur_up)
@@ -6281,6 +6512,10 @@ class App(ctk.CTk):
                     if rem > 0:
                         if s.rest_reason == "quota":
                             _set(r["s"], f"{e}_s", text=f"⛔ cách ly {int(rem//60)}p", text_color=RD)
+                        elif s.rest_reason == "break":
+                            _set(r["s"], f"{e}_s", text=f"☕ nghỉ ngắn {int(rem//60)}p{int(rem % 60):02d}s", text_color=AC)
+                        elif s.rest_reason == "unusual":
+                            _set(r["s"], f"{e}_s", text=f"🚩 gắn cờ, nghỉ {int(rem//60)}p", text_color=RD)
                         else:
                             _set(r["s"], f"{e}_s", text=f"😴 nghỉ {int(rem)}s", text_color="#F9A825")
                     else:
@@ -6326,12 +6561,20 @@ class App(ctk.CTk):
             self.after(500, self._sv_flush_log)
 
     def _sv_flush_log(self):
-        """Flush tất cả log buffer vào textbox 1 lần duy nhất."""
+        """Flush tất cả log buffer vào textbox + file log.txt 1 lần duy nhất."""
         self._sv_log_flush_scheduled = False
         if not hasattr(self, '_sv_log_buffer') or not self._sv_log_buffer:
             return
         batch = self._sv_log_buffer[:]
         self._sv_log_buffer.clear()
+        # Ghi ra log.txt — trước đây tab Server Video (Circuit Breaker, Submit lỗi, HOÀN TẤT...)
+        # chỉ hiện trên textbox, không lưu file, nên đọc log.txt sau khi tắt app là mất hết.
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                for m in batch:
+                    f.write(f"{m}\n")
+        except Exception:
+            pass
         try:
             self._sv_log.configure(state="normal")
             self._sv_log.insert("end", "\n".join(batch) + "\n")
@@ -7681,14 +7924,14 @@ class App(ctk.CTk):
                         self._sv_log_msg(f"  ⚠ SP {item_id}: không có image_url → bỏ qua")
                         prod["_status"] = "noretry"
                         try: self._sv_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
-                        except: pass
+                        except Exception as e: self._sv_log_msg(f"  ⚠ Báo server complete-job lỗi (item {item_id}): {e}")
                         self._sv_update_line_status(idx, "error")
                         return ("fail", "Không có image_url")
                     self._sv_log_msg(f"  📥 Tải ảnh: {image_url[:60]}...")
                     if not self._sv_download_image(image_url, img_path):
                         prod["_status"] = "noretry"
                         try: self._sv_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
-                        except: pass
+                        except Exception as e: self._sv_log_msg(f"  ⚠ Báo server complete-job lỗi (item {item_id}): {e}")
                         self._sv_update_line_status(idx, "error")
                         return ("fail", "Tải ảnh thất bại")
                     self._sv_log_msg(f"  ✅ Ảnh đã tải: {os.path.basename(img_path)}")
@@ -7906,12 +8149,7 @@ class App(ctk.CTk):
                     concat_path = clip_paths[0]
 
                 # --- Đặt tên file output ---
-                if naming_mode == "Theo Item ID":
-                    out_name = f"{item_id}.mp4"
-                elif naming_mode == "15 ký tự đầu prompt":
-                    out_name = clean_filename(prompts[0][:15]) + ".mp4"
-                else:
-                    out_name = f"{idx+1:04d}.mp4"
+                out_name = _sv_build_out_name(naming_mode, item_id, idx, prompts)
 
                 out_path = get_unique_out_path(out_dir, out_name, set())
                 try:
@@ -7930,20 +8168,7 @@ class App(ctk.CTk):
                     self._sv_log_msg(f"  ⚠ Báo server lỗi: {e}")
 
                 # --- Dọn file tạm ---
-                try:
-                    if del_img and img_path and os.path.exists(img_path):
-                        try: os.remove(img_path)
-                        except: pass
-                    for cp in clip_paths:
-                        if cp and os.path.exists(cp):
-                            try: os.remove(cp)
-                            except: pass
-                    import glob
-                    for f_tmp in glob.glob(os.path.join(temp_dir, f"sv_{item_id}_*")):
-                        try: os.remove(f_tmp)
-                        except: pass
-                except Exception:
-                    pass
+                _sv_cleanup_temp(item_id, temp_dir, img_path, clip_paths, del_img)
 
                 self._sv_last_video_time = time.time()
                 prod["_status"] = "success"
@@ -7981,7 +8206,7 @@ class App(ctk.CTk):
                                 prog = (done_count[0] + error_count[0]) / total
                                 self.after(0, lambda p=prog: self._sv_progress.set(p))
                             try: self._sv_api_call("POST", "/api/thinaptm/complete-job", {"itemId": prod.get("item_id"), "status": "failed", "tool": "thinaptm"})
-                            except: pass
+                            except Exception as e: self._sv_log_msg(f"  ⚠ Báo server complete-job lỗi (item {prod.get('item_id')}): {e}")
                     elif isinstance(result, tuple) and result[0] == "fail":
                         prod["_status"] = "noretry"
                         self._sv_update_line_status(prod["_idx"], "error")
@@ -8230,65 +8455,17 @@ class App(ctk.CTk):
                         worker_last_activity[st.email] = total
             threading.Thread(target=_stuck_detector, daemon=True).start()
 
-            # --- Lớp 4: Proactive Cookie Refresh (Làm mới cookie chủ động mỗi 20 phút) ---
-            def _proactive_cookie_refresher():
-                while not done_flag[0] and not self._sv_stop_flag:
-                    time.sleep(BEARER_TTL)  # 1200s = 20 phút
-                    if done_flag[0] or self._sv_stop_flag:
-                        break
-                    self._sv_log_msg("🔄 [Proactive Refresh] Bắt đầu làm mới cookie tất cả tài khoản...")
-                    for st in states:
-                        if done_flag[0] or self._sv_stop_flag:
-                            break
-                        # v1.0.6: Bỏ qua tài khoản đã đánh dấu lỗi vĩnh viễn (# prefix)
-                        if st.acc.get("error_message", "").startswith("#"):
-                            continue
-                        try:
-                            if st.ensure_auth(force=True):
-                                st.reset_circuit_breaker()
-                                self._sv_log_msg(f"  🔄 {st.email[:16]}: Cookie OK ✅")
-                            else:
-                                self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Cookie hết hạn → kích hoạt Instant HC")
-                                self._trigger_instant_health_check(st.email)
-                        except Exception as ex:
-                            self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Lỗi refresh: {ex}")
-                        time.sleep(5)  # Xoay vòng mỗi TK cách nhau 5 giây
-                    self._sv_log_msg("🔄 [Proactive Refresh] Hoàn tất.")
-            threading.Thread(target=_proactive_cookie_refresher, daemon=True).start()
-
             def process_one(st, prod):
                 idx = prod["_idx"]
                 if self._sv_stop_flag:
                     return "retry_soft"
 
                 if not st.ensure_auth():
-                    # ★ Kỹ thuật Chiến Hust: Thay vì retry_soft ngay (spam log + lãng phí cycles),
-                    # chờ tối đa 5 phút kiểm tra mỗi 10s xem cookie đã được refresh chưa.
-                    # Background threads (Health Check / Proactive Refresher) sẽ tự làm mới cookie.
-                    if st.is_circuit_broken():
-                        self._sv_log_msg(f"  🔌 Circuit Breaker: {st.email[:16]} ngắt mạch sau {st.auth_fail_streak} lỗi auth liên tiếp")
-                        self._trigger_instant_health_check(st.email)
-                    old_cookie = st.cookie
-                    self._sv_log_msg(f"  ⏳ {st.email[:16]}: Cookie chết → chờ tối đa 5 phút để refresh...")
-                    _wait_end = time.time() + 300  # 5 phút
-                    _recovered = False
-                    while time.time() < _wait_end and not self._sv_stop_flag:
-                        time.sleep(10)
-                        # Kiểm tra xem cookie đã thay đổi (được refresh bởi luồng nền) chưa
-                        if st.cookie and st.cookie != old_cookie:
-                            if st.ensure_auth():
-                                self._sv_log_msg(f"  ✅ {st.email[:16]}: Cookie đã được refresh → tiếp tục!")
-                                _recovered = True
-                                break
-                        # Hoặc thử lại với cookie hiện tại (có thể bearer đã được refresh)
-                        elif st.ensure_auth():
-                            self._sv_log_msg(f"  ✅ {st.email[:16]}: Auth đã hồi phục → tiếp tục!")
-                            _recovered = True
-                            break
-                    if not _recovered:
-                        st.rest(AUTH_REST, "auth")
-                        return "retry_soft"
-                    # Auth đã hồi phục — cập nhật lại biến
+                    # Cookie chết → dừng tài khoản ngay, không chờ/không tự đăng nhập lại (TstGoogleFlow 1.0.6)
+                    if not st.is_circuit_broken():
+                        st.trip_circuit_breaker()
+                    self._sv_mark_account_dead(st, "auth failed")
+                    return "retry_soft"
                 # ensure_auth() đã reset auth_fail_streak = 0 khi thành công
                 bearer, project, cookie = st.bearer, st.project, st.cookie
 
@@ -8308,14 +8485,14 @@ class App(ctk.CTk):
                         self._sv_log_msg(f"  ⚠ SP {item_id}: không có image_url → bỏ qua")
                         prod["_status"] = "noretry"
                         try: self._sv_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
-                        except: pass
+                        except Exception as e: self._sv_log_msg(f"  ⚠ Báo server complete-job lỗi (item {item_id}): {e}")
                         self._sv_update_line_status(idx, "error")
                         return ("fail", "Không có image_url")
                     self._sv_log_msg(f"  📥 Tải ảnh: {image_url[:60]}...")
                     if not self._sv_download_image(image_url, img_path):
                         prod["_status"] = "noretry"
                         try: self._sv_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
-                        except: pass
+                        except Exception as e: self._sv_log_msg(f"  ⚠ Báo server complete-job lỗi (item {item_id}): {e}")
                         self._sv_update_line_status(idx, "error")
                         return ("fail", "Tải ảnh thất bại")
                     self._sv_log_msg(f"  ✅ Ảnh đã tải: {os.path.basename(img_path)}")
@@ -8462,21 +8639,14 @@ class App(ctk.CTk):
                                 self._sv_log_msg(f"  🔑 Upload lỗi: Cookie/Bearer hết hạn (401)")
                                 st.bearer = None
                                 st.auth_fail_streak += 1
-                                st.trip_circuit_breaker()
-                                self._sv_log_msg(f"  🔌 Circuit Breaker: {st.email[:16]} ngắt mạch (401 Cookie hết hạn) → Tạm dừng luồng chờ cookie mới")
-                                self._trigger_instant_health_check(st.email)
-                                st.rest(AUTH_REST, "auth")
+                                if st.auth_fail_streak >= 2 and not st.is_circuit_broken():
+                                    st.trip_circuit_breaker()
+                                    self._sv_mark_account_dead(st, "401 khi upload ảnh")
+                                else:
+                                    st.rest(AUTH_REST, "auth")
                                 return "retry_soft"
                             elif mid == "unusual":
-                                # Chống đếm trùng: 2 worker trong 30s chỉ tính 1 lần
-                                _last_unusual = getattr(st, "_last_unusual_time", 0)
-                                _now = time.time()
-                                if _now - _last_unusual > 30:
-                                    st.unusual_streak += 1
-                                    st._last_unusual_time = _now
-                                unusual_rest = min(600, 60 * (2 ** (st.unusual_streak - 1)))
-                                self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Upload bị unusual (lần {st.unusual_streak}) → nghỉ {unusual_rest}s")
-                                st.rest(unusual_rest, "unusual")
+                                self._sv_handle_unusual(st, "upload ảnh")
                                 return "retry_soft"
                             else:
                                 self._sv_log_msg(f"  ❌ Upload trả về rỗng (Google từ chối hoặc không cấp Media ID)")
@@ -8508,9 +8678,9 @@ class App(ctk.CTk):
                     try:
                         if st.is_circuit_broken() or st.rest_remaining() > 0:
                             return "retry_soft"
-                        with st.submit_guard(8.0, 12.0):
+                        with st.submit_guard(8.0, 12.0, stop_check=lambda: self._sv_stop_flag) as _slot:
                             # ★ Kiểm tra lần cuối SAU KHI lấy được khóa submit (chặn race condition giữa 2 worker)
-                            if st.is_circuit_broken() or st.rest_remaining() > 0:
+                            if not _slot or st.is_circuit_broken() or st.rest_remaining() > 0:
                                 return "retry_soft"
                             vid_seed = random.randint(1, 999999)
                             v_status, ops = E.submit_video(
@@ -8544,26 +8714,18 @@ class App(ctk.CTk):
                             self._sv_log_msg(f"    ⛔ {st.email[:16]} HẾT QUOTA → cách ly")
                             return "retry_soft"
                         if v_status == "unusual":
-                            # Chống đếm trùng: 2 worker cùng dính unusual trong 30s chỉ tính 1 lần
-                            _last_unusual = getattr(st, "_last_unusual_time", 0)
-                            _now = time.time()
-                            if _now - _last_unusual > 30:
-                                st.unusual_streak += 1
-                                st._last_unusual_time = _now
-                            # Lũy tiến nhẹ hơn: 60s → 120s → 300s → 600s (tối đa)
-                            unusual_rest = min(600, 60 * (2 ** (st.unusual_streak - 1)))
-                            st.rest(unusual_rest, "unusual")
-                            self._sv_log_msg(f"  ⚠️ {st.email[:16]}: Google báo unusual activity (lần {st.unusual_streak}) → nghỉ {unusual_rest}s")
+                            self._sv_handle_unusual(st, "submit video")
                             return "retry_soft"
                         if v_status == "auth":
                             st.bearer = None
                             try: E.invalidate_wiz_cache(st.cookie)
                             except Exception: pass
                             st.auth_fail_streak += 1
-                            st.trip_circuit_breaker()
-                            self._sv_log_msg(f"  🔌 Circuit Breaker: {st.email[:16]} ngắt mạch (Auth hết hạn) → Tạm dừng luồng chờ cookie mới")
-                            self._trigger_instant_health_check(st.email)
-                            st.rest(AUTH_REST, "auth")
+                            if st.auth_fail_streak >= 2 and not st.is_circuit_broken():
+                                st.trip_circuit_breaker()
+                                self._sv_mark_account_dead(st, "401 khi submit video")
+                            else:
+                                st.rest(AUTH_REST, "auth")
                             return "retry_soft"
                         if v_status == "vi phạm cs" or "PROMINENT_PEOPLE" in err_str or "AUDIO_FILTERED" in err_str:
                             prod["_status"] = "noretry"
@@ -8580,15 +8742,15 @@ class App(ctk.CTk):
                     # AIMD success
                     st.on_submit_ok()
                     st.proxy_fail_streak = 0  # Submit OK → reset proxy streak
-                    st.unusual_streak = 0     # Submit OK → reset unusual streak
                     # ★ Headless OAuth Refresh: cập nhật cookie nếu engine đã refresh
                     _refreshed = E.get_refreshed_cookie(st.cookie)
                     if _refreshed:
                         st.cookie = _refreshed
+                        st.acc["cookie"] = _refreshed
                         cookie = _refreshed
 
                     self._sv_log_msg(f"  ⏳ Polling segment {seg_idx+1}...")
-                    kind, poll_result, _ = E.poll_video(bearer, ops, cookie=cookie, max_attempts=POLL_MAX, interval=8, proxy=st.proxy)
+                    kind, poll_result, _ = E.poll_video(bearer, ops, cookie=cookie, max_attempts=POLL_MAX, interval=8, proxy=st.proxy, project=project)
                     if kind != "done":
                         self._sv_log_msg(f"  ❌ Segment {seg_idx+1} render thất bại: {kind} — {poll_result}")
                         if kind == "proxy_dead":
@@ -8662,12 +8824,7 @@ class App(ctk.CTk):
                             ghep_anh_loi = True
 
                 # --- Đặt tên file output ---
-                if naming_mode == "Theo Item ID":
-                    out_name = f"{item_id}.mp4"
-                elif naming_mode == "15 ký tự đầu prompt":
-                    out_name = clean_filename(prompts[0][:15]) + ".mp4"
-                else:
-                    out_name = f"{idx+1:04d}.mp4"
+                out_name = _sv_build_out_name(naming_mode, item_id, idx, prompts)
 
                 target_dir = os.path.join(out_dir, "video8sloi") if ghep_anh_loi else out_dir
                 os.makedirs(target_dir, exist_ok=True)
@@ -8688,29 +8845,18 @@ class App(ctk.CTk):
                     self._sv_log_msg(f"  ⚠ Báo server lỗi: {e}")
 
                 # --- Dọn dẹp triệt để file tạm (Auto-cleanup) ---
-                try:
-                    if composite_path and os.path.exists(composite_path):
-                        try: os.remove(composite_path)
-                        except: pass
-                    if del_img and img_path and os.path.exists(img_path):
-                        try: os.remove(img_path)
-                        except: pass
-                    for cp in clip_paths:
-                        if cp and os.path.exists(cp):
-                            try: os.remove(cp)
-                            except: pass
-                    import glob
-                    for f in glob.glob(os.path.join(temp_dir, f"sv_{item_id}_*")):
-                        try: os.remove(f)
-                        except: pass
-                except Exception:
-                    pass
+                _sv_cleanup_temp(item_id, temp_dir, img_path, clip_paths, del_img, composite_path)
 
                 # Update trạng thái
                 self._sv_last_video_time = time.time()
                 st.wins += 1
                 if st.on_video_ok():
-                    self._sv_log_msg(f"  ⚡ [{st.email[:12]}] {UPLOAD_UP_AFTER} video OK liên tiếp ➜ Tự động nâng luồng upload lên {st.upload_threads}")
+                    _ceil = f", trần {st.rate_ceiling}" if st.rate_ceiling is not None else ""
+                    self._sv_log_msg(f"  📈 [{st.email[:12]}] chạy êm {RATE_UP_EVERY // 60}p ➜ tăng tốc lên {st.rate_limit} video/10p{_ceil}")
+                    try:
+                        save_accs(self.accounts)
+                    except Exception:
+                        pass
                 prod["_status"] = "success"
                 self._sv_update_line_status(idx, "success")
                 with results_lock:
@@ -8790,14 +8936,29 @@ class App(ctk.CTk):
                             pass
 
                         if not _synced:
-                            if st.is_circuit_broken() or st.auth_fail_streak >= 2:
-                                self._trigger_instant_health_check(st.email)
-                            time.sleep(2)
+                            # TK đã đánh dấu chết → giãn nhịp thử lại, tránh gọi ensure_auth() (có request
+                            # mạng tới Google) mỗi 2s trên một cookie đã biết là chết. Vòng quét cookie mới
+                            # ở trên là thao tác nội bộ nên vẫn phát hiện được khi người dùng đăng nhập lại.
+                            time.sleep(30 if st.is_circuit_broken() else 2)
                         continue
-                    with st.blk:
+                    with st._gate:
                         if st.busy >= st.get_current_max_busy():
-                            time.sleep(0.5)
+                            st._gate.wait(0.5)
                             continue
+                    # Nghỉ ngắn định kỳ: tới giờ thì KHÔNG nhận SP mới, chờ SP đang chạy xong rồi mới nghỉ
+                    if st.break_due():
+                        if st.busy > 0:
+                            time.sleep(2)
+                            continue
+                        _brk = st.start_break()
+                        if _brk:
+                            self._sv_log_msg(f"  ☕ {st.email[:16]}: đã chạy {int(_brk[0] // 60)}p → nghỉ ngắn {int(_brk[1] // 60)}p")
+                        continue
+                    # Chưa tới lượt submit theo bộ điều tốc → không giành SP trong hàng đợi chung (để TK khác nhận)
+                    _rw = st.rate_wait_seconds()
+                    if _rw > 0:
+                        time.sleep(min(2.0, _rw))
+                        continue
                     try:
                         prod = jobq.get(timeout=2)
                     except queue.Empty:
@@ -8826,8 +8987,8 @@ class App(ctk.CTk):
                                 try:
                                     self._sv_api_call("POST", "/api/thinaptm/release-single-job", {"itemId": prod.get("item_id")})
                                     self._sv_log_msg(f"  🔄 Trả SP {prod.get('item_id')} về pending (TK đang chết cookie)")
-                                except:
-                                    pass
+                                except Exception as e:
+                                    self._sv_log_msg(f"  ⚠ Báo server release-single-job lỗi (item {prod.get('item_id')}): {e}")
                                 # Đưa lại vào queue nội bộ để thử lại sau khi TK hồi sinh
                                 prod["_cycles"] = 0
                                 jobq.put(prod)
@@ -8841,7 +9002,7 @@ class App(ctk.CTk):
                                     progress_count[0] += 1
                                     self.after(0, lambda: self._sv_progress.set(progress_count[0] / total))
                                 try: self._sv_api_call("POST", "/api/thinaptm/complete-job", {"itemId": prod.get("item_id"), "status": "failed", "tool": "thinaptm"})
-                                except: pass
+                                except Exception as e: self._sv_log_msg(f"  ⚠ Báo server complete-job lỗi (item {prod.get('item_id')}): {e}")
                     elif isinstance(result, tuple) and result[0] == "fail":
                         prod["_status"] = "noretry"
                         self._sv_update_line_status(prod["_idx"], "error")
@@ -8901,32 +9062,16 @@ class App(ctk.CTk):
         self._sv_status_lbl.configure(text="⏹ Đang dừng...")
         self._sv_log_msg("⏹ Đã gửi lệnh dừng, chờ hoàn tất bước hiện tại...")
 
-    def _trigger_instant_health_check(self, target_email=""):
-        """Lớp 3: Kích hoạt Health Check khẩn cấp tức thì (Instant Health Check) khi phát hiện lỗi auth/cookie hết hạn."""
-        if getattr(self, "_health_checking", False):
-            # HC đang chạy — KHÔNG gọi sync ở đây, để finally block xử lý khi HC xong
-            self._sv_log_msg(f"  ⏳ Health Check đang chạy, chờ kết quả...")
-            return
-        # Debounce nhẹ 10s chống các worker gọi đè cùng 1 giây (đã có _health_checking bảo vệ)
-        _last = getattr(self, "_last_instant_hc_time", 0)
-        if time.time() - _last < 10:
-            return
-        self._last_instant_hc_time = time.time()
-        self._sv_log_msg(f"⚡ [Instant HC] Kích hoạt Health Check khẩn cấp{f' cho {target_email[:16]}' if target_email else ''}...")
-        def _hc_bg():
-            try:
-                self._do_health_check()
-            except Exception as ex:
-                self._sv_log_msg(f"  ⚠️ [Instant HC] Lỗi: {ex}")
-            finally:
-                self._sv_sync_cookies()
-        threading.Thread(target=_hc_bg, daemon=True).start()
-
     def _sv_sync_cookies(self):
-        """Đồng bộ cookie mới từ self.accounts vào các AccountState của Server tab sau Health Check."""
-        if not hasattr(self, '_sv_pool_states') or not self._sv_pool_states:
+        """Đồng bộ cookie mới từ self.accounts vào các AccountState đang chạy (Tạo Video / Sản phẩm / Server 24/7) sau Health Check."""
+        pools = []
+        for attr in ("_pool_states", "_sp_pool_states", "_sv_pool_states"):
+            p = getattr(self, attr, None)
+            if p:
+                pools.extend(p)
+        if not pools:
             return
-        for st in self._sv_pool_states:
+        for st in pools:
             st_em = str(st.email).strip().lower()
             for acc in self.accounts:
                 acc_email = str(get_acc_email(acc)).strip().lower()
@@ -8934,8 +9079,15 @@ class App(ctk.CTk):
                 acc_id_raw = str(acc.get("id") or "").strip().lower()
                 if acc_email == st_em or acc_em_raw == st_em or acc_id_raw == st_em:
                     new_cookie = acc.get("cookie", "")
-                    if new_cookie and new_cookie != st.cookie:
-                        st.cookie = new_cookie
+                    cookie_changed = bool(new_cookie) and new_cookie != st.cookie
+                    # Cookie không đổi nhưng Health Check vừa xác nhận nó vẫn sống (lỗi thoáng qua, không phải chết thật)
+                    revived_same_cookie = (
+                        not cookie_changed and acc.get("status") == "ok"
+                        and (st.is_circuit_broken() or st.rest_reason in ("auth", "circuit_breaker"))
+                    )
+                    if cookie_changed or revived_same_cookie:
+                        if cookie_changed:
+                            st.cookie = new_cookie
                         st.reset_circuit_breaker()
                         st.clear_rest()
                         try:
@@ -8949,19 +9101,47 @@ class App(ctk.CTk):
                         except Exception:
                             pass
                         if st.ensure_auth(force=True):
-                            self._sv_log_msg(f"  ✅ [Sync] {st.email}: Cookie đã được làm mới → sẵn sàng!")
+                            self._log(f"  ✅ [Sync] {st.email}: Cookie đã được làm mới → sẵn sàng!")
                         else:
-                            self._sv_log_msg(f"  ⚠️ [Sync] {st.email}: Cookie mới nhưng vẫn không auth được")
+                            self._log(f"  ⚠️ [Sync] {st.email}: Cookie mới nhưng vẫn không auth được")
                     elif st.is_circuit_broken():
                         w = st.rest_remaining()
                         if w > 0:
-                            self._sv_log_msg(f"  ❌ Khôi phục tự động thất bại! Tài khoản {st.email[:16]} đã chết cookie.")
-                            self._sv_log_msg(f"  👉 VUI LÒNG ĐĂNG NHẬP LẠI BẰNG TAY (hoặc cài mật khẩu để Auto-login). Luồng sẽ tạm nghỉ {w//60} phút.")
+                            self._log(f"  ❌ Khôi phục tự động thất bại! Tài khoản {st.email[:16]} đã chết cookie.")
+                            self._log(f"  👉 VUI LÒNG ĐĂNG NHẬP LẠI BẰNG TAY (hoặc cài mật khẩu để Auto-login). Luồng sẽ tạm nghỉ {w//60} phút.")
                     break
+
+    def _sv_handle_unusual(self, st, where):
+        """Google gắn cờ UNUSUAL_ACTIVITY → bộ điều tốc tự học trần, hạ tốc, nghỉ theo bậc thang, lưu lại."""
+        rest_s, observed = st.on_rate_unusual()
+        st.rest(rest_s, "unusual")
+        try:
+            save_accs(self.accounts)
+        except Exception:
+            pass
+        self._sv_log_msg(f"  🚩 {st.email[:16]}: Google gắn cờ khi {where} (lần {st.unusual_count}) lúc đang {observed} video/10p "
+                         f"→ trần {st.rate_ceiling}/10p, tốc độ còn {st.rate_limit}/10p, 1 luồng upload, nghỉ {int(rest_s // 60)}p")
+
+    def _sv_mark_account_dead(self, st, reason=""):
+        """Cookie chết hẳn → đánh dấu tài khoản ❌ Chết và dừng dùng (giống AccountStatus.Expired của
+        TstGoogleFlow). KHÔNG tự đăng nhập lại — người dùng tự xử lý bằng Auto login / dán cookie mới."""
+        st.bearer = None
+        st.acc["status"] = "dead"
+        if reason:
+            st.acc["error_message"] = reason
+        try:
+            save_accs(self.accounts)
+        except Exception:
+            pass
+        self.after(0, self._refresh_acc)
+        self._sv_log_msg(f"  ❌ {st.email[:20]}: Cookie hết hạn{f' ({reason})' if reason else ''} → tài khoản đã DỪNG.")
+        self._sv_log_msg(f"  👉 Vào tab Tài khoản, bấm 'Auto login' hoặc dán cookie mới để dùng lại.")
 
     def _sv_handle_proxy_dead(self, st):
         """Xử lý proxy chết giữa chừng: đánh dấu dead, gán proxy mới hoặc fallback không proxy."""
         st.proxy_fail_streak += 1
+        reason = E.get_last_proxy_error()
+        reason_sfx = f" [{reason[:80]}]" if reason else ""
         if st.proxy_fail_streak < 2:
             return  # Chờ thêm 1 lần nữa để chắc chắn proxy thật sự chết
         old_px = self.proxy_pool.get_str(st.email) or "?"
@@ -8969,13 +9149,13 @@ class App(ctk.CTk):
         if new_px:
             st.proxy = self.proxy_pool.get_dict(st.email)
             st.proxy_fail_streak = 0
-            self._sv_log_msg(f"  🔄 Proxy chết ({old_px[:30]}) → đổi sang: {new_px[:30]}...")
+            self._sv_log_msg(f"  🔄 Proxy chết ({old_px[:30]}){reason_sfx} → đổi sang: {new_px[:30]}...")
         else:
             # Hết proxy trong pool → fallback qua Cloudflare WARP (1.1.1.1)
             warp_proxy = {"http": "socks5://127.0.0.1:40000", "https": "socks5://127.0.0.1:40000"}
             st.proxy = warp_proxy
             st.proxy_fail_streak = 0
-            self._sv_log_msg(f"  🌐 Proxy chết ({old_px[:30]}) — hết proxy! Fallback qua WARP (socks5://127.0.0.1:40000)")
+            self._sv_log_msg(f"  🌐 Proxy chết ({old_px[:30]}){reason_sfx} — hết proxy! Fallback qua WARP (socks5://127.0.0.1:40000)")
 
     # ============ TAB SHOPAPI (RIÊNG BIỆT) ============
     def _build_shopapi_tab(self):
@@ -9187,6 +9367,12 @@ class App(ctk.CTk):
             return
         batch = self._sa_log_buffer[:]
         self._sa_log_buffer.clear()
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                for m in batch:
+                    f.write(f"{m}\n")
+        except Exception:
+            pass
         try:
             self._sa_log.configure(state="normal")
             self._sa_log.insert("end", "\n".join(batch) + "\n")
@@ -9576,14 +9762,14 @@ class App(ctk.CTk):
                         self._sa_log_msg(f"  ⚠ Không có image_url")
                         prod["_status"] = "noretry"
                         try: self._sa_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
-                        except: pass
+                        except Exception as e: self._sa_log_msg(f"  ⚠ Báo server complete-job lỗi (item {item_id}): {e}")
                         self._sa_update_line_status(idx, "error")
                         return ("fail", "No image_url")
                     self._sa_log_msg(f"  📥 Tải ảnh: {image_url[:60]}...")
                     if not self._sa_download_image(image_url, img_path):
                         prod["_status"] = "noretry"
                         try: self._sa_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
-                        except: pass
+                        except Exception as e: self._sa_log_msg(f"  ⚠ Báo server complete-job lỗi (item {item_id}): {e}")
                         self._sa_update_line_status(idx, "error")
                         return ("fail", "Download failed")
                     self._sa_log_msg(f"  ✅ Ảnh: {os.path.basename(img_path)}")
@@ -9669,7 +9855,7 @@ class App(ctk.CTk):
                     elif poll_res == "fail_permanent":
                         prod["_status"] = "noretry"
                         try: self._sa_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
-                        except: pass
+                        except Exception as e: self._sa_log_msg(f"  ⚠ Báo server complete-job lỗi (item {item_id}): {e}")
                         self._sa_update_line_status(idx, "error")
                         return ("fail", str(poll_data))
                     elif poll_res != "succeeded": return "retry_soft"
@@ -9785,7 +9971,7 @@ class App(ctk.CTk):
                                 error_count[0] += 1
                                 self.after(0, lambda p=(done_count[0]+error_count[0])/total: self._sa_progress.set(p))
                             try: self._sa_api_call("POST", "/api/thinaptm/complete-job", {"itemId": prod.get("item_id"), "status": "failed", "tool": "thinaptm"})
-                            except: pass
+                            except Exception as e: self._sa_log_msg(f"  ⚠ Báo server complete-job lỗi (item {prod.get('item_id')}): {e}")
                     elif isinstance(result, tuple) and result[0] == "fail":
                         prod["_status"] = "noretry"
                         self._sa_update_line_status(prod["_idx"], "error")
@@ -9793,7 +9979,7 @@ class App(ctk.CTk):
                             error_count[0] += 1
                             self.after(0, lambda p=(done_count[0]+error_count[0])/total: self._sa_progress.set(p))
                         try: self._sa_api_call("POST", "/api/thinaptm/complete-job", {"itemId": prod.get("item_id"), "status": "failed", "tool": "thinaptm"})
-                        except: pass
+                        except Exception as e: self._sa_log_msg(f"  ⚠ Báo server complete-job lỗi (item {prod.get('item_id')}): {e}")
 
             with ThreadPoolExecutor(max_workers=n_workers) as executor:
                 futures = [executor.submit(sa_worker, wid) for wid in range(n_workers)]
@@ -9804,12 +9990,920 @@ class App(ctk.CTk):
             if remaining and self._sa_stop_flag:
                 self._sa_log_msg(f"🔄 Trả {len(remaining)} SP...")
                 try: self._sa_api_call("POST", "/api/thinaptm/release-jobs", {"clientId": client_id})
-                except: pass
+                except Exception as e: self._sa_log_msg(f"  ⚠ Báo server release-jobs lỗi (client {client_id}): {e}")
 
             self._sa_log_msg(f"\n{'='*50}")
             self._sa_log_msg(f"🏁 HOÀN TẤT: ✅ {done_count[0]}/{total} thành công, ❌ {error_count[0]} lỗi")
             self.after(0, lambda: self._sa_status_lbl.configure(text=f"✅ {done_count[0]}/{total} xong"))
             self._sa_finish()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ============ TAB SEEDVIS (VEO 3.1 IMAGE-TO-VIDEO) ============
+    def _build_seedvis_tab(self):
+        """Tab Seedvis — Tạo video Veo 3.1 Image-to-Video qua Seedvis Developer API."""
+        f = ctk.CTkFrame(self.content, fg_color=BG); self.frames["seedvis_tab"] = f
+
+        # --- Header ---
+        hdr = ctk.CTkFrame(f, fg_color="transparent"); hdr.pack(fill="x", padx=12, pady=(0, 4))
+        ctk.CTkLabel(hdr, text="🌱 Seedvis — Veo 3.1 Image-to-Video", font=("", 18, "bold"), text_color=T1).pack(side="left")
+        self._seed_status_lbl = ctk.CTkLabel(hdr, text="Sẵn sàng", font=("", 12), text_color=T2)
+        self._seed_status_lbl.pack(side="right")
+
+        # --- Kết nối Server PostgreSQL ---
+        conn_card = ctk.CTkFrame(f, fg_color=CARD, corner_radius=10); conn_card.pack(fill="x", padx=12, pady=4)
+        conn_row = ctk.CTkFrame(conn_card, fg_color="transparent"); conn_row.pack(fill="x", padx=12, pady=6)
+        ctk.CTkLabel(conn_row, text="Server URL:", font=("", 12)).pack(side="left")
+        self._seed_url = ctk.CTkEntry(conn_row, width=260, font=("", 11))
+        self._seed_url.pack(side="left", padx=4)
+        self._seed_url.insert(0, self.settings.get("sv_server_url", "http://100.79.170.67:3000"))
+        ctk.CTkLabel(conn_row, text="API Key:", font=("", 12)).pack(side="left", padx=(12, 0))
+        self._seed_apikey = ctk.CTkEntry(conn_row, width=180, font=("", 11))
+        self._seed_apikey.pack(side="left", padx=4)
+        self._seed_apikey.insert(0, self.settings.get("sv_api_key", ""))
+        ctk.CTkLabel(conn_row, text="Client ID:", font=("", 12)).pack(side="left", padx=(12, 0))
+        self._seed_client_entry = ctk.CTkEntry(conn_row, width=160, font=("", 11))
+        self._seed_client_entry.pack(side="left", padx=4)
+        self._seed_client_entry.insert(0, self.settings.get("sv_client_id", "") + "_seedvis")
+        self._seed_cached_url = self._seed_url.get().strip()
+        self._seed_cached_apikey = self._seed_apikey.get().strip()
+
+        # --- Cấu hình Seedvis API ---
+        api_card = ctk.CTkFrame(f, fg_color=CARD, corner_radius=10); api_card.pack(fill="x", padx=12, pady=4)
+        api_row = ctk.CTkFrame(api_card, fg_color="transparent"); api_row.pack(fill="x", padx=12, pady=6)
+        ctk.CTkLabel(api_row, text="🔑 Seedvis API Key:", font=("", 12)).pack(side="left")
+        self._seed_apikey_input = ctk.CTkEntry(api_row, width=380, font=("", 11), show="*")
+        self._seed_apikey_input.pack(side="left", padx=4)
+        default_seed_key = self.settings.get("seedvis_api_key", "sv_live_706e3c3bb5c7080909769c77651beee1a760e89ef36bc68e810ff971049781ff")
+        self._seed_apikey_input.insert(0, default_seed_key)
+
+        ctk.CTkLabel(api_row, text="Model:", font=("", 12)).pack(side="left", padx=(12, 0))
+        self._seed_model = ctk.CTkOptionMenu(api_row, values=["Veo-3.1"], width=110)
+        self._seed_model.pack(side="left", padx=4)
+        self._seed_model.set(self.settings.get("seedvis_model", "Veo-3.1"))
+
+        ctk.CTkLabel(api_row, text="Thời lượng clip:", font=("", 12)).pack(side="left", padx=(12, 0))
+        self._seed_duration = ctk.CTkOptionMenu(api_row, values=["8s", "6s", "4s"], width=80)
+        self._seed_duration.pack(side="left", padx=4)
+        self._seed_duration.set(self.settings.get("seedvis_duration", "8s"))
+
+        ctk.CTkLabel(api_row, text="Upscale:", font=("", 12)).pack(side="left", padx=(12, 0))
+        self._seed_upscale = ctk.CTkOptionMenu(api_row, values=["none", "1080p"], width=90)
+        self._seed_upscale.pack(side="left", padx=4)
+        self._seed_upscale.set(self.settings.get("seedvis_upscale", "none"))
+
+        ctk.CTkLabel(api_row, text="Luồng:", font=("", 12)).pack(side="left", padx=(12, 0))
+        self._seed_threads = ctk.CTkEntry(api_row, width=50, font=("", 11))
+        self._seed_threads.pack(side="left", padx=4)
+        self._seed_threads.insert(0, self.settings.get("seedvis_threads", "8"))
+
+        # --- Cài đặt Video ---
+        cfg = ctk.CTkFrame(f, fg_color=CARD, corner_radius=10); cfg.pack(fill="x", padx=12, pady=4)
+        ctk.CTkLabel(cfg, text="⚙ Cài đặt Video", font=("", 12, "bold"), text_color=T1).pack(anchor="w", padx=12, pady=(6, 2))
+        row1 = ctk.CTkFrame(cfg, fg_color="transparent"); row1.pack(fill="x", padx=12, pady=2)
+        ctk.CTkLabel(row1, text="Tỉ lệ:", font=("", 12)).pack(side="left")
+        self._seed_aspect = ctk.CTkOptionMenu(row1, values=["Dọc 9:16 (TikTok)", "Ngang 16:9"], width=160)
+        self._seed_aspect.pack(side="left", padx=(4, 12))
+        self._seed_aspect.set(self.settings.get("seedvis_aspect", "Dọc 9:16 (TikTok)"))
+        ctk.CTkLabel(row1, text="Khung cảnh:", font=("", 12)).pack(side="left")
+        scene_opts = SV.SCENE_OPTIONS if SV and hasattr(SV, 'SCENE_OPTIONS') else ["🎲 Random"]
+        self._seed_scene = ctk.CTkOptionMenu(row1, values=scene_opts, width=180)
+        self._seed_scene.pack(side="left", padx=(4, 12))
+        self._seed_scene.set(self.settings.get("seedvis_scene", "🎲 Random"))
+        ctk.CTkLabel(row1, text="Độ dài:", font=("", 12)).pack(side="left")
+        dur_opts = ["8s", "16s", "24s"] if SV else ["16s"]
+        self._seed_total_dur = ctk.CTkOptionMenu(row1, values=dur_opts, width=80, command=lambda _: self._seed_on_ghep_anh_toggle())
+        self._seed_total_dur.pack(side="left", padx=(4, 12))
+        self._seed_total_dur.set(self.settings.get("seedvis_total_dur", "16s"))
+        ctk.CTkLabel(row1, text="Ngôn ngữ:", font=("", 12)).pack(side="left")
+        lang_opts = SV.LANG_OPTIONS if SV and hasattr(SV, 'LANG_OPTIONS') else ["Tiếng Philippines"]
+        self._seed_lang = ctk.CTkOptionMenu(row1, values=lang_opts, width=160)
+        self._seed_lang.pack(side="left", padx=4)
+        self._seed_lang.set(self.settings.get("seedvis_lang", "Tiếng Philippines"))
+
+        row2 = ctk.CTkFrame(cfg, fg_color="transparent"); row2.pack(fill="x", padx=12, pady=2)
+        ctk.CTkLabel(row2, text="Kiểu Review:", font=("", 12)).pack(side="left")
+        style_opts = ["🎲 Random", "Review kho hàng", "Ngồi Review", "POV (Góc nhìn thứ nhất)", "UGC Authentic", "Unboxing", "Demo Công Dụng", "Review tự nhiên", "So Sánh/Đánh Giá"]
+        self._seed_review_style = ctk.CTkOptionMenu(row2, values=style_opts, width=180)
+        self._seed_review_style.pack(side="left", padx=(4, 12))
+        self._seed_review_style.set(self.settings.get("seedvis_review_style", "🎲 Random"))
+        ctk.CTkLabel(row2, text="AI Prompt:", font=("", 12)).pack(side="left")
+        ai_opts = ["Template (mặc định)", "Prompt A + B", "Gemini", "Groq"]
+        self._seed_ai_prompt = ctk.CTkOptionMenu(row2, values=ai_opts, width=180)
+        self._seed_ai_prompt.pack(side="left", padx=(4, 12))
+        self._seed_ai_prompt.set(self.settings.get("seedvis_ai_prompt", "Prompt A + B"))
+        self._seed_del_img = ctk.BooleanVar(value=self.settings.get("seedvis_del_img", True))
+        ctk.CTkCheckBox(row2, text="Xóa ảnh khi tạo xong", variable=self._seed_del_img, font=("", 11)).pack(side="left", padx=(12, 0))
+        self._seed_ghep_anh = ctk.BooleanVar(value=self.settings.get("seedvis_ghep_anh", False))
+        self._seed_chk_ghep_anh = ctk.CTkCheckBox(row2, text="🎞 Ghép ảnh (12s)", variable=self._seed_ghep_anh,
+                                                   font=("", 11), checkbox_width=18, checkbox_height=18,
+                                                   command=self._seed_on_ghep_anh_toggle)
+        self._seed_chk_ghep_anh.pack(side="left", padx=(12, 0))
+
+        row3 = ctk.CTkFrame(cfg, fg_color="transparent"); row3.pack(fill="x", padx=12, pady=(2, 6))
+        ctk.CTkLabel(row3, text="Đặt tên video:", font=("", 12)).pack(side="left")
+        self._seed_naming = ctk.CTkOptionMenu(row3, values=["Theo Item ID", "15 ký tự đầu prompt", "Số thứ tự (001...)"], width=190)
+        self._seed_naming.pack(side="left", padx=(4, 12))
+        self._seed_naming.set(self.settings.get("seedvis_naming", "Theo Item ID"))
+        ctk.CTkLabel(row3, text="Lưu Video:", font=("", 12)).pack(side="left")
+        self._seed_outdir = ctk.CTkEntry(row3, width=400, font=("", 11))
+        self._seed_outdir.pack(side="left", padx=4)
+        self._seed_outdir.insert(0, self.settings.get("seedvis_out_dir", self.settings.get("sv_out_dir", "")))
+        ctk.CTkButton(row3, text="Chọn", width=50, command=lambda: self._seed_pick_dir()).pack(side="left", padx=4)
+
+        # --- Nhận Lô SP từ Database ---
+        claim_card = ctk.CTkFrame(f, fg_color=CARD, corner_radius=10); claim_card.pack(fill="x", padx=12, pady=4)
+        ctk.CTkLabel(claim_card, text="📦 Nhận Lô Sản Phẩm từ Database", font=("", 12, "bold"), text_color=T1).pack(anchor="w", padx=12, pady=(6, 2))
+        claim_row = ctk.CTkFrame(claim_card, fg_color="transparent"); claim_row.pack(fill="x", padx=12, pady=(2, 6))
+        ctk.CTkLabel(claim_row, text="Số lượng:", font=("", 12)).pack(side="left")
+        self._seed_claim_limit = ctk.CTkEntry(claim_row, width=60, font=("", 11))
+        self._seed_claim_limit.pack(side="left", padx=4)
+        self._seed_claim_limit.insert(0, self.settings.get("seedvis_claim_limit", "20"))
+        ctk.CTkLabel(claim_row, text="Ưu tiên:", font=("", 12)).pack(side="left", padx=(8, 0))
+        self._seed_sort_by = ctk.CTkOptionMenu(claim_row, values=["Số bán cao nhất", "Hoa hồng cao nhất"], width=160)
+        self._seed_sort_by.pack(side="left", padx=4)
+        self._seed_sort_by.set(self.settings.get("seedvis_sort_by", "Số bán cao nhất"))
+        ctk.CTkLabel(claim_row, text="Thị trường:", font=("", 12)).pack(side="left", padx=(8, 0))
+        self._seed_market = ctk.CTkOptionMenu(claim_row, values=["PH", "VN", "ID", "TH", "MY", "SG", "TW"], width=70)
+        self._seed_market.pack(side="left", padx=4)
+        self._seed_market.set(self.settings.get("seedvis_market", "PH"))
+        ctk.CTkLabel(claim_row, text="ItemID từ:", font=("", 12)).pack(side="left", padx=(8, 0))
+        self._seed_min_item_id = ctk.CTkEntry(claim_row, width=110, font=("", 11))
+        self._seed_min_item_id.pack(side="left", padx=4)
+        self._seed_min_item_id.insert(0, self.settings.get("seedvis_min_item_id", "40000000000"))
+        ctk.CTkLabel(claim_row, text="Hoa hồng từ:", font=("", 12)).pack(side="left", padx=(8, 0))
+        self._seed_min_commission = ctk.CTkEntry(claim_row, width=50, font=("", 11))
+        self._seed_min_commission.pack(side="left", padx=4)
+        self._seed_min_commission.insert(0, self.settings.get("seedvis_min_commission", "1"))
+        self._seed_btn_claim = ctk.CTkButton(claim_row, text="📥 Nhận SP", width=100, fg_color=AC, command=self._seed_claim_jobs)
+        self._seed_btn_claim.pack(side="left", padx=(12, 4))
+        self._seed_btn_release = ctk.CTkButton(claim_row, text="🔄 Giải phóng SP kẹt", width=150,
+                                              fg_color="#E53935", hover_color="#C62828", command=self._seed_release_jobs)
+        self._seed_btn_release.pack(side="left", padx=4)
+        self._seed_btn_clear_violation = ctk.CTkButton(claim_row, text="🗑 Xóa Vi Phạm CS", width=150,
+                                                      fg_color="#E57373", hover_color="#C62828", command=self._seed_clear_violations)
+        self._seed_btn_clear_violation.pack(side="left", padx=4)
+
+        # --- Bottom: Progress + Buttons ---
+        bottom = ctk.CTkFrame(f, fg_color="transparent"); bottom.pack(side="bottom", fill="x", padx=12, pady=(4, 0))
+        self._seed_progress = ctk.CTkProgressBar(bottom, width=400); self._seed_progress.pack(fill="x", pady=(0, 4)); self._seed_progress.set(0)
+        btn_row = ctk.CTkFrame(bottom, fg_color="transparent"); btn_row.pack(fill="x")
+        self._seed_btn_start = ctk.CTkButton(btn_row, text="▶ Bắt đầu tạo video", height=42, font=("", 15, "bold"),
+                                            fg_color=AC, hover_color="#1565C0", command=self._seed_start)
+        self._seed_btn_start.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self._seed_btn_stop = ctk.CTkButton(btn_row, text="⏹ Dừng", height=42, width=80,
+                                           fg_color="#E57373", hover_color="#C62828", state="disabled",
+                                           command=self._seed_stop)
+        self._seed_btn_stop.pack(side="left", padx=4)
+        self._seed_btn_open = ctk.CTkButton(btn_row, text="📂 Mở thư mục", height=42, width=110,
+                                           fg_color="#78909C", hover_color="#546E7A",
+                                           command=lambda: os.startfile(self._seed_outdir.get().strip()) if self._seed_outdir.get().strip() else None)
+        self._seed_btn_open.pack(side="left", padx=(4, 0))
+
+        # --- Middle: Product List + Log ---
+        middle = ctk.CTkFrame(f, fg_color="transparent"); middle.pack(fill="both", expand=True, padx=12, pady=(4, 0))
+
+        # Left: Product list
+        list_card = ctk.CTkFrame(middle, fg_color=CARD, corner_radius=10)
+        list_card.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        list_hdr = ctk.CTkFrame(list_card, fg_color="transparent"); list_hdr.pack(fill="x", padx=12, pady=(8, 2))
+        ctk.CTkLabel(list_hdr, text="📋 Danh sách SP", font=("", 12, "bold"), text_color=T1).pack(side="left")
+        self._seed_list_count = ctk.CTkLabel(list_hdr, text="0 SP", font=("", 11), text_color=T2)
+        self._seed_list_count.pack(side="right")
+        self._seed_video_done_lbl = ctk.CTkLabel(list_hdr, text="", font=("", 11, "bold"), text_color="#1B7D2C")
+        self._seed_video_done_lbl.pack(side="right", padx=(0, 12))
+        self._seed_products_text = ctk.CTkTextbox(list_card, font=("Consolas", 10))
+        self._seed_products_text.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        self._seed_products_text.tag_config("seed_success", foreground="#1B7D2C")
+        self._seed_products_text.tag_config("seed_error", foreground="#D32F2F")
+        self._seed_products_text.tag_config("seed_running", foreground="#E65100")
+        self._seed_products_text.tag_config("seed_violation", foreground="#F57F17")
+
+        # Right: Log
+        log_card = ctk.CTkFrame(middle, fg_color=CARD, corner_radius=10)
+        log_card.pack(side="left", fill="both", expand=True, padx=(4, 0))
+        log_hdr = ctk.CTkFrame(log_card, fg_color="transparent"); log_hdr.pack(fill="x", padx=12, pady=(8, 2))
+        ctk.CTkLabel(log_hdr, text="📝 Log (logseedvis.txt)", font=("", 12, "bold"), text_color=T1).pack(side="left")
+        ctk.CTkButton(log_hdr, text="🗑 Xóa Log", width=70, height=24, font=("", 11),
+                      fg_color="#E57373", hover_color="#C62828", command=self._seed_clear_log).pack(side="right", padx=(4, 0))
+        ctk.CTkButton(log_hdr, text="📄 Mở logseedvis.txt", width=135, height=24, font=("", 11),
+                      fg_color="#546E7A", hover_color="#37474F", command=self._seed_open_log).pack(side="right", padx=(0, 4))
+        self._seed_log = ctk.CTkTextbox(log_card, font=("Consolas", 10), state="disabled")
+        self._seed_log.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        # --- State ---
+        self._seed_claimed_products = []
+        self._seed_running = False
+        self._seed_stop_flag = False
+        self._seed_video_done_count = 0
+        self._seed_on_ghep_anh_toggle()
+
+    def _seed_open_log(self):
+        p = getattr(self, "seedvis_log_path", os.path.join(HERE, "logseedvis.txt"))
+        if os.path.exists(p):
+            try: os.startfile(p)
+            except Exception as e: messagebox.showerror("Lỗi mở log", str(e))
+        else:
+            messagebox.showinfo("Log Seedvis", "Chưa có file logseedvis.txt")
+
+    def _seed_clear_log(self):
+        p = getattr(self, "seedvis_log_path", os.path.join(HERE, "logseedvis.txt"))
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(f"--- BẮT ĐẦU LOG SEEDVIS ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
+        except Exception:
+            pass
+        try:
+            self._seed_log.configure(state="normal")
+            self._seed_log.delete("1.0", "end")
+            self._seed_log.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _seed_on_ghep_anh_toggle(self):
+        """Nếu chọn độ dài là 8s và chọn ghép ảnh thành video 12s thì AI prompt chỉ được phép là TVC template."""
+        is_8s = (self._seed_total_dur.get().strip() == "8s")
+        is_ghep = self._seed_ghep_anh.get()
+        if is_8s and is_ghep:
+            self._seed_ai_prompt.configure(values=["Template (mặc định)"])
+            self._seed_ai_prompt.set("Template (mặc định)")
+        else:
+            current = self._seed_ai_prompt.get()
+            self._seed_ai_prompt.configure(values=["Template (mặc định)", "Prompt A + B", "Gemini", "Groq"])
+            if current in ["Template (mặc định)", "Prompt A + B", "Gemini", "Groq"]:
+                self._seed_ai_prompt.set(current)
+            else:
+                self._seed_ai_prompt.set("Prompt A + B")
+
+    def _seed_pick_dir(self):
+        d = filedialog.askdirectory()
+        if d:
+            self._seed_outdir.delete(0, "end")
+            self._seed_outdir.insert(0, d)
+
+    def _seed_api_call(self, method, path, data=None):
+        """Gọi API Server PostgreSQL trung tâm cho tab Seedvis."""
+        url = self._seed_cached_url.rstrip("/") + path
+        api_key = self._seed_cached_apikey
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        if method == "GET":
+            req = urllib.request.Request(url, headers=headers)
+        else:
+            body = json.dumps(data or {}).encode("utf-8")
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _seed_log_msg(self, msg):
+        if not hasattr(self, '_seed_log_buffer'):
+            self._seed_log_buffer = []
+            self._seed_log_flush_scheduled = False
+        self._seed_log_buffer.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+        if not self._seed_log_flush_scheduled:
+            self._seed_log_flush_scheduled = True
+            self.after(500, self._seed_flush_log)
+
+    def _seed_flush_log(self):
+        self._seed_log_flush_scheduled = False
+        if not hasattr(self, '_seed_log_buffer') or not self._seed_log_buffer:
+            return
+        batch = self._seed_log_buffer[:]
+        self._seed_log_buffer.clear()
+        # Ghi ra file logseedvis.txt riêng cho tab Seedvis
+        try:
+            log_p = getattr(self, "seedvis_log_path", os.path.join(HERE, "logseedvis.txt"))
+            with open(log_p, "a", encoding="utf-8") as f:
+                for m in batch:
+                    f.write(f"{m}\n")
+        except Exception:
+            pass
+        try:
+            self._seed_log.configure(state="normal")
+            self._seed_log.insert("end", "\n".join(batch) + "\n")
+            line_count = int(self._seed_log.index("end-1c").split(".")[0])
+            if line_count > 1000:
+                self._seed_log.delete("1.0", f"{line_count - 800}.0")
+            self._seed_log.see("end")
+            self._seed_log.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _seed_download_image(self, image_url, save_path):
+        try:
+            req = urllib.request.Request(image_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                with open(save_path, "wb") as wf:
+                    wf.write(resp.read())
+            return True
+        except Exception as e:
+            self._seed_log_msg(f"⚠ Tải ảnh lỗi: {e}")
+            return False
+
+    def _seed_update_line_status(self, line_idx, status):
+        prefix_map = {"success": "✅ ", "error": "❌ ", "running": "⏳ ", "violation": "⚠️ vi phạm cs "}
+        tag_map = {"success": "seed_success", "error": "seed_error", "running": "seed_running", "violation": "seed_violation"}
+        pfx = prefix_map.get(status, "")
+        tag = tag_map.get(status)
+        def _do():
+            try:
+                tk_line = line_idx + 1
+                content = self._seed_products_text.get(f"{tk_line}.0", f"{tk_line}.end")
+                for p in ("✅ ", "❌ ", "⏳ ", "⚠️ vi phạm cs "):
+                    if content.startswith(p):
+                        content = content[len(p):]; break
+                self._seed_products_text.delete(f"{tk_line}.0", f"{tk_line}.end")
+                self._seed_products_text.insert(f"{tk_line}.0", pfx + content)
+                for t in ("seed_success", "seed_error", "seed_running", "seed_violation"):
+                    self._seed_products_text.tag_remove(t, f"{tk_line}.0", f"{tk_line}.end")
+                if tag:
+                    self._seed_products_text.tag_add(tag, f"{tk_line}.0", f"{tk_line}.end")
+            except Exception:
+                pass
+        self.after(0, _do)
+
+    def _seed_claim_jobs(self):
+        """Nhận lô SP cho tab Seedvis từ Server Database."""
+        import re as _re
+        self._seed_cached_url = self._seed_url.get().strip()
+        if self._seed_cached_url and not (self._seed_cached_url.startswith("http://") or self._seed_cached_url.startswith("https://")):
+            self._seed_cached_url = "http://" + self._seed_cached_url
+        self._seed_cached_apikey = self._seed_apikey.get().strip()
+
+        limit = int(self._seed_claim_limit.get().strip() or "20")
+        sort_map = {"Số bán cao nhất": "sold", "Hoa hồng cao nhất": "commission"}
+        sort_by = sort_map.get(self._seed_sort_by.get(), "sold")
+        market = self._seed_market.get()
+        client_id = self._seed_client_entry.get().strip()
+        min_item_id_str = self._seed_min_item_id.get().strip()
+        min_comm_str = self._seed_min_commission.get().strip()
+        try: min_item_id = int(_re.sub(r'\D', '', min_item_id_str) or "40000000000")
+        except: min_item_id = 40000000000
+        try: min_commission = float(min_comm_str.replace("%", "").strip() or "1.0")
+        except: min_commission = 1.0
+
+        self._seed_btn_claim.configure(state="disabled", text="⏳...")
+        self._seed_log_msg(f"📥 Đang xin {limit} SP từ Server (market={market})...")
+
+        def _do():
+            try:
+                result = self._seed_api_call("POST", "/api/thinaptm/claim-jobs", {
+                    "market": market, "clientId": client_id, "limit": limit, "sortBy": sort_by,
+                    "min_item_id": min_item_id, "min_commission": min_commission,
+                    "minItemId": min_item_id, "minCommission": min_commission
+                })
+                raw = result.get("products", [])
+                products = []
+                for p in raw:
+                    try: iid = int(_re.sub(r'\D', '', str(p.get("item_id", 0))))
+                    except: iid = 0
+                    try:
+                        rc = float(p.get("commission_rate", 0) or 0)
+                        comm = rc * 100.0 if 0 < rc <= 1.0 else rc
+                        p["commission_rate"] = comm
+                    except: comm = 0.0
+                    if (min_item_id > 0 and iid < min_item_id) or comm < min_commission:
+                        continue
+                    products.append(p)
+                self._seed_claimed_products = products
+                count = len(products)
+                def _ui():
+                    self._seed_products_text.configure(state="normal")
+                    self._seed_products_text.delete("1.0", "end")
+                    sym = "₫" if market == "VN" else ("Rp" if market == "ID" else "₱")
+                    for i, p in enumerate(products):
+                        name = (p.get('name', '') or '')[:55]
+                        iid = p.get('item_id', '?')
+                        try: pv = float(p.get('price', 0) or 0)
+                        except: pv = 0.0
+                        sold = p.get('sold', 0)
+                        comm = float(p.get('commission_rate', 0) or 0)
+                        self._seed_products_text.insert("end", f"⏳ [{i+1}] {iid} | {name} | {sym}{pv:,.0f} | Sold:{sold} | Comm:{comm:.1f}%\n")
+                    self._seed_list_count.configure(text=f"{count} SP")
+                    self._seed_btn_claim.configure(state="normal", text="📥 Nhận SP")
+                self.after(0, _ui)
+                self._seed_log_msg(f"✅ Đã nhận {count} SP! Bấm ▶ để tạo video qua Seedvis.")
+            except Exception as e:
+                self._seed_log_msg(f"❌ Lỗi nhận SP: {e}")
+                self.after(0, lambda: self._seed_btn_claim.configure(state="normal", text="📥 Nhận SP"))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _seed_release_jobs(self):
+        """Giải phóng SP kẹt (processing) cho tab Seedvis."""
+        client_id = self._seed_client_entry.get().strip()
+        if not client_id:
+            messagebox.showwarning("Thiếu", "Chưa có Client ID."); return
+        self._seed_cached_url = self._seed_url.get().strip()
+        if self._seed_cached_url and not (self._seed_cached_url.startswith("http://") or self._seed_cached_url.startswith("https://")):
+            self._seed_cached_url = "http://" + self._seed_cached_url
+        self._seed_cached_apikey = self._seed_apikey.get().strip()
+        self._seed_log_msg(f"🔄 Đang giải phóng SP kẹt của client '{client_id}'...")
+
+        def _do():
+            try:
+                r1 = self._seed_api_call("POST", "/api/thinaptm/release-jobs", {"clientId": client_id})
+                released1 = r1.get("released", 0) if isinstance(r1, dict) else 0
+                try:
+                    r2 = self._seed_api_call("POST", "/api/thinaptm/auto-release-stuck", {"hours": 2})
+                    released2 = r2.get("released", 0) if isinstance(r2, dict) else 0
+                except Exception:
+                    released2 = 0
+                total_released = released1 + released2
+                self._seed_log_msg(f"✅ Đã giải phóng {total_released} SP kẹt (Client: {released1}, Kẹt >2h: {released2})")
+                self._seed_claimed_products = []
+                self._seed_video_done_count = 0
+
+                def _clear_ui():
+                    self._seed_products_text.configure(state="normal")
+                    self._seed_products_text.delete("1.0", "end")
+                    self._seed_list_count.configure(text="0 SP")
+                    self._seed_video_done_lbl.configure(text="")
+                    self._seed_progress.set(0)
+                    self._seed_btn_claim.configure(state="normal", text="📥 Nhận SP")
+                self.after(0, _clear_ui)
+            except Exception as e:
+                self._seed_log_msg(f"❌ Lỗi giải phóng: {e}")
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _seed_clear_violations(self):
+        """Xóa các SP vi phạm chính sách khỏi danh sách Seedvis."""
+        before = len(self._seed_claimed_products)
+        self._seed_claimed_products = [p for p in self._seed_claimed_products if p.get("_status") != "vi phạm cs"]
+        after = len(self._seed_claimed_products)
+        removed = before - after
+        if removed > 0:
+            self._seed_log_msg(f"🗑 Đã xóa {removed} SP vi phạm CS.")
+            self._seed_products_text.configure(state="normal")
+            self._seed_products_text.delete("1.0", "end")
+            market = self._seed_market.get()
+            sym = "₫" if market == "VN" else ("Rp" if market == "ID" else "₱")
+            for i, p in enumerate(self._seed_claimed_products):
+                name = (p.get('name', '') or '')[:55]
+                iid = p.get('item_id', '?')
+                st = p.get("_status", "")
+                pfx = "✅ " if st == "success" else ("⚠️ vi phạm cs " if st == "vi phạm cs" else ("❌ " if st in ("noretry", "error") else "⏳ "))
+                tag = "seed_success" if st == "success" else ("seed_violation" if st == "vi phạm cs" else ("seed_error" if st in ("noretry", "error") else "seed_running"))
+                try: pv = float(p.get('price', 0) or 0)
+                except: pv = 0.0
+                sold = p.get('sold', 0)
+                comm = float(p.get('commission_rate', 0) or 0)
+                self._seed_products_text.insert("end", f"{pfx}[{i+1}] {iid} | {name} | {sym}{pv:,.0f} | Sold:{sold} | Comm:{comm:.1f}%\n", tag)
+            self._seed_list_count.configure(text=f"{after} SP")
+        else:
+            self._seed_log_msg("ℹ Không có SP vi phạm CS nào để xóa.")
+
+    def _seed_stop(self):
+        self._seed_stop_flag = True
+        self._seed_log_msg("⏹ Đang dừng tạo video Seedvis...")
+
+    def _seed_finish(self):
+        self._seed_running = False
+        self.after(0, lambda: self._seed_btn_start.configure(state="normal"))
+        self.after(0, lambda: self._seed_btn_stop.configure(state="disabled"))
+        self.after(0, lambda: self._seed_btn_claim.configure(state="normal", text="📥 Nhận SP"))
+
+    def _seed_start(self):
+        """Bắt đầu tạo video qua Seedvis (Veo 3.1 Image-to-Video)."""
+        if SV is None:
+            messagebox.showerror("Lỗi", "Module shopeevideo.py không tải được."); return
+        if not self._seed_claimed_products:
+            messagebox.showwarning("Thiếu SP", "Hãy bấm 📥 Nhận SP trước."); return
+        out_dir = self._seed_outdir.get().strip()
+        if not out_dir:
+            messagebox.showwarning("Thiếu", "Hãy chọn thư mục lưu video."); return
+        api_key = self._seed_apikey_input.get().strip()
+        if not api_key:
+            messagebox.showerror("Thiếu API Key", "Vui lòng nhập Seedvis API Key."); return
+
+        self._seed_cached_url = self._seed_url.get().strip()
+        if self._seed_cached_url and not (self._seed_cached_url.startswith("http://") or self._seed_cached_url.startswith("https://")):
+            self._seed_cached_url = "http://" + self._seed_cached_url
+        self._seed_cached_apikey = self._seed_apikey.get().strip()
+
+        self._seed_start_work(api_key)
+
+    def _seed_start_work(self, api_key):
+        """Worker chính xử lý tạo video qua Seedvis API (Veo 3.1)."""
+        import base64
+        out_dir = self._seed_outdir.get().strip()
+        products = list(self._seed_claimed_products)
+        scene_choice = self._seed_scene.get()
+        naming_mode = self._seed_naming.get()
+        client_id = self._seed_client_entry.get().strip()
+        ai_mode = self._seed_ai_prompt.get()
+        review_style = self._seed_review_style.get()
+        del_img = self._seed_del_img.get()
+        ghep_anh = self._seed_ghep_anh.get()
+
+        model_choice = self._seed_model.get().strip() or "Veo-3.1"
+        clip_duration = self._seed_duration.get().strip() or "8s"
+        upscale_choice = self._seed_upscale.get().strip() or "none"
+
+        duration_sec = SV.parse_duration(self._seed_total_dur.get()) if SV else 16
+        if duration_sec == 8 and ghep_anh:
+            ai_mode = "Template (mặc định)"
+        n_segments_needed = len(SV.DURATION_MAP.get(duration_sec, [0])) if SV else 1
+
+        aspect_local = self._seed_aspect.get()
+        seed_aspect = "16:9" if "16:9" in aspect_local else "9:16"
+
+        lang_val = self._seed_lang.get()
+        lang_code = "vi" if "Việt" in lang_val else ("id" if "Indonesia" in lang_val else ("my" if "Malaysia" in lang_val else ("ph" if "Philippines" in lang_val else "en")))
+
+        manual_voice = self.ent_voice_desc.get().strip() if hasattr(self, 'ent_voice_desc') else ""
+        E.VOICE_DESC = manual_voice if manual_voice else E.get_voice_for_lang(lang_code)
+
+        sv_gemini_keys = [k.strip() for k in self.txt_gemini.get("1.0", "end").splitlines() if k.strip()] if hasattr(self, 'txt_gemini') else []
+        sv_groq_key = [k.strip() for k in self.txt_groq.get("1.0", "end").splitlines() if k.strip()] if hasattr(self, 'txt_groq') else []
+
+        try:
+            n_workers = int(self._seed_threads.get().strip() or "8")
+            n_workers = max(1, n_workers)
+        except Exception:
+            n_workers = 8
+
+        self._seed_running = True
+        self._seed_stop_flag = False
+        self._seed_btn_start.configure(state="disabled")
+        self._seed_btn_stop.configure(state="normal")
+        self._seed_btn_claim.configure(state="disabled")
+        self._seed_status_lbl.configure(text="⏳ Đang tạo video (Seedvis)...")
+
+        def work():
+            total = len(products)
+            temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_render")
+            os.makedirs(temp_dir, exist_ok=True)
+            os.makedirs(out_dir, exist_ok=True)
+
+            seg_info = f"{n_segments_needed} segment × {clip_duration}" if n_segments_needed > 1 else f"{clip_duration}"
+            self._seed_log_msg(f"🌱 Seedvis — Model: {model_choice} | Video: {duration_sec}s ({seg_info}) | Tỉ lệ: {seed_aspect} | Luồng: {n_workers}")
+            self._seed_log_msg(f"📋 {total} SP — Bắt đầu xử lý...")
+
+            done_count = [0]
+            self._seed_video_done_count = 0
+            self.after(0, lambda: self._seed_video_done_lbl.configure(text=""))
+            error_count = [0]
+            jobq = queue.Queue()
+            for idx, prod in enumerate(products):
+                prod["_idx"] = idx; prod["_cycles"] = 0
+                jobq.put(prod)
+
+            def submit_seedvis_job(prompt, b64_img, filename, image_url=None):
+                endpoint = "https://seedvis.com/api/v1/developer/generations"
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    # BẮT BUỘC: urllib mặc định gửi User-Agent "Python-urllib/x.x" → Cloudflare (đứng
+                    # trước API Seedvis) chặn thẳng bằng HTTP 403 "error code: 1010" trước khi chạm
+                    # tới server Seedvis. Đã kiểm chứng: thiếu header này → 100% request bị chặn.
+                    "User-Agent": SEEDVIS_UA,
+                }
+                # Ưu tiên URL ảnh Shopee trực tiếp để giảm tải mạng & tránh timeout Base64
+                if image_url and str(image_url).startswith("http"):
+                    img_data = image_url
+                else:
+                    img_data = {
+                        "data": b64_img,
+                        "file_name": filename
+                    }
+                payload = {
+                    "model": model_choice,
+                    "prompt": prompt,
+                    "mode": "image-to-video",
+                    "image": img_data,
+                    "aspect_ratio": seed_aspect,
+                    "duration": clip_duration,
+                    "count": 1,
+                    "upscale_video": upscale_choice
+                }
+
+                for attempt in range(5):
+                    if self._seed_stop_flag: return "stopped", None
+                    try:
+                        req_data = json.dumps(payload).encode("utf-8")
+                        req = urllib.request.Request(endpoint, data=req_data, headers=headers, method="POST")
+                        with urllib.request.urlopen(req, timeout=60) as resp:
+                            res_json = json.loads(resp.read().decode("utf-8"))
+                            return "ok", res_json
+                    except urllib.error.HTTPError as he:
+                        err_body = ""
+                        try: err_body = he.read().decode("utf-8")
+                        except Exception: pass
+                        err_str = err_body.lower()
+                        # Kiểm tra vi phạm chính sách / lọc nội dung
+                        if he.code == 422 or "policy" in err_str or "violation" in err_str or "filter" in err_str or "safety" in err_str or "nsfw" in err_str:
+                            self._seed_log_msg(f"  ⚠️ Seedvis báo vi phạm: {err_body[:120]}")
+                            return "violation", err_body
+                        if he.code == 401 or "unauthorized" in err_str or "invalid api key" in err_str:
+                            self._seed_log_msg(f"  ❌ Seedvis API Key không hợp lệ hoặc hết hạn!")
+                            return "invalid_key", err_body
+                        if he.code == 429 or "rate limit" in err_str:
+                            wait = min(20 * (attempt + 1), 60)
+                            self._seed_log_msg(f"  ⏳ Seedvis Rate limit (429) → chờ {wait}s...")
+                            time.sleep(wait); continue
+                        if attempt < 4:
+                            self._seed_log_msg(f"  ⚠️ Seedvis submit lỗi HTTP {he.code} (thử {attempt+1}/5): {err_body[:150]}")
+                            time.sleep(4); continue
+                        return "error", f"HTTP {he.code}: {err_body[:120]}"
+                    except Exception as ex:
+                        if attempt < 4:
+                            self._seed_log_msg(f"  ⚠️ Seedvis submit lỗi mạng (thử {attempt+1}/5): {ex}")
+                            time.sleep(4); continue
+                        return "error", str(ex)
+                return "error", "Max retries"
+
+            def poll_seedvis_job(job_id):
+                poll_url = f"https://seedvis.com/api/v1/developer/generations/{job_id}?wait=60"
+                headers = {"Authorization": f"Bearer {api_key}", "User-Agent": SEEDVIS_UA}
+                start_ts = time.time()
+                while time.time() - start_ts < 600:
+                    if self._seed_stop_flag: return "stopped", None
+                    try:
+                        req = urllib.request.Request(poll_url, headers=headers, method="GET")
+                        with urllib.request.urlopen(req, timeout=70) as resp:
+                            data = json.loads(resp.read().decode("utf-8"))
+                    except Exception as e:
+                        if int(time.time() - start_ts) % 30 < 6:  # log tối đa ~1 lần/30s, tránh ngập log
+                            self._seed_log_msg(f"  ⚠️ Seedvis poll lỗi (sẽ tự thử lại): {e}")
+                        time.sleep(6)
+                        continue
+
+                    job_data = data.get("data", {}) if isinstance(data, dict) else {}
+                    is_final = job_data.get("is_final", False)
+                    status = (job_data.get("status") or "").lower()
+
+                    if is_final:
+                        if status in ("completed", "succeeded"):
+                            outputs = job_data.get("outputs", [])
+                            if outputs and isinstance(outputs, list):
+                                vid_url = outputs[0].get("url")
+                                if vid_url:
+                                    return "succeeded", vid_url
+                            return "error", "Job hoàn thành nhưng không có video url"
+                        else:
+                            err_obj = job_data.get("error") or {}
+                            err_code = err_obj.get("code", "") if isinstance(err_obj, dict) else ""
+                            err_msg = err_obj.get("message", "") if isinstance(err_obj, dict) else str(err_obj)
+                            main_msg = job_data.get("message") or status
+                            msg = f"[{err_code}] {err_msg}" if err_code and err_msg else (err_msg or main_msg)
+                            msg_lower = msg.lower()
+                            if "policy" in msg_lower or "violation" in msg_lower or "filter" in msg_lower or "safety" in msg_lower:
+                                return "violation", msg
+                            return "failed", msg
+
+                    time.sleep(6)
+                return "timeout", "Quá 10 phút chờ tạo video"
+
+            def process_one(prod):
+                idx = prod["_idx"]
+                if self._seed_stop_flag: return "retry_soft"
+                item_id = prod.get("item_id", "")
+                product_name = prod.get("name", f"Product_{item_id}")
+                image_url = prod.get("image_url", "")
+
+                self._seed_update_line_status(idx, "running")
+                self._seed_log_msg(f"\n{'='*50}")
+                self._seed_log_msg(f"📦 [{idx+1}/{total}] {product_name[:50]}")
+
+                # Tải ảnh
+                img_path = os.path.join(temp_dir, f"{item_id}.jpg")
+                if not os.path.isfile(img_path):
+                    if not image_url:
+                        self._seed_log_msg(f"  ⚠ Không có image_url")
+                        prod["_status"] = "noretry"
+                        try: self._seed_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
+                        except Exception: pass
+                        self._seed_update_line_status(idx, "error")
+                        return ("fail", "Không có ảnh")
+                    self._seed_log_msg(f"  📥 Tải ảnh: {image_url[:60]}...")
+                    if not self._seed_download_image(image_url, img_path):
+                        prod["_status"] = "noretry"
+                        try: self._seed_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "failed", "tool": "thinaptm"})
+                        except Exception: pass
+                        self._seed_update_line_status(idx, "error")
+                        return ("fail", "Tải ảnh thất bại")
+                    self._seed_log_msg(f"  ✅ Ảnh OK: {os.path.basename(img_path)}")
+
+                # Mã hóa Base64 ảnh gửi lên Seedvis
+                try:
+                    with open(img_path, "rb") as bf:
+                        b64_img = base64.b64encode(bf.read()).decode("utf-8")
+                except Exception as e:
+                    self._seed_log_msg(f"  ❌ Lỗi đọc file ảnh: {e}")
+                    return "retry_soft"
+
+                # Sinh Prompt
+                scene_name, scene_en = SV.pick_scene(scene_choice, lang=lang_code)
+                if n_segments_needed == 1:
+                    _tvc_lang_map = {
+                        "en": {"nationality": "American", "language": "English"},
+                        "vi": {"nationality": "Việt Nam", "language": "tiếng Việt"},
+                        "id": {"nationality": "Indonesian", "language": "tiếng Indonesia"},
+                        "my": {"nationality": "Malaysian", "language": "tiếng Malaysia"},
+                        "ph": {"nationality": "Filipino", "language": "Filipino"}
+                    }
+                    _tvc = _tvc_lang_map.get(lang_code, _tvc_lang_map["en"])
+                    short_name = product_name[:80].strip()
+                    prompts = [f'Create a product advertisement video (TVC) reviewing the product "{short_name}". A beautiful {_tvc["nationality"]} woman, about 20 years old, holds the product and introduces its key benefits. She states the benefits right away without any introduction. She speaks {_tvc["language"]}; no text is displayed in the video. The product is accurately sized. Her outfit is modest and appropriate, not revealing or offensive. The product price is not mentioned in the video.']
+                    self._seed_log_msg(f"  📺 TVC {clip_duration}: 1 prompt")
+                else:
+                    prompts = None
+                    if ai_mode == "Gemini":
+                        prompts = self._sv_ai_gen_prompts(product_name, scene_en, n_segments_needed, duration_sec, lang_code, review_style, mode="gemini", gemini_keys=sv_gemini_keys, groq_keys=sv_groq_key)
+                    elif ai_mode == "Groq":
+                        prompts = self._sv_ai_gen_prompts(product_name, scene_en, n_segments_needed, duration_sec, lang_code, review_style, mode="groq", gemini_keys=sv_gemini_keys, groq_keys=sv_groq_key)
+                    if prompts and len(prompts) >= n_segments_needed:
+                        prompts = prompts[:n_segments_needed]
+                        self._seed_log_msg(f"  🤖 AI sinh {len(prompts)} prompt ({ai_mode})")
+                    else:
+                        prompts = SV.build_video_prompts_fallback(product_name, scene_en, duration_sec, lang=lang_code, review_style=review_style)
+                        self._seed_log_msg(f"  📝 Prompt A + B sinh {len(prompts)} prompt")
+                n_segments = len(prompts)
+
+                # Tạo từng segment
+                clip_paths = []
+                for seg_idx, prompt in enumerate(prompts):
+                    if self._seed_stop_flag: return "retry_soft"
+                    clip_path = os.path.join(temp_dir, f"seed_{item_id}_seg{seg_idx}.mp4")
+                    if os.path.exists(clip_path) and os.path.getsize(clip_path) > 10 * 1024:
+                        self._seed_log_msg(f"  ⚡ Seg {seg_idx+1}: Dùng lại file cũ ({os.path.getsize(clip_path)//1024}KB)")
+                        clip_paths.append(clip_path); continue
+
+                    # Cắt gọn prompt nếu quá dài
+                    api_prompt = prompt
+                    if len(api_prompt) > 4900:
+                        CONDENSED = "=== SECTION 1: RULES ===\n- Full-frame 9:16 vertical video, edge-to-edge, NO borders/bars/margins.\n- Photorealistic live-action only. NO cartoon/anime/CGI.\n- NO text/subtitles/watermarks on screen.\n- Product must match reference image exactly.\n- Realistic product size. NO oversized items.\n- Neutral color grading, no morphing or identity drift.\n\n"
+                        import re as _re
+                        api_prompt = _re.sub(r'=== SECTION 1:.*?=== SECTION 2:', CONDENSED + '=== SECTION 2:', api_prompt, count=1, flags=_re.DOTALL)
+                        if len(api_prompt) > 4900:
+                            api_prompt = api_prompt[:4900]
+
+                    self._seed_log_msg(f"  🎬 Gửi tạo Segment {seg_idx+1}/{n_segments} ({clip_duration})...")
+                    sub_res, sub_data = submit_seedvis_job(api_prompt, b64_img, f"{item_id}.jpg", image_url=image_url)
+                    if sub_res == "stopped": return "retry_soft"
+                    if sub_res == "invalid_key":
+                        prod["_status"] = "noretry"
+                        self._seed_update_line_status(idx, "error")
+                        return ("fail", "Sai Seedvis API Key")
+                    if sub_res == "violation":
+                        prod["_status"] = "vi phạm cs"
+                        try: self._seed_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "vi phạm cs", "tool": "thinaptm"})
+                        except Exception: pass
+                        self._seed_update_line_status(idx, "violation")
+                        return ("fail", "Vi phạm chính sách Seedvis")
+                    if sub_res != "ok":
+                        self._seed_log_msg(f"  ❌ Submit Segment {seg_idx+1} thất bại: {sub_data}")
+                        return "retry_soft"
+
+                    # Lấy ID job
+                    gen_data = sub_data.get("data", {}) if isinstance(sub_data, dict) else {}
+                    job_id = gen_data.get("id", "")
+                    self._seed_log_msg(f"  ⏳ Job {job_id[:16]}... Đang render...")
+
+                    # Polling
+                    poll_res, vid_url_or_err = poll_seedvis_job(job_id)
+                    if poll_res == "stopped": return "retry_soft"
+                    if poll_res == "violation":
+                        prod["_status"] = "vi phạm cs"
+                        try: self._seed_api_call("POST", "/api/thinaptm/complete-job", {"itemId": item_id, "status": "vi phạm cs", "tool": "thinaptm"})
+                        except Exception: pass
+                        self._seed_update_line_status(idx, "violation")
+                        return ("fail", f"Vi phạm CS: {vid_url_or_err}")
+                    if poll_res != "succeeded":
+                        self._seed_log_msg(f"  ❌ Segment {seg_idx+1} thất bại: {vid_url_or_err}")
+                        return "retry_soft"
+
+                    # Tải file mp4
+                    video_url = vid_url_or_err
+                    self._seed_log_msg(f"  📥 Tải video segment {seg_idx+1}...")
+                    try:
+                        _dl_req = urllib.request.Request(video_url, headers={"User-Agent": SEEDVIS_UA})
+                        with urllib.request.urlopen(_dl_req, timeout=120) as _dl_resp, open(clip_path, "wb") as _dl_f:
+                            _dl_f.write(_dl_resp.read())
+                    except Exception as de:
+                        self._seed_log_msg(f"  ❌ Tải video lỗi: {de}")
+                        return "retry_soft"
+
+                    if os.path.exists(clip_path) and os.path.getsize(clip_path) > 10 * 1024:
+                        clip_paths.append(clip_path)
+                        self._seed_log_msg(f"  ✅ Seg {seg_idx+1} OK ({os.path.getsize(clip_path)//1024}KB)")
+                    else:
+                        self._seed_log_msg(f"  ❌ Seg {seg_idx+1}: File rỗng")
+                        return "retry_soft"
+
+                if not clip_paths: return "retry_soft"
+
+                # Ghép segments nếu > 1
+                if len(clip_paths) > 1:
+                    self._seed_log_msg(f"  🔗 Ghép {len(clip_paths)} segments...")
+                    concat_path = os.path.join(temp_dir, f"seed_{item_id}_concat.mp4")
+                    try:
+                        SV.concat_videos(clip_paths, concat_path, log=lambda m: self._seed_log_msg(f"    {m}"))
+                    except Exception as ex:
+                        return ("fail", f"Ghép lỗi: {ex}")
+                else:
+                    concat_path = clip_paths[0]
+
+                # --- Ghép ảnh khi hoàn thành (chỉ áp dụng cho video 8s) ---
+                ghep_anh_loi = False
+                if ghep_anh and duration_sec == 8:
+                    self._seed_log_msg("  🎞 Bắt đầu ghép ảnh outro tạo video 12s...")
+                    merged_path = os.path.join(temp_dir, f"seed_{item_id}_merged12s.mp4")
+                    ok, err = self._run_ghep_anh_12s(concat_path, img_path, merged_path)
+                    if ok and os.path.exists(merged_path):
+                        concat_path = merged_path
+                        self._seed_log_msg("    ✅ Ghép ảnh outro 12s thành công!")
+                    else:
+                        self._seed_log_msg(f"    ⚠ Ghép ảnh lỗi: {err}. Giữ lại video gốc 8s.")
+                        ghep_anh_loi = True
+
+                # Đặt tên video theo quy chuẩn
+                if naming_mode == "Theo Item ID": out_name = f"{item_id}.mp4"
+                elif naming_mode == "15 ký tự đầu prompt": out_name = (SV.clean_filename(prompts[0][:15]) if hasattr(SV, 'clean_filename') else f"seed_{item_id}") + ".mp4"
+                else: out_name = f"{idx+1:04d}.mp4"
+
+                target_dir = os.path.join(out_dir, "video8sloi") if ghep_anh_loi else out_dir
+                os.makedirs(target_dir, exist_ok=True)
+                out_path = os.path.join(target_dir, out_name)
+                counter = 2
+                while os.path.exists(out_path):
+                    base, ext = os.path.splitext(out_name)
+                    out_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+                    counter += 1
+
+                import shutil
+                try:
+                    shutil.move(concat_path, out_path)
+                    self._seed_log_msg(f"  ✅ Hoàn tất video: {os.path.basename(out_path)}")
+                except Exception as ex:
+                    return ("fail", f"Lỗi di chuyển file: {ex}")
+
+                # Báo hoàn thành lên server
+                try:
+                    self._seed_api_call("POST", "/api/thinaptm/complete-job", {
+                        "itemId": item_id, "status": "completed", "tool": "thinaptm",
+                        "videoFile": os.path.basename(out_path)
+                    })
+                except Exception: pass
+
+                # Xóa ảnh tạm nếu chọn
+                if del_img:
+                    try:
+                        if os.path.isfile(img_path): os.remove(img_path)
+                    except Exception: pass
+
+                prod["_status"] = "success"
+                self._seed_update_line_status(idx, "success")
+                return ("ok", out_path)
+
+            def worker_thread():
+                while not self._seed_stop_flag:
+                    try:
+                        prod = jobq.get_nowait()
+                    except queue.Empty:
+                        break
+                    idx = prod["_idx"]
+                    res = process_one(prod)
+                    if isinstance(res, tuple) and res[0] == "ok":
+                        done_count[0] += 1
+                        self._seed_video_done_count = done_count[0]
+                        pct = done_count[0] / total
+                        self.after(0, lambda p=pct: self._seed_progress.set(p))
+                        self.after(0, lambda: self._seed_video_done_lbl.configure(text=f"✅ {done_count[0]}/{total} xong"))
+                    elif res == "retry_soft":
+                        prod["_cycles"] = prod.get("_cycles", 0) + 1
+                        if prod["_cycles"] < 3 and not self._seed_stop_flag:
+                            self._seed_log_msg(f"  🔄 Thử lại SP {prod.get('item_id')} (chu kỳ {prod['_cycles']}/3)...")
+                            jobq.put(prod)
+                        else:
+                            error_count[0] += 1
+                            self._seed_update_line_status(idx, "error")
+                    else:
+                        error_count[0] += 1
+                    jobq.task_done()
+
+            # Chạy đa luồng
+            threads = []
+            for _ in range(n_workers):
+                t = threading.Thread(target=worker_thread, daemon=True)
+                t.start()
+                threads.append(t)
+
+            for t in threads:
+                t.join()
+
+            # Trả lại SP chưa xong nếu người dùng ấn dừng
+            remaining = [p for p in products if p.get("_status") not in ("success", "noretry", "vi phạm cs")]
+            if remaining and self._seed_stop_flag:
+                self._seed_log_msg(f"🔄 Đang trả {len(remaining)} SP chưa xử lý về pending...")
+                try:
+                    self._seed_api_call("POST", "/api/thinaptm/release-jobs", {"clientId": client_id})
+                except Exception as e:
+                    self._seed_log_msg(f"  ⚠ Lỗi release-jobs: {e}")
+
+            self._seed_log_msg(f"\n{'='*50}")
+            self._seed_log_msg(f"🏁 HOÀN TẤT SEEDVIS: ✅ {done_count[0]}/{total} thành công, ❌ {error_count[0]} lỗi")
+            self.after(0, lambda: self._seed_status_lbl.configure(text=f"✅ {done_count[0]}/{total} xong"))
+            self._seed_finish()
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -9947,6 +11041,30 @@ class App(ctk.CTk):
                     })
                 if hasattr(self, '_sv_shopapi_engine'):
                     s["sv_shopapi_engine"] = self._sv_shopapi_engine.get()
+                # Seedvis tab riêng
+                if hasattr(self, '_seed_apikey_input'):
+                    s.update({
+                        "seedvis_api_key": self._seed_apikey_input.get().strip(),
+                        "seedvis_model": self._seed_model.get(),
+                        "seedvis_duration": self._seed_duration.get(),
+                        "seedvis_upscale": self._seed_upscale.get(),
+                        "seedvis_threads": self._seed_threads.get().strip(),
+                        "seedvis_aspect": self._seed_aspect.get(),
+                        "seedvis_scene": self._seed_scene.get(),
+                        "seedvis_total_dur": self._seed_total_dur.get(),
+                        "seedvis_lang": self._seed_lang.get(),
+                        "seedvis_review_style": self._seed_review_style.get(),
+                        "seedvis_ai_prompt": self._seed_ai_prompt.get(),
+                        "seedvis_del_img": self._seed_del_img.get(),
+                        "seedvis_ghep_anh": self._seed_ghep_anh.get(),
+                        "seedvis_naming": self._seed_naming.get(),
+                        "seedvis_out_dir": self._seed_outdir.get().strip(),
+                        "seedvis_claim_limit": self._seed_claim_limit.get().strip(),
+                        "seedvis_sort_by": self._seed_sort_by.get(),
+                        "seedvis_market": self._seed_market.get(),
+                        "seedvis_min_item_id": self._seed_min_item_id.get().strip(),
+                        "seedvis_min_commission": self._seed_min_commission.get().strip(),
+                    })
             save_settings(s)
         except Exception as e:
             self._log(f"Lỗi lưu cài đặt: {e}")

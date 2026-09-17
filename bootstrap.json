@@ -1,0 +1,7 @@
+{
+  "success": false,
+  "status": 500,
+  "message": "Có lỗi hệ thống đã xảy ra. Vui lòng thử lại sau.",
+  "exception": null,
+  "trace": null
+}

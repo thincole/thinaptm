@@ -10,6 +10,7 @@ import asyncio
 import subprocess
 import tempfile
 import edge_tts
+from concurrent.futures import ThreadPoolExecutor
 
 
 def get_audio_duration(file_path):
@@ -155,31 +156,33 @@ def build_final_video(clips, voice_audios, voice_texts, output_path, bgm_path=No
     log_cb(f"⏱️ Tổng thời lượng giọng nói AI: {total_voice_dur:.2f} giây.")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Bước 1: Điều chỉnh từng clip Veo khớp với thời lượng voiceover tương ứng
-        adjusted_clips = []
-        for i in range(n):
+        # Bước 1: Điều chỉnh từng clip Veo khớp với thời lượng voiceover tương ứng.
+        # Các clip độc lập nhau nên chạy song song (tối đa 4 cùng lúc) thay vì tuần tự,
+        # rút ngắn đáng kể thời gian dựng hậu kỳ khi có nhiều phân cảnh.
+        def _adjust_one_clip(i):
             clip = clips[i]
             voice_dur = voice_durs[i]
             adj_clip = os.path.join(tmpdir, f"clip_adj_{i}.mp4")
-            
+
             # Lấy thời lượng gốc của clip Veo
             cmd_probe = ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", clip]
             try:
                 clip_dur = float(subprocess.run(cmd_probe, capture_output=True, text=True, check=True).stdout.strip())
             except Exception:
                 clip_dur = 5.0  # mặc định Veo
-            
+
             # Điều chỉnh tốc độ video (setpts) để khớp hoàn hảo thời lượng voiceover
             pts_ratio = voice_dur / clip_dur
             log_cb(f"   · Phân cảnh {i+1}: Video gốc {clip_dur:.1f}s → Voice {voice_dur:.1f}s (Ratio {pts_ratio:.2f}x)")
-            
+
             # TẠO FILE CÂM TẠM THỜI (MUTE 100%) để triệt tiêu hoàn toàn âm thanh gốc của clip Veo
             silent_clip = os.path.join(tmpdir, f"silent_{i}.mp4")
             cmd_silent = ["ffmpeg", "-y", "-i", clip, "-an", "-c:v", "copy", silent_clip]
             try:
                 subprocess.run(cmd_silent, capture_output=True, check=True)
             except Exception:
-                # Nếu không thể strip âm thanh bằng copy, dùng luôn file gốc
+                # Nếu không thể strip âm thanh bằng copy, dùng luôn file gốc (có thể lẫn 2 nguồn audio)
+                log_cb(f"   ⚠️ Phân cảnh {i+1}: không tách được âm thanh gốc → dùng clip gốc (có thể lẫn tiếng gốc + giọng đọc).")
                 silent_clip = clip
 
             # Ghép video câm với voice thuyết minh edge-tts
@@ -196,12 +199,15 @@ def build_final_video(clips, voice_audios, voice_texts, output_path, bgm_path=No
             try:
                 subprocess.run(cmd_adj, capture_output=True, check=True)
             except subprocess.CalledProcessError:
-                # Fallback sang CPU encode
+                # Fallback sang CPU encode (cũng tự khắc phục khi nhiều luồng NVENC tranh chấp GPU)
                 cmd_adj[cmd_adj.index("h264_nvenc")] = "libx264"
                 cmd_adj[cmd_adj.index("p4")] = "medium"
                 subprocess.run(cmd_adj, capture_output=True, check=True)
-                
-            adjusted_clips.append(adj_clip)
+
+            return adj_clip
+
+        with ThreadPoolExecutor(max_workers=max(1, min(4, n))) as ex:
+            adjusted_clips = list(ex.map(_adjust_one_clip, range(n)))
 
         # Bước 2: Tạo file concat list
         list_file = os.path.join(tmpdir, "concat_list.txt")
