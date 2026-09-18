@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.29"
+APP_VERSION = "ThinAPTM 1.2.30"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -9548,8 +9548,15 @@ class App(ctk.CTk):
                 repo_url = "https://raw.githubusercontent.com/thincole/thinaptm/main/"
                 has_update = False
                 changed_files = []
+                get_fn = getattr(updater, "get_file_list", None)
+                check_files = get_fn() if callable(get_fn) else getattr(updater, "FILES", [
+                    "thin_aptm.py", "engine.py", "engine_ext.py", "flow_bridge.py", "flow_batch.py",
+                    "login.py", "auto_voice_sub.py", "ghep_video.py", "prompt_templates.py",
+                    "recaptcha_farm.py", "shopeevideo.py", "update.py", "extension/manifest.json",
+                    "extension/background.js", "extension/content.js", "extension/injected.js",
+                    "extension/popup.html", "extension/popup.js", "extension/side_panel.html", "extension/side_panel.js"
+                ])
                 remote_ver = None
-                check_files = getattr(updater, "FILES", ["thin_aptm.py", "engine.py", "login.py", "auto_voice_sub.py", "ghep_video.py", "prompt_templates.py", "recaptcha_farm.py", "update.py"])
                 for f in check_files:
                     try:
                         req = urllib.request.Request(
@@ -9625,7 +9632,14 @@ class App(ctk.CTk):
                 import urllib.request
                 import update as updater
                 repo_url = "https://raw.githubusercontent.com/thincole/thinaptm/main/"
-                files_to_update = getattr(updater, "FILES", ["thin_aptm.py", "engine.py", "login.py", "auto_voice_sub.py", "ghep_video.py", "prompt_templates.py", "recaptcha_farm.py", "update.py"])
+                get_fn = getattr(updater, "get_file_list", None)
+                files_to_update = get_fn() if callable(get_fn) else getattr(updater, "FILES", [
+                    "thin_aptm.py", "engine.py", "engine_ext.py", "flow_bridge.py", "flow_batch.py",
+                    "login.py", "auto_voice_sub.py", "ghep_video.py", "prompt_templates.py",
+                    "recaptcha_farm.py", "shopeevideo.py", "update.py", "extension/manifest.json",
+                    "extension/background.js", "extension/content.js", "extension/injected.js",
+                    "extension/popup.html", "extension/popup.js", "extension/side_panel.html", "extension/side_panel.js"
+                ])
                 updated_count = 0
                 for f in files_to_update:
                     try:
