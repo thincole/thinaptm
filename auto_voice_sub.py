@@ -13,6 +13,14 @@ import edge_tts
 from concurrent.futures import ThreadPoolExecutor
 
 
+def _run(cmd, **kwargs):
+    """subprocess.run() luôn ẩn cửa sổ console ffmpeg/ffprobe trên Windows —
+    thiếu creationflags này là lý do cửa sổ đen ffmpeg.exe bật lên giữa chừng
+    khi app đang chạy (đã gặp thực tế)."""
+    kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    return subprocess.run(cmd, **kwargs)
+
+
 def get_audio_duration(file_path):
     """Sử dụng ffprobe để đo chính xác thời lượng (giây) của file audio."""
     cmd = [
@@ -21,7 +29,7 @@ def get_audio_duration(file_path):
         "-of", "csv=p=0", file_path
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        res = _run(cmd, capture_output=True, text=True, check=True)
         return float(res.stdout.strip())
     except Exception as e:
         print(f"⚠️ Lỗi đo thời lượng audio {file_path}: {e}")
@@ -167,7 +175,7 @@ def build_final_video(clips, voice_audios, voice_texts, output_path, bgm_path=No
             # Lấy thời lượng gốc của clip Veo
             cmd_probe = ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", clip]
             try:
-                clip_dur = float(subprocess.run(cmd_probe, capture_output=True, text=True, check=True).stdout.strip())
+                clip_dur = float(_run(cmd_probe, capture_output=True, text=True, check=True).stdout.strip())
             except Exception:
                 clip_dur = 5.0  # mặc định Veo
 
@@ -179,7 +187,7 @@ def build_final_video(clips, voice_audios, voice_texts, output_path, bgm_path=No
             silent_clip = os.path.join(tmpdir, f"silent_{i}.mp4")
             cmd_silent = ["ffmpeg", "-y", "-i", clip, "-an", "-c:v", "copy", silent_clip]
             try:
-                subprocess.run(cmd_silent, capture_output=True, check=True)
+                _run(cmd_silent, capture_output=True, check=True)
             except Exception:
                 # Nếu không thể strip âm thanh bằng copy, dùng luôn file gốc (có thể lẫn 2 nguồn audio)
                 log_cb(f"   ⚠️ Phân cảnh {i+1}: không tách được âm thanh gốc → dùng clip gốc (có thể lẫn tiếng gốc + giọng đọc).")
@@ -197,12 +205,12 @@ def build_final_video(clips, voice_audios, voice_texts, output_path, bgm_path=No
                 adj_clip
             ]
             try:
-                subprocess.run(cmd_adj, capture_output=True, check=True)
+                _run(cmd_adj, capture_output=True, check=True)
             except subprocess.CalledProcessError:
                 # Fallback sang CPU encode (cũng tự khắc phục khi nhiều luồng NVENC tranh chấp GPU)
                 cmd_adj[cmd_adj.index("h264_nvenc")] = "libx264"
                 cmd_adj[cmd_adj.index("p4")] = "medium"
-                subprocess.run(cmd_adj, capture_output=True, check=True)
+                _run(cmd_adj, capture_output=True, check=True)
 
             return adj_clip
 
@@ -226,7 +234,7 @@ def build_final_video(clips, voice_audios, voice_texts, output_path, bgm_path=No
             concat_video
         ]
         log_cb("🔗 Đang ghép nối các phân cảnh...")
-        subprocess.run(cmd_concat, capture_output=True, check=True)
+        _run(cmd_concat, capture_output=True, check=True)
 
         current_video = concat_video
 
@@ -247,7 +255,7 @@ def build_final_video(clips, voice_audios, voice_texts, output_path, bgm_path=No
                 bgm_video
             ]
             log_cb(f"🎵 Đang lồng nhạc nền (Volume {bgm_volume})...")
-            subprocess.run(cmd_bgm, capture_output=True, check=True)
+            _run(cmd_bgm, capture_output=True, check=True)
             current_video = bgm_video
 
         # Bước 5: Sinh phụ đề .srt
@@ -273,12 +281,12 @@ def build_final_video(clips, voice_audios, voice_texts, output_path, bgm_path=No
             output_path
         ]
         try:
-            subprocess.run(cmd_sub, capture_output=True, check=True)
+            _run(cmd_sub, capture_output=True, check=True)
         except subprocess.CalledProcessError:
             # Fallback CPU encode
             cmd_sub[cmd_sub.index("h264_nvenc")] = "libx264"
             cmd_sub[cmd_sub.index("p4")] = "medium"
-            subprocess.run(cmd_sub, capture_output=True, check=True)
+            _run(cmd_sub, capture_output=True, check=True)
 
     log_cb(f"✅ Hoàn thành hậu kỳ! File đầu ra: {output_path}")
     return True

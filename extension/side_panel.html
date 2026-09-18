@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>ThinAPTM Flow Bridge</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #1a1a1a; color: #e0e0e0; font-size: 12px; }
+  h1 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #666; display: inline-block; flex-shrink: 0; }
+  .dot.on { background: #22c55e; }
+  label { font-size: 11px; color: #999; display: block; margin-bottom: 4px; }
+  input[type=text] { width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid #444;
+    background: #2a2a2a; color: #fff; font-size: 12px; margin-bottom: 8px; }
+  button { padding: 8px; border: none; border-radius: 6px; background: #3b82f6; color: #fff;
+    font-size: 12px; cursor: pointer; }
+  button:hover { background: #2563eb; }
+  button.secondary { background: #333; }
+  button.secondary:hover { background: #444; }
+  .row { display: flex; gap: 6px; margin-bottom: 8px; }
+  .row button { flex: 1; }
+  .card { background: #232323; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .status-line { display: flex; justify-content: space-between; margin: 3px 0; color: #aaa; }
+  .status-line b { color: #ddd; }
+  .status-line.err b { color: #f87171; }
+  .metrics { display: flex; gap: 10px; margin-top: 6px; }
+  .metric { flex: 1; text-align: center; background: #1e1e1e; border-radius: 6px; padding: 6px 0; }
+  .metric .n { font-size: 16px; font-weight: 700; }
+  .metric .n.ok { color: #22c55e; }
+  .metric .n.fail { color: #f87171; }
+  .metric .lbl { font-size: 10px; color: #888; margin-top: 2px; }
+  h2 { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 0.03em; margin: 14px 0 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 4px 4px; border-bottom: 1px solid #2a2a2a; font-size: 11px; }
+  th { color: #888; font-weight: 500; }
+  .badge { padding: 1px 6px; border-radius: 10px; font-size: 10px; }
+  .badge-ok { background: #14532d; color: #4ade80; }
+  .badge-fail { background: #450a0a; color: #f87171; }
+  .badge-proc { background: #3f2f0a; color: #facc15; }
+  .log-empty { color: #666; text-align: center; padding: 12px 0; }
+  .opt-row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+  .opt-row label { margin: 0; }
+</style>
+</head>
+<body>
+  <h1><span class="dot" id="conn-dot"></span> ThinAPTM Flow Bridge</h1>
+
+  <div class="card">
+    <label for="email-input">Email tài khoản Google:</label>
+    <input type="text" id="email-input" placeholder="vidu@gmail.com">
+    <div class="row">
+      <button id="btn-save">Lưu & Kết nối</button>
+    </div>
+    <div class="row">
+      <button class="secondary" id="btn-flow">Mở tab Flow</button>
+      <button class="secondary" id="btn-reconnect">Kết nối lại</button>
+    </div>
+    <div class="status-line"><span>Trạng thái</span><b id="s-conn">—</b></div>
+    <div class="status-line"><span>Tài khoản</span><b id="s-email">—</b></div>
+    <div class="status-line"><span>Project</span><b id="s-project">—</b></div>
+    <div class="status-line err" id="s-err-row" style="display:none"><span>Lỗi gần nhất</span><b id="s-err">—</b></div>
+    <div class="metrics">
+      <div class="metric"><div class="n" id="m-total">0</div><div class="lbl">Yêu cầu</div></div>
+      <div class="metric"><div class="n ok" id="m-ok">0</div><div class="lbl">OK</div></div>
+      <div class="metric"><div class="n fail" id="m-fail">0</div><div class="lbl">Lỗi</div></div>
+    </div>
+    <div class="opt-row">
+      <label for="chk-autoreload">Tự F5 tab Flow mỗi 1 giờ</label>
+      <input type="checkbox" id="chk-autoreload">
+    </div>
+  </div>
+
+  <h2>Nhật ký request (<span id="log-count">0</span>)</h2>
+  <table>
+    <thead><tr><th>Giờ</th><th>Loại</th><th>Kết quả</th></tr></thead>
+    <tbody id="log-body"><tr><td colspan="3" class="log-empty">Chưa có request nào</td></tr></tbody>
+  </table>
+
+  <script src="side_panel.js"></script>
+</body>
+</html>

@@ -978,6 +978,185 @@ class RecaptchaFarm:
 
 
 
+EXTENSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extension")
+
+
+class ExtensionBrowserPool:
+    """Mở 1 trình duyệt Chrome thật/tài khoản, có nạp sẵn ThinAPTM Flow Bridge
+    extension, đăng nhập đúng cookie, điều hướng tới flow.google.com — dùng cho
+    chế độ 'Extension' của tab Server-Video (thay vì trại farm token + REST).
+
+    KHÁC RecaptchaFarm: trình duyệt sống suốt phiên chạy (không phải cycle liên
+    tục để farm token), KHÔNG ẩn ngoài màn hình (theo lựa chọn người dùng — ưu
+    tiên dễ debug ở giai đoạn đầu), và KHÔNG cần botoxSign hook (kỹ thuật đó
+    dành riêng cho đường REST cũ trích xuất hàm ký nội bộ — Extension mode gọi
+    thẳng window.grecaptcha.enterprise.execute() trong trang, không cần vá gì).
+    """
+
+    def __init__(self, log_func=None):
+        def _safe_print(m):
+            try:
+                print(f"[ExtBrowserPool] {m}")
+            except Exception:
+                print(f"[ExtBrowserPool] {str(m).encode('ascii', 'replace').decode()}")
+        self._log = log_func or _safe_print
+        self._proxy_resolver = None
+        self._pages = {}          # email -> ChromiumPage
+        self._lock = threading.Lock()
+        self._stop = False
+
+    def set_proxy_resolver(self, fn):
+        self._proxy_resolver = fn
+
+    def start_account(self, email, cookie, flow_project_id=None):
+        """Mở 1 trình duyệt cho đúng tài khoản này. Gọi lại nhiều lần cho cùng
+        email là an toàn (bỏ qua nếu đã có trình duyệt đang chạy)."""
+        with self._lock:
+            if email in self._pages:
+                return True
+
+        try:
+            from DrissionPage import ChromiumOptions, ChromiumPage
+        except ImportError:
+            self._log("❌ Thiếu DrissionPage — không thể mở trình duyệt Extension mode.")
+            return False
+
+        def _resolve_proxy():
+            try:
+                return self._proxy_resolver(email) if self._proxy_resolver else None
+            except Exception:
+                return None
+
+        # Chờ tối đa ~20s nếu proxy pool app chưa nạp xong lúc hàm này được gọi (gọi
+        # ngay khi bấm Bắt Đầu, trước khi proxy được gán) — y hệt cách recaptcha_farm._worker
+        # đã làm cho trại token, tránh mở trình duyệt "trần" bằng IP máy do gọi quá sớm.
+        proxy_str = _resolve_proxy()
+        for _ in range(20):
+            if proxy_str or self._stop:
+                break
+            time.sleep(1)
+            proxy_str = _resolve_proxy()
+
+        co = ChromiumOptions()
+        chrome_path = get_chrome_path()
+        if chrome_path:
+            co.set_browser_path(chrome_path)
+        profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "_profiles", str(email).replace("@", "_"))
+        co.set_user_data_path(profile_dir)
+        co.set_argument("--no-first-run")
+        co.set_argument("--no-default-browser-check")
+        co.set_argument("--disable-blink-features=AutomationControlled")
+        # BẮT BUỘC: không set thì DrissionPage cố kết nối cổng debug MẶC ĐỊNH 9222 —
+        # nếu chưa có Chrome nào tự mở sẵn trên đúng cổng đó, "ChromiumPage(co)" báo
+        # "Browser connect failed... port 9222" như đã gặp thực tế. Mỗi trình duyệt
+        # (mỗi tài khoản) phải có 1 cổng riêng, giống hệt cách recaptcha_farm._worker
+        # đã làm cho farm token.
+        import random as _random
+        co.set_local_port(_random.randint(30000, 49999))
+        if os.path.isdir(EXTENSION_DIR):
+            co.add_extension(EXTENSION_DIR)
+        else:
+            self._log(f"❌ Không tìm thấy thư mục extension tại {EXTENSION_DIR}")
+            return False
+
+        proxy_creds = None
+        if proxy_str:
+            import re as _re
+            try:
+                import thin_aptm as _T
+                _pd = _T.ProxyPool._to_dict(proxy_str)
+            except Exception:
+                _pd = None
+            _url = (_pd or {}).get("http") or ""
+            if _url.startswith("socks"):
+                co.set_argument("--proxy-server", _url.split("#")[0])
+            elif _url:
+                _m = _re.match(r"https?://(?:([^:]+):([^@]+)@)?([^:]+):(\d+)", _url)
+                if _m:
+                    _u, _p, _h, _pt = _m.group(1), _m.group(2), _m.group(3), _m.group(4)
+                    co.set_argument("--proxy-server", f"http://{_h}:{_pt}")
+                    if _u:
+                        proxy_creds = (_u, _p or "")
+            self._log(f"[{email[:16]}] 🌐 Extension mode qua proxy {(_url.split('@')[-1] if _url else '?')[:34]}")
+        else:
+            self._log(f"[{email[:16]}] ⚠️ Không có proxy → chạy bằng IP máy")
+
+        try:
+            page = ChromiumPage(co)
+        except Exception as e:
+            self._log(f"[{email[:16]}] ❌ Không mở được trình duyệt: {e}")
+            return False
+
+        try:
+            import browser_stealth
+            browser_stealth.apply_stealth(page, log_fn=self._log)
+            if proxy_creds:
+                browser_stealth.prime_proxy_auth(page, proxy_creds[0], proxy_creds[1], log_fn=self._log)
+        except Exception as e:
+            self._log(f"[{email[:16]}] ⚠️ Lỗi nạp stealth/proxy-auth: {e}")
+
+        try:
+            page.get("https://flow.google.com")
+            time.sleep(1.5)
+            _inject_cookies(page, cookie)
+        except Exception as e:
+            self._log(f"[{email[:16]}] ⚠️ Lỗi inject cookie: {e}")
+
+        pid = flow_project_id or "513f3b20-fa17-4be7-89b5-f179860de580"
+        target_url = f"https://flow.google.com/project/{pid}?_tam_email={email}"
+        try:
+            page.get(target_url)
+        except Exception as e:
+            self._log(f"[{email[:16]}] ❌ Không điều hướng được tới Flow: {e}")
+            return False
+
+        with self._lock:
+            self._pages[email] = page
+        self._log(f"[{email[:16]}] 🧩 Đã mở trình duyệt Extension mode, đang chờ kết nối bridge...")
+        return True
+
+    def is_running(self, email):
+        with self._lock:
+            return email in self._pages
+
+    def stop_account(self, email):
+        with self._lock:
+            page = self._pages.pop(email, None)
+        if page:
+            try:
+                page.quit()
+            except Exception:
+                pass
+
+    def stop_all(self):
+        self._stop = True
+        with self._lock:
+            emails = list(self._pages.keys())
+        for email in emails:
+            self.stop_account(email)
+
+
+_ext_pool_instance = None
+_ext_pool_lock = threading.Lock()
+
+
+def get_extension_pool(log_func=None):
+    global _ext_pool_instance
+    with _ext_pool_lock:
+        if _ext_pool_instance is None:
+            _ext_pool_instance = ExtensionBrowserPool(log_func=log_func)
+        return _ext_pool_instance
+
+
+def stop_extension_pool():
+    global _ext_pool_instance
+    with _ext_pool_lock:
+        if _ext_pool_instance:
+            _ext_pool_instance.stop_all()
+            _ext_pool_instance = None
+
+
 # ============ SINGLETON cho toàn app ============
 _farm_instance = None
 _farm_lock = threading.Lock()

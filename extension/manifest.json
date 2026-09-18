@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "ThinAPTM Flow Bridge",
+  "version": "0.1.0",
+  "description": "Cau noi cuc bo cho Google Flow cua ThinAPTM — chay batchexecute RPC ngay trong tab flow.google.com da dang nhap, tu mint reCAPTCHA, khong can bearer token/REST rieng.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://flow.google.com/*",
+    "https://flow-content.google/*",
+    "https://labs.google/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://flow.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "injected.js"
+      ],
+      "matches": [
+        "https://flow.google.com/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "ThinAPTM Flow Bridge — bấm để mở panel theo dõi"
+  },
+  "side_panel": {
+    "default_path": "side_panel.html"
+  }
+}

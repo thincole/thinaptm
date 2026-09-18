@@ -1118,6 +1118,10 @@ def extend_video_rest(bearer_token, project, prompt, source_media_id, seed, aspe
     return _post_video_generate(GEN_EXTEND, payload, bearer_token, proxy, timeout, err_ctx_fn=_err_ctx)
 
 
+_poll_success_body_logged = False  # dump 1 lần response JSON thật khi thành công, để dò field URL
+                                    # tải video thay cho boq_execute("Iyc41d") đã bị Google khai tử (401)
+
+
 def poll_video_rest(bearer_token, media_id, project, proxy=None, timeout_minutes=15):
     """Poll trạng thái video qua REST API (thuật toán TstGoogleFlow v1.0.6).
     
@@ -1163,6 +1167,10 @@ def poll_video_rest(bearer_token, media_id, project, proxy=None, timeout_minutes
             # v1.0.6 nhận diện thành công
             if "MEDIA_GENERATION_STATUS_SUCCESSFUL" in text:
                 _log_api(f"poll_video_rest: ✅ Video render thành công sau {attempt} lượt poll!")
+                global _poll_success_body_logged
+                if not _poll_success_body_logged:
+                    _poll_success_body_logged = True
+                    _log_api(f"[DEBUG 1 lần] poll_video_rest raw body khi thành công (để dò field URL video, tránh phải qua boq_execute Iyc41d đã chết): {text[:4000]}")
                 return "done", media_id, None
             
             # v1.0.6 nhận diện thất bại

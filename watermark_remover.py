@@ -55,7 +55,8 @@ def get_video_dimensions(video_path):
         video_path
     ]
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
         if proc.returncode == 0 and "x" in proc.stdout.strip():
             w_str, h_str = proc.stdout.strip().split("x")[:2]
             w, h = int(w_str), int(h_str)
@@ -159,7 +160,8 @@ def remove_watermark_video(video_path, output_path=None, mode="crop", model="veo
         cmd.extend(["-map", "0:a?", "-c:a", "copy"])
         cmd.append(temp_out)
 
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
 
         if proc.returncode != 0:
             err = proc.stderr.strip() or f"FFmpeg exit code {proc.returncode}"

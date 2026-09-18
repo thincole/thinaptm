@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>ThinAPTM Flow Bridge</title>
+<style>
+  body { width: 300px; font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 14px; background: #1e1e1e; color: #e0e0e0; }
+  h1 { font-size: 14px; margin: 0 0 12px; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #666; display: inline-block; }
+  .dot.on { background: #22c55e; }
+  label { font-size: 11px; color: #999; display: block; margin-bottom: 4px; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 7px 8px; border-radius: 6px; border: 1px solid #444;
+    background: #2a2a2a; color: #fff; font-size: 12px; margin-bottom: 8px; }
+  button { width: 100%; padding: 8px; border: none; border-radius: 6px; background: #3b82f6; color: #fff;
+    font-size: 12px; cursor: pointer; margin-bottom: 6px; }
+  button:hover { background: #2563eb; }
+  button.secondary { background: #333; }
+  button.secondary:hover { background: #444; }
+  .status { font-size: 11px; color: #999; margin-top: 8px; line-height: 1.6; }
+  .status b { color: #ddd; }
+  .row { display: flex; gap: 6px; }
+  .row button { flex: 1; }
+</style>
+</head>
+<body>
+  <h1><span class="dot" id="conn-dot"></span> ThinAPTM Flow Bridge</h1>
+
+  <label for="email-input">Email tài khoản Google (dùng để định tuyến đúng job trong ThinAPTM):</label>
+  <input type="text" id="email-input" placeholder="vidu@gmail.com">
+  <button id="btn-save">Lưu & Kết nối</button>
+
+  <div class="row">
+    <button class="secondary" id="btn-flow">Mở tab Flow</button>
+    <button class="secondary" id="btn-reconnect">Kết nối lại</button>
+  </div>
+
+  <div class="status" id="status-box">Đang tải trạng thái...</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
