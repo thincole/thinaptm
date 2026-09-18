@@ -24,3 +24,11 @@ Mo
 Sau
 new_version.txt
 shopee.txt
+
+# Seedvis / Seedvid (Private - Do not upload to GitHub)
+*seedvis*
+*seedvid*
+run_seedvis.bat
+logseedvis.txt
+output_seedvis/
+

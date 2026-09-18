@@ -197,3 +197,37 @@ def download_video_ext(media_id: str, email: str, dst: str, proxy=None,
     if not urls.video:
         return 0
     return E.download_url(urls.video, dst, timeout=timeout, proxy=proxy)
+
+
+def generate_image_ext(email: str, project: str, prompt: str, seed: Optional[int] = None,
+                       aspect: Any = 1, model: str = "GEM_PIX_2",
+                       ref_media_ids: Optional[list[str]] = None, timeout: float = 120):
+    """Generate ảnh qua RPC ogiZ0b. Trả về (status, result_dict) tương tự engine.generate_image()."""
+    try:
+        wire_model = fb.resolve_image_model(model)
+        freq = fb.image_request(prompt, project, count=1, aspect=aspect, seed=seed,
+                                model=wire_model, ref_media_ids=ref_media_ids)
+    except Exception:
+        return "failed", None
+
+    result = _rpc(email, fb.RPC_GEN_IMAGE, freq, captcha_action=fb.CAPTCHA_IMAGE, timeout=timeout)
+    if result.get("error") in ("account_not_connected", "bridge_timeout", "bridge_not_started"):
+        return "retry_soft", None
+    payload, err = _payload_or_none(result, fb.RPC_GEN_IMAGE)
+    if err:
+        up = err.upper()
+        if "UNUSUAL_ACTIVITY" in up or "CAPTCHA_FAILED" in up or "NO_AT_TOKEN" in up:
+            return "throttle", None
+        if "QUOTA_REACHED" in up or "QUOTA" in up:
+            return "quota_hard", None
+        if E.is_policy_reason(err):
+            return "vi phạm cs", None
+        return "failed", None
+    try:
+        imgs = fb.read_images(payload)
+        if imgs:
+            return "ok", {"fife": imgs[0].url, "name": imgs[0].media_id, "b64": None}
+        return "failed", None
+    except fb.FlowBatchError:
+        return "failed", None
+
