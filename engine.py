@@ -520,7 +520,10 @@ def boq_execute(rpc_id, payload_str, cookie, proxy=None, source_path="/", timeou
                             return None, "throttle"
                         # gRPC 7 = PERMISSION_DENIED
                         if err_code == 7 or "PERMISSION_DENIED" in str(err_info):
-                            if "UNUSUAL" in str(err_info):
+                            # Kiểm tra chuỗi chính xác "UNUSUAL_ACTIVITY" thay vì chỉ "UNUSUAL"
+                            # để tránh false positive khi Google mô tả nội dung "unusual" với nghĩa khác.
+                            err_str = str(err_info).upper()
+                            if "UNUSUAL_ACTIVITY" in err_str or "PUBLIC_ERROR_UNUSUAL_ACTIVITY" in err_str:
                                 return None, "unusual"
                             return None, "forbidden"
                         # gRPC 16 = UNAUTHENTICATED
