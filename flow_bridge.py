@@ -116,6 +116,10 @@ class FlowBridge:
             await websocket.close()
             return
 
+        # Chuẩn hóa về lowercase để tránh lỗi khi người dùng gõ email hoa đầu chữ
+        # (ví dụ: "Minhhoa@gmail.com" vs "minhhoa@gmail.com" trong ThinAPTM)
+        email = email.strip().lower()
+
         with self._lock:
             self._connections[email] = websocket
             self._connected_at[email] = time.time()
@@ -164,7 +168,7 @@ class FlowBridge:
         from urllib.parse import urlparse, parse_qs
         qs = parse_qs(urlparse(path).query)
         vals = qs.get("email")
-        return vals[0] if vals else None
+        return vals[0].strip().lower() if vals else None
 
     # ── định tuyến/gọi RPC (chạy trên event loop) ──────────────
 
@@ -195,7 +199,7 @@ class FlowBridge:
         if not self._loop or not self._loop.is_running():
             return {"error": "bridge_not_started"}
         fut = asyncio.run_coroutine_threadsafe(
-            self._call_async(email, method, params, timeout), self._loop
+            self._call_async(email.strip().lower(), method, params, timeout), self._loop
         )
         try:
             return fut.result(timeout=timeout + 5)
@@ -206,7 +210,7 @@ class FlowBridge:
 
     def is_account_connected(self, email: str) -> bool:
         with self._lock:
-            return email in self._connections
+            return email.strip().lower() in self._connections
 
     def connected_accounts(self) -> list[str]:
         with self._lock:
@@ -217,7 +221,7 @@ class FlowBridge:
         nguồn ưu tiên (không phải giá trị tĩnh lưu sẵn), nên nếu người dùng tạo
         project mới/đổi project giữa chừng, lần gọi tiếp theo tự nhận đúng cái mới."""
         with self._lock:
-            return self._projects.get(email)
+            return self._projects.get(email.strip().lower())
 
     def set_on_project_detected(self, fn):
         """App gắn callback fn(email, project_id) — gọi mỗi khi phát hiện project
