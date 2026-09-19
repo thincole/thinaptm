@@ -1,4 +1,4 @@
-curl_cffi
+﻿curl_cffi
 customtkinter
 DrissionPage
 pyotp
@@ -8,3 +8,12 @@ psutil
 cryptography
 requests
 httpx
+pystray
+pyreqwest_impersonate
+groq
+google-genai
+google-generativeai
+google-auth
+opencv-python
+numpy
+websockets

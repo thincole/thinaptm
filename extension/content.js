@@ -76,8 +76,18 @@ try {
     }
   }
 
-  tick();
-  setInterval(tick, 5000);
+  // Chỉ tự dò/tự tạo project cho tab THẬT SỰ do ThinAPTM mở (đã từng biết accountEmail — qua
+  // _tam_email trên URL hoặc người dùng tự nhập ở side panel). Extension giờ được nạp vào MỌI
+  // phiên Chrome (kể cả các phiên login.py chỉ dùng để lấy cookie, không có _tam_email) — nếu
+  // không chặn, tab đăng nhập thường cũng sẽ bị tự bấm "Dự án mới" một cách không mong muốn.
+  try {
+    chrome.storage.local.get(['accountEmail'], (data) => {
+      if (data && data.accountEmail) {
+        tick();
+        setInterval(tick, 5000);
+      }
+    });
+  } catch {}
 })();
 
 chrome.runtime.onMessage.addListener((msg, _, reply) => {

@@ -259,6 +259,11 @@ function captchaFromTab(tabId, requestId, captchaAction) {
 
 async function solveCaptcha(requestId, captchaAction) {
   let tabs = await chrome.tabs.query({ url: flowUrls });
+  // Ưu tiên thử các tab ĐANG Ở TRONG 1 project (/project/<uuid>) trước — trang chủ/marketing
+  // (flow.google.com/about, /) không tải window.grecaptcha.enterprise nên luôn timeout 22s vô
+  // ích nếu thử trước; có thể có nhiều tab flow.google.com cùng lúc (tab cũ còn sót lại từ lần
+  // mở trước, hoặc do FlowKit gốc hỗ trợ nhiều tab) nên vẫn giữ fallback thử hết danh sách.
+  tabs.sort((a, b) => (/\/project\//.test(b.url || '') ? 1 : 0) - (/\/project\//.test(a.url || '') ? 1 : 0));
 
   if (!tabs.length) {
     try {

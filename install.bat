@@ -37,7 +37,7 @@ echo [3/5] Dang cai dat cac thu vien Python (requirements.txt)...
 %PYTHON_EXE% -m pip install -r "%~dp0requirements.txt"
 if %errorlevel% neq 0 (
     echo   [WARN] Co loi trong qua trinh cai requirements.txt, dang thu cai le tung thu vien...
-    %PYTHON_EXE% -m pip install customtkinter curl_cffi pyreqwest_impersonate pillow edge-tts groq google-genai google-generativeai google-auth DrissionPage cryptography pyotp psutil requests
+    %PYTHON_EXE% -m pip install customtkinter curl_cffi pyreqwest_impersonate pillow edge-tts groq google-genai google-generativeai google-auth DrissionPage cryptography pyotp psutil requests httpx pystray opencv-python numpy websockets
 )
 
 echo.
@@ -61,10 +61,10 @@ echo.
 echo [5/5] Kiem tra Diagnostic cac thu vien...
 set MOD_FAIL=0
 
-%PYTHON_EXE% -c "import customtkinter, curl_cffi, pyreqwest_impersonate, PIL, edge_tts, groq, google.genai, google.auth, DrissionPage, cryptography, pyotp, psutil, requests, tkinter; print('   [OK] TOAN BO THU VIEN PYTHON DA SAN SANG 100%!')" >nul 2>&1
+%PYTHON_EXE% -c "import customtkinter, curl_cffi, pyreqwest_impersonate, PIL, edge_tts, groq, google.genai, google.auth, DrissionPage, cryptography, pyotp, psutil, requests, tkinter, httpx, pystray, cv2, numpy, websockets; print('   [OK] TOAN BO THU VIEN PYTHON DA SAN SANG 100%!')" >nul 2>&1
 if %errorlevel% neq 0 (
     echo   [FAIL] Phat hien thieu thu vien. Dang kiem tra chi tiet...
-    for %%M in (customtkinter curl_cffi pyreqwest_impersonate PIL edge_tts groq google.genai google.auth DrissionPage cryptography pyotp psutil requests tkinter) do (
+    for %%M in (customtkinter curl_cffi pyreqwest_impersonate PIL edge_tts groq google.genai google.auth DrissionPage cryptography pyotp psutil requests tkinter httpx pystray cv2 numpy websockets) do (
         %PYTHON_EXE% -c "import %%M" >nul 2>&1
         if errorlevel 1 (
             echo      [FAIL] THIEU: %%M
@@ -74,7 +74,7 @@ if %errorlevel% neq 0 (
         )
     )
 ) else (
-    echo   [OK] TOAN BO 14/14 THU VIEN PYTHON CHUAN DA DUOC CAI DAT HOAN HAO!
+    echo   [OK] TOAN BO 19/19 THU VIEN PYTHON CHUAN DA DUOC CAI DAT HOAN HAO!
 )
 
 echo.

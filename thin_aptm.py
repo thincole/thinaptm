@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.32"
+APP_VERSION = "ThinAPTM 1.2.33"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -213,6 +213,13 @@ AUTH_REST = 1800           # nghỉ 30' khi 401 không cứu được bằng ref
 BEARER_TTL = 1200          # refresh bearer từ cookie sau 20' (bearer Google chết ~30')
 JOB_MAX_CYCLES = 30        # 1 job được chuyền/thử tối đa 30 lượt (work-stealing giữa accounts cần đủ kiên nhẫn)
 POLL_MAX = 60              # số lần poll trạng thái render / job
+# Extension mode riêng: mỗi lượt poll_video_ext có thể phải chờ tới `timeout` giây CHO MỖI lệnh
+# RPC (operation/media/project_media) bên trong 1 attempt — với POLL_MAX=60 + timeout=90s cũ,
+# giới hạn tệ nhất lý thuyết lên tới ~90 phút cho 1 job (đã gặp thực tế: 1 job treo 8+ phút mới
+# chịu báo "failed"). Giảm cả 2 số để 1 job tự bỏ cuộc nhanh hơn (~3 phút), dựa vào cơ chế
+# retry_soft/requeue sẵn có để thử lại thay vì chờ 1 job treo quá lâu.
+EXT_POLL_MAX = 24          # ~24×8s = 192s nếu mỗi vòng đều nhanh (không phải lý do treo)
+EXT_POLL_RPC_TIMEOUT = 20  # giây tối đa cho MỖI lệnh RPC trong 1 vòng poll (trước là 90s)
 AUTO_RETRY_ROUNDS = 2      # sau khi chạy xong, TỰ retry các job lỗi thêm bao nhiêu vòng
 MAX_REWRITES = 3           # prompt vi phạm -> nhờ Gemini viết lại tối đa bao nhiêu lần trước khi bỏ
 # LƯU Ý: model lite (t2v_lite / r2v_lite) MIỄN PHÍ -> không tốn credit -> KHÔNG cách ly theo credit.
@@ -225,16 +232,39 @@ UPLOAD_UP_AFTER = 5             # Cứ 5 lần thành công liên tiếp thì t�
 # Đo thực tế: 1 TK chạy liên tục ~3-4 video/phút trong ~12 phút → bị gắn cờ.
 RATE_WINDOW = 600               # đếm số submit trong cửa sổ 10 phút
 RATE_START = 10                 # hồ sơ An toàn: 10 video/10p (~1/phút)
-RATE_FLOOR = 4                  # sàn tốc độ
+RATE_FLOOR = 10                 # sàn tốc độ = ĐÚNG mức "An toàn" (RATE_START) — không cho tụt
+                                 # xuống sâu hơn nữa qua nhiều lần bị phạt. Trước là 4, nhưng dữ
+                                 # liệu thực tế 19/9 cho thấy gắn cờ chủ yếu do CHẤT LƯỢNG IP
+                                 # (proxy dùng chung, uy tín từng IP) chứ không phải do tốc độ —
+                                 # để sàn tụt sâu chỉ tự làm chậm oan mà không giảm được gắn cờ.
+                                 # Sàn = 10 cũng vừa khớp ngưỡng công thức trần luồng upload
+                                 # (rate_limit//10+1) luôn cho tối thiểu 2 luồng thay vì kẹt ở 1.
 RATE_HARD_MAX = 30              # trần cứng 30/10p (~3/phút — mức đã thấy bị gắn cờ)
-RATE_UP_EVERY = 1800            # êm 30 phút liên tục → tăng +1 video/10p
+RATE_UP_EVERY = 900             # êm 15 phút liên tục → tăng +1 video/10p (trước 30p — hồi phục
+                                 # nhanh gấp đôi, cùng lý do: tốc độ không phải nguyên nhân chính
+                                 # gây gắn cờ nên không cần thận trọng phục hồi quá chậm)
 RATE_CEIL_SAFETY = 0.8          # trần học được = 80% tốc độ lúc bị gắn cờ
-RATE_CUT = 0.6                  # bị gắn cờ → tốc độ còn 60% tốc độ lúc bị gắn cờ
+RATE_CUT = 0.75                 # bị gắn cờ → tốc độ còn 75% tốc độ lúc bị gắn cờ (trước 60% — cắt
+                                 # nhẹ tay hơn, cùng lý do chất lượng IP mới là đòn bẩy chính)
 CEIL_RELAX_EVERY = 6 * 3600     # êm 6 giờ → nới trần +1
 BREAK_RUN = (50 * 60, 70 * 60)  # chạy bao lâu thì nghỉ ngắn (ngẫu nhiên)
 BREAK_LEN = (5 * 60, 10 * 60)   # nghỉ ngắn bao lâu (ngẫu nhiên)
-UNUSUAL_LADDER = [300, 1800, 7200]  # bị gắn cờ lần 1/2/3+ → nghỉ 5p / 30p / 2h
+UNUSUAL_LADDER = [600]  # UNUSUAL_ACTIVITY → cách ly 10 PHÚT CỐ ĐỊNH, KHÔNG leo thang.
+# Đổi từ bậc thang leo thang (5p→2h) sang mức cố định 600s theo đúng cách 1 phần mềm tạo video
+# khác đang chạy ổn định xử lý (nó coi UNUSUAL_ACTIVITY là sự cố TẠM THỜI, chỉ leo thang với lỗi
+# THROTTLE — xem THROTTLE_LADDER bên trên, vốn đã trùng khớp 10/30/120/600/1800).
+# Dữ liệu thực tế của chính ThinAPTM ủng hộ cách hiểu này: sau 3 lần bị phạt, tài khoản tụt còn
+# 1 luồng / 0.5 video/phút (chậm gấp ~7 lần ngưỡng an toàn) mà VẪN bị gắn cờ sau 5 phút → tốc độ
+# không phải nguyên nhân, nên phạt nặng dần chỉ mất throughput chứ không ngăn được gắn cờ.
 UNUSUAL_RESET = 2 * 3600        # êm 2 giờ thì bậc thang nghỉ quay về lần 1
+IP_BURN_THRESHOLD = 3           # bị gắn cờ >= 3 lần trong cùng cửa sổ UNUSUAL_RESET (2h) → nghi
+                                 # IP hiện tại đã "cháy" (Google đánh dấu theo IP, không chỉ theo
+                                 # tài khoản) → tự xoay proxy khác + đăng nhập lại. THỬ NGHIỆM,
+                                 # dựa trên 1 lần quan sát thực tế (IP cũ dính 3-4 lần/~1h20p rồi
+                                 # liên tục; IP mới chạy sạch 37p/68 video) — không phải số chính
+                                 # thức, chỉnh nếu thấy phản ứng quá sớm/muộn.
+IP_ROTATE_COOLDOWN = 300        # tối thiểu giữa 2 lần thử xoay IP cho cùng 1 tài khoản (tránh
+                                 # dồn dập gọi lại nếu lần xoay trước thất bại/hết proxy)
 # --- Circuit Breakers toàn cục (v1.0.6) ---
 MODEL_DENIED_CIRCUIT = 10       # v1.0.6: 10 lỗi MODEL_ACCESS_DENIED → dừng toàn bộ queue
 DOWNLOAD_FAIL_CIRCUIT = 20      # v1.0.6: 20 download thất bại liên tiếp → dừng queue
@@ -252,7 +282,7 @@ def _dur_label(secs):
 class ProxyPool:
     """Pool proxy dùng chung cho tất cả AccountState. Thread-safe.
     Hỗ trợ: ip:port, ip:port:user:pass, http://user:pass@ip:port"""
-    def __init__(self, proxy_lines=None, disabled=False):
+    def __init__(self, proxy_lines=None, disabled=False, flagged=None):
         self._lock = threading.Lock()
         self.disabled = disabled
         self._all = []           # tất cả proxy (string gốc)
@@ -261,9 +291,27 @@ class ProxyPool:
         self._assigned = {}      # email -> proxy string
         self._reverse = {}       # proxy string -> email (để đảm bảo ko trùng)
         self._cooldown = {}      # proxy string -> timestamp hết hạn cooling (429 tạm thời)
+        # Proxy đã từng gây UNUSUAL_ACTIVITY lặp lại (IP nghi cháy) — nhớ BỀN VỮNG qua các lần
+        # khởi động lại app (App tự đọc/ghi settings.json["flagged_proxies"]), KHÔNG như _cooldown
+        # (chỉ tồn tại trong bộ nhớ, mất khi app khởi động lại). Thiếu cái này đã gặp thực tế:
+        # rotate() chọn bừa ngay ĐÚNG proxy vừa bị đánh dấu cháy cho tài khoản trước đó, chỉ vì lúc
+        # app khởi động lại pool coi nó là "chưa ai giữ" như bình thường.
+        self._flagged = set(flagged or [])
         self.PROXY_COOL_SEC = 60 # proxy bị 429 không được gán lại cho TK khác trong 60s
         if proxy_lines:
             self.load(proxy_lines)
+
+    def mark_flagged(self, proxy_str):
+        """Đánh dấu 1 proxy là đã biết gây cháy (UNUSUAL_ACTIVITY lặp lại) — rotate()/assign() sẽ
+        tránh chọn lại nó cho BẤT KỲ tài khoản nào khác, trừ khi không còn proxy nào khác."""
+        if proxy_str:
+            with self._lock:
+                self._flagged.add(proxy_str)
+
+    def get_flagged(self):
+        """Danh sách proxy đã đánh dấu cháy — để App lưu vào settings.json."""
+        with self._lock:
+            return sorted(self._flagged)
 
     def load(self, proxy_lines):
         """Load danh sách proxy từ list string (mỗi phần tử 1 proxy). Tự động lọc bỏ các dòng proxy lỗi, cắt cụt (vd '97:...')."""
@@ -353,13 +401,19 @@ class ProxyPool:
             # Nếu đã gán và proxy còn sống → giữ nguyên
             if email in self._assigned and self._assigned[email] not in self._dead:
                 return self._assigned[email]
-            # Tìm proxy chưa ai dùng + chưa dead + chưa cooling
+            # Tìm proxy chưa ai dùng + chưa dead + chưa cooling + CHƯA từng bị đánh dấu cháy
             for p in self._alive:
-                if p not in self._reverse and p not in self._cooldown:
+                if p not in self._reverse and p not in self._cooldown and p not in self._flagged:
                     self._assigned[email] = p
                     self._reverse[p] = email
                     return p
-            # Fallback: nếu tất cả đều cooling, bỏ qua cooldown
+            # Fallback: nếu tất cả (chưa cháy) đều cooling, bỏ qua cooldown nhưng vẫn né proxy cháy
+            for p in self._alive:
+                if p not in self._reverse and p not in self._flagged:
+                    self._assigned[email] = p
+                    self._reverse[p] = email
+                    return p
+            # Fallback cuối: hết proxy sạch thật sự, đành chấp nhận cả proxy đã cháy còn hơn không có
             for p in self._alive:
                 if p not in self._reverse:
                     self._assigned[email] = p
@@ -376,6 +430,25 @@ class ProxyPool:
             px = self._assigned.pop(email, None)
             if px:
                 self._reverse.pop(px, None)
+
+    def assign_specific(self, email, proxy_str):
+        """Gán ĐÚNG proxy đã lưu sẵn (vd trong accounts.json['proxy']) cho email — dùng để giữ
+        1 tài khoản luôn dùng ĐÚNG 1 proxy cố định qua các lần khởi động app (đồng nhất IP giữa
+        ThinAPTM và trình duyệt Extension login tài khoản đó). Trả proxy string nếu gán được,
+        None nếu proxy đó không còn hợp lệ (đã bị xoá khỏi pool / đã chết) hoặc đang bị tài khoản
+        KHÁC giữ (xung đột — không ghi đè)."""
+        if not email or not proxy_str:
+            return None
+        email = str(email).strip().lower()
+        with self._lock:
+            if proxy_str not in self._alive or proxy_str in self._dead:
+                return None
+            holder = self._reverse.get(proxy_str)
+            if holder and holder != email:
+                return None
+            self._assigned[email] = proxy_str
+            self._reverse[proxy_str] = email
+            return proxy_str
 
     def mark_dead(self, email):
         """Đánh dấu proxy hiện tại của email là dead, tự gán proxy mới.
@@ -397,9 +470,12 @@ class ProxyPool:
                     return p
             return None
 
-    def rotate(self, email):
+    def rotate(self, email, cooldown=None):
         """Đổi proxy cho email — trả proxy cũ về pool (với cooling), gán proxy MỚI KHÁC.
         Dùng khi proxy hiện tại bị rate-limit (429) tạm thời, KHÔNG mark dead.
+        cooldown: số giây cách ly proxy cũ trước khi TK khác có thể nhận lại (mặc định
+        PROXY_COOL_SEC=60s cho lỗi 429 thoáng qua; truyền số lớn hơn cho trường hợp nghiêm
+        trọng hơn, vd IP nghi bị Google đánh dấu — không nên để TK khác nhận lại quá sớm).
         Trả (new_proxy_str, old_proxy_str) hoặc (None, old) nếu không có proxy khác."""
         if not email:
             return None, None
@@ -410,16 +486,24 @@ class ProxyPool:
             old = self._assigned.get(email)
             # Đưa proxy cũ vào cooldown để TK khác không nhận lại ngay
             if old:
-                self._cooldown[old] = now + self.PROXY_COOL_SEC
-            # Tìm proxy khác: chưa ai dùng + khác proxy cũ + chưa cooling
+                self._cooldown[old] = now + (cooldown if cooldown is not None else self.PROXY_COOL_SEC)
+            # Tìm proxy khác: chưa ai dùng + khác proxy cũ + chưa cooling + CHƯA từng bị đánh dấu cháy
             for p in self._alive:
-                if p not in self._reverse and p != old and p not in self._cooldown:
+                if p not in self._reverse and p != old and p not in self._cooldown and p not in self._flagged:
                     if old:
                         self._reverse.pop(old, None)
                     self._assigned[email] = p
                     self._reverse[p] = email
                     return p, old
-            # Fallback: bỏ qua cooldown nếu không còn proxy nào
+            # Fallback: bỏ qua cooldown nhưng vẫn né proxy cháy
+            for p in self._alive:
+                if p not in self._reverse and p != old and p not in self._flagged:
+                    if old:
+                        self._reverse.pop(old, None)
+                    self._assigned[email] = p
+                    self._reverse[p] = email
+                    return p, old
+            # Fallback cuối: hết proxy sạch, đành chấp nhận cả proxy đã cháy còn hơn không có
             for p in self._alive:
                 if p not in self._reverse and p != old:
                     if old:
@@ -474,6 +558,7 @@ class AccountState:
         self.rest_reason = ""     # "credit"/"quota" (cạn) | "throttle" | "auth" | "" (đang chạy)
         self.busy = 0             # số worker đang tạo video trên account này (⚡ Đang tạo)
         self._last_thr_log = 0.0  # lần cuối ghi log throttle (giới hạn 1 dòng / 30s / account)
+        self._last_relaunch_attempt = 0.0  # lần cuối tự thử mở lại trình duyệt Extension mode
         self.wins = 0
         self.fails = 0
         self.refcache = {}        # ref image path -> media_id (khỏi upload lại khi retry)
@@ -489,11 +574,6 @@ class AccountState:
         self._circuit_broken = False       # True khi bị ngắt mạch
         # --- Proxy health tracking ---
         self.proxy_fail_streak = 0         # số lần proxy fail liên tiếp (DNS/connection)
-        # --- Upload Rate Limit & Luồng Upload thông minh (Khởi đầu 1, Min 1, Max 4) ---
-        self.use_aimd = True               # True: AIMD tự động tăng/giảm luồng; False: Giữ cố định theo cài đặt tay
-        self.upload_threads = max(1, min(20, int(acc.get("upload_threads", UPLOAD_MIN_THREADS))))
-        self.upload_inflight = 0
-        self._upload_ok_streak = 0
         # --- Bộ điều tốc theo cửa sổ thời gian (nhớ qua các lần khởi động qua acc["rate_gov"]) ---
         self.submit_times = collections.deque()
         self._rate_lock = threading.Lock()
@@ -506,6 +586,19 @@ class AccountState:
         self.unusual_count = int(_g.get("unusual_count", 0))
         self.last_rate_change = _now       # tính "êm" kể từ lúc bắt đầu phiên chạy
         self.last_ceil_relax = _now
+        # --- Upload Rate Limit & Luồng Upload thông minh (Khởi đầu 1, Min 1, Max 4) ---
+        self.use_aimd = True               # True: AIMD tự động tăng/giảm luồng; False: Giữ cố định theo cài đặt tay
+        self.upload_threads = max(1, min(20, int(acc.get("upload_threads", UPLOAD_MIN_THREADS))))
+        if self.use_aimd:
+            # Kẹp về đúng trần AIMD cho phép theo tốc độ hiện tại NGAY KHI KHỞI TẠO — tránh trường
+            # hợp số luồng đã lưu từ trước (vd cài tay lúc AIMD chưa tồn tại) cao hơn mức AIMD cho
+            # là an toàn, khiến bật AIMD lên mà luồng vẫn "kẹt" ở mức cũ không được quản lý.
+            _cap = min(UPLOAD_MAX_THREADS, self.rate_limit // 10 + 1)
+            if self.upload_threads > _cap:
+                self.upload_threads = _cap
+                acc["upload_threads"] = self.upload_threads
+        self.upload_inflight = 0
+        self._upload_ok_streak = 0
         self.run_started_at = _now
         self.next_break_at = _now + random.uniform(*BREAK_RUN)
         self._upload_gate = threading.Condition()
@@ -664,33 +757,89 @@ class AccountState:
         self.rest(secs, "throttle")
         return secs
 
-    # --- Khả năng tương thích ngược & Bộ điều tốc ---
+    # --- Bộ điều tốc theo cửa sổ thời gian (giãn đều + học trần an toàn) ---
     def _prune_submits(self, now):
-        pass
+        """Loại các mốc submit đã ra khỏi cửa sổ RATE_WINDOW (600s). Gọi trong self._rate_lock."""
+        dq = self.submit_times
+        while dq and now - dq[0] >= RATE_WINDOW:
+            dq.popleft()
 
     def _rate_wait_locked(self, now):
-        return 0.0
+        """Số giây còn phải chờ trước khi được cấp 1 slot submit. Phải gọi trong self._rate_lock.
+        Gồm 2 ràng buộc: (1) giãn đều + jitter ±30% quanh chu kỳ 600s/rate_limit theo _next_slot_at,
+        (2) cửa sổ trượt cứng — không quá rate_limit submit trong bất kỳ 600 giây nào."""
+        self._prune_submits(now)
+        wait_pace = max(0.0, self._next_slot_at - now)
+        wait_window = 0.0
+        if len(self.submit_times) >= max(1, self.rate_limit):
+            wait_window = max(0.0, self.submit_times[0] + RATE_WINDOW - now)
+        return max(wait_pace, wait_window)
 
     def rate_wait_seconds(self):
-        return 0.0
+        """Đọc-only (không tiêu slot) — dùng để hiển thị UI / tránh giành job khi chưa tới lượt."""
+        with self._rate_lock:
+            return self._rate_wait_locked(time.time())
 
     def acquire_rate_slot(self, stop_check=lambda: False):
-        return True
+        """Chờ tới lượt submit kế tiếp rồi ghi nhận mốc submit. Trả False nếu bị dừng (stop_check)
+        trong lúc chờ."""
+        while True:
+            with self._rate_lock:
+                now = time.time()
+                wait = self._rate_wait_locked(now)
+                if wait <= 0:
+                    avg_interval = 600.0 / max(1, self.rate_limit)
+                    self._next_slot_at = now + avg_interval * random.uniform(0.7, 1.3)
+                    self.submit_times.append(now)
+                    return True
+            if stop_check():
+                return False
+            time.sleep(min(2.0, wait))
 
     def rate_submits_in_window(self):
-        return 0
+        with self._rate_lock:
+            self._prune_submits(time.time())
+            return len(self.submit_times)
 
     def _save_rate_gov(self):
-        pass
+        """Ghi trạng thái bộ điều tốc vào acc['rate_gov'] để nhớ qua các lần khởi động lại app."""
+        try:
+            self.acc["rate_gov"] = {
+                "limit": self.rate_limit,
+                "ceiling": self.rate_ceiling,
+                "last_unusual": self.last_unusual_ts,
+                "unusual_count": self.unusual_count,
+            }
+        except Exception:
+            pass
 
     def on_rate_unusual(self):
-        """Google báo UNUSUAL_ACTIVITY → hạ về 1 luồng upload, nghỉ theo bậc thang 5p → 30p → 2h."""
+        """Google báo UNUSUAL_ACTIVITY → học trần an toàn (CHỈ khi lúc bị gắn cờ đang chạy ở/trên
+        giới hạn hiện tại — dữ liệu đáng tin), hạ tốc độ còn 60% giới hạn cũ (luôn áp dụng, kể cả khi
+        không học trần), hạ về 1 luồng upload, nghỉ theo bậc thang 5p → 30p → 2h. Nhiều worker cùng
+        tài khoản đụng cờ trong vòng 60s chỉ tính là 1 lần (tránh phạt kép do 1 sự cố báo nhiều lần).
+        Trả về (số giây nghỉ, tốc độ quan sát được lúc bị gắn cờ)."""
         now = time.time()
-        if now - getattr(self, "last_unusual_ts", 0.0) > UNUSUAL_RESET:
-            self.unusual_count = 0
-        self.unusual_count += 1
-        self.last_unusual_ts = now
-        rest_s = float(UNUSUAL_LADDER[min(self.unusual_count, len(UNUSUAL_LADDER)) - 1])
+        with self._rate_lock:
+            dup = now - getattr(self, "last_unusual_ts", 0.0) < 60
+            if not dup:
+                if now - getattr(self, "last_unusual_ts", 0.0) > UNUSUAL_RESET:
+                    self.unusual_count = 0
+                self.unusual_count += 1
+                self.last_unusual_ts = now
+                self._prune_submits(now)
+                observed = len(self.submit_times)
+                prev_limit = self.rate_limit
+                if observed >= prev_limit:
+                    self.rate_ceiling = max(RATE_FLOOR, round(observed * RATE_CEIL_SAFETY))
+                elif self.rate_ceiling is not None:
+                    self.rate_ceiling = max(RATE_FLOOR, self.rate_ceiling)
+                self.rate_limit = max(RATE_FLOOR, round(prev_limit * RATE_CUT))
+                self._save_rate_gov()
+            else:
+                self._prune_submits(now)
+                observed = len(self.submit_times)
+            rest_s = float(UNUSUAL_LADDER[min(self.unusual_count, len(UNUSUAL_LADDER)) - 1])
         with self._upload_gate:
             self._upload_ok_streak = 0
             if getattr(self, "use_aimd", True):
@@ -699,7 +848,7 @@ class AccountState:
                     self.acc["upload_threads"] = self.upload_threads
                     self._recalc_submit_rate()
                     self._upload_gate.notify_all()
-        return rest_s, self.upload_threads
+        return rest_s, observed
 
     def break_due(self):
         return time.time() >= self.next_break_at and self.rest_remaining() <= 0
@@ -718,13 +867,15 @@ class AccountState:
 
     def on_upload_ok(self):
         """Upload thành công → reset streak lỗi. Cứ 5 lần thành công liên tiếp thì tăng +1 luồng upload
-        (nếu dùng AIMD) cho tới trần UPLOAD_MAX_THREADS."""
+        (nếu dùng AIMD), trần luồng upload đi theo bậc tốc độ hiện tại (rate_limit//10 + 1, tối đa
+        UPLOAD_MAX_THREADS) — tốc độ càng cao (đã học được an toàn) thì mới cho phép mở thêm luồng."""
         self.upload_throttle_streak = 0
         if not getattr(self, "use_aimd", True):
             return False
         with self._upload_gate:
             self._upload_ok_streak += 1
-            if self._upload_ok_streak >= UPLOAD_UP_AFTER and self.upload_threads < UPLOAD_MAX_THREADS:
+            cap = min(UPLOAD_MAX_THREADS, self.rate_limit // 10 + 1)
+            if self._upload_ok_streak >= UPLOAD_UP_AFTER and self.upload_threads < cap:
                 self.upload_threads += 1
                 self._upload_ok_streak = 0
                 self.acc["upload_threads"] = self.upload_threads
@@ -734,8 +885,30 @@ class AccountState:
         return False
 
     def on_video_ok(self):
-        """Video thành công."""
-        return False
+        """Video thành công. Cứ mỗi RATE_UP_EVERY giây chạy êm (không bị gắn cờ) kể từ lần đổi tốc độ
+        gần nhất thì +1 rate_limit (trần bởi rate_ceiling đã học được nếu có, tối đa RATE_HARD_MAX).
+        Cứ mỗi CEIL_RELAX_EVERY giây chạy êm thì nới trần đã học +1 — dần lấy lại tốc độ theo thời gian
+        sau khi bị gắn cờ, thay vì bị giam vĩnh viễn ở mức thấp. KHÔNG đụng tới upload_threads (việc đó
+        do on_upload_ok đảm nhiệm). Trả True nếu vừa tăng được rate_limit."""
+        now = time.time()
+        changed = False
+        dirty = False
+        with self._rate_lock:
+            if now - self.last_rate_change >= RATE_UP_EVERY:
+                cap = RATE_HARD_MAX if self.rate_ceiling is None else min(self.rate_ceiling, RATE_HARD_MAX)
+                if self.rate_limit < cap:
+                    self.rate_limit += 1
+                    changed = True
+                    dirty = True
+                self.last_rate_change = now
+            if now - self.last_ceil_relax >= CEIL_RELAX_EVERY:
+                if self.rate_ceiling is not None and self.rate_ceiling < RATE_HARD_MAX:
+                    self.rate_ceiling += 1
+                    dirty = True
+                self.last_ceil_relax = now
+            if dirty:
+                self._save_rate_gov()
+        return changed
 
     def acquire_upload(self, stop_check=lambda: False):
         """Giới hạn số luồng upload đồng thời của riêng tài khoản này."""
@@ -784,21 +957,22 @@ class AccountState:
         self._last_recover_time = now
 
         profile_dir = _profile_dir(email)
+        proxy_str = self.acc.get("proxy")
         fresh_ck = None
-        
+
         # 1. Thử mở lại Chrome profile cũ (rất nhanh, 3-5 giây, không cần gõ pass)
         if os.path.exists(profile_dir):
             try:
-                fresh_ck = L.reopen_profile_cookie(profile_dir, timeout=30, poll=2)
+                fresh_ck = L.reopen_profile_cookie(profile_dir, timeout=30, poll=2, proxy=proxy_str)
             except Exception:
                 fresh_ck = None
-                
+
         # 2. Nếu profile cũ không thành công, thử dùng password/2FA nếu có trong acc
         if not fresh_ck and self.acc.get("password"):
             try:
                 fresh_ck = L.login_get_cookie(
                     email, self.acc["password"], self.acc.get("totp", ""),
-                    profile_dir=profile_dir
+                    profile_dir=profile_dir, proxy=proxy_str
                 )
             except Exception:
                 fresh_ck = None
@@ -854,6 +1028,11 @@ class AccountState:
             # Auth thành công → luôn reset streak (Rule 9.1)
             self.auth_fail_streak = 0
             self.acc.pop("error_message", None)  # Xóa lỗi vĩnh viễn khi auth thành công
+            # Cùng lỗi đã gặp ở ensure_auth_ext(): auth thành công KHÔNG tự reset _circuit_broken,
+            # nên nếu trip_circuit_breaker() từng nổ ra thì cờ này kẹt True vĩnh viễn sau khi REST
+            # 60s tự hết hạn (không có nơi nào khác reset nó ở luồng auth thành công bình thường).
+            if self._circuit_broken:
+                self.reset_circuit_breaker()
             self.bearer = b
             self.ts = time.time()
             if em:
@@ -887,6 +1066,15 @@ class AccountState:
                 return False
             self.auth_fail_streak = 0
             self.acc.pop("error_message", None)
+            # BẮT BUỘC: reset circuit breaker mỗi khi xác nhận bridge còn sống — KHÔNG có chỗ nào
+            # khác trong chế độ Extension từng làm việc này (trip_circuit_breaker() không tự hết
+            # hạn, chỉ hết REST 60s; nếu không reset ở đây, _circuit_broken kẹt True vĩnh viễn sau
+            # khi timer 60s tự hết, trong khi cổng ensure_auth_ext() vẫn cho job lọt qua bình
+            # thường vì bridge còn kết nối — process_one() thì chặn cứng ở is_circuit_broken()
+            # KHÔNG gọi mạng, KHÔNG sleep → vòng lặp CPU thuần tốc độ hàng trăm lần/giây. Đã gặp
+            # thực tế: 316 lần/giây liên tục 26 phút do đúng lỗi này).
+            if self._circuit_broken:
+                self.reset_circuit_breaker()
             # Ưu tiên project id SỐNG do extension tự phát hiện từ URL tab (tự cập
             # nhật nếu người dùng đổi/tạo project khác giữa chừng) — accounts.json
             # chỉ còn là fallback cho khoảnh khắc vừa kết nối, extension chưa kịp
@@ -989,6 +1177,14 @@ class App(ctk.CTk):
         self._health_check_interval = self.settings.get("health_check_interval", 30)  # phút
         self._health_check_timer = None
         self._health_checking = False  # đang chạy health check
+        # Khoá độc quyền thư mục profile Chrome theo tài khoản: MỌI hệ thống có thể mở Chrome trên
+        # cùng 1 profile (Auto login / Nhập thủ công / Health Check re-login / ExtensionBrowserPool
+        # / tự mở lại khi mất kết nối) đều phải giành khoá này trước. Thiếu nó đã gây sự cố thật:
+        # Health Check giết tiến trình Chrome "đang khoá profile" (chính là trình duyệt Extension
+        # đang chạy), worker thấy mất kết nối liền mở lại trên đúng profile đó, hai bên giết trình
+        # duyệt của nhau trong vòng lặp, user thấy 2 cửa sổ cùng bật, upload lỗi net_fail.
+        self._profile_busy = set()
+        self._profile_busy_lock = threading.Lock()
         self._hc_attempted_accs = set()  # Các tài khoản đã thử bật Chrome auto health check 1 lần
         # Giới hạn số tiến trình FFmpeg hậu kỳ (lồng tiếng/ghép sub) chạy song song — tránh nhiều
         # thread ffmpeg nặng cùng lúc khi nhiều thư mục hoàn thành gần nhau, oversubscribe CPU.
@@ -999,7 +1195,8 @@ class App(ctk.CTk):
         self._tg_enabled_saved = self.settings.get("tg_enabled", False)
         # Proxy pool
         self.disable_proxy = ctk.BooleanVar(value=self.settings.get("disable_proxy", False))
-        self.proxy_pool = ProxyPool(self.settings.get("proxy_list", []), disabled=self.disable_proxy.get())
+        self.proxy_pool = ProxyPool(self.settings.get("proxy_list", []), disabled=self.disable_proxy.get(),
+                                    flagged=self.settings.get("flagged_proxies", []))
         # Auto HomeProxy
         self._auto_homeproxy = ctk.BooleanVar(value=self.settings.get("auto_homeproxy", False))
         self._homeproxy_token = ctk.StringVar(value=self.settings.get("homeproxy_token", ""))
@@ -1599,24 +1796,123 @@ class App(ctk.CTk):
                     text="⚡ REST + Bearer token (nhanh, có thể lỗi 401 định kỳ do Google đổi giao thức)",
                     text_color=T2)
 
+    def _resolve_fixed_proxy(self, email, a):
+        """Lấy proxy CỐ ĐỊNH của 1 tài khoản: ưu tiên proxy đã lưu sẵn (accounts.json['proxy']);
+        nếu chưa có, gán mới từ pool rồi lưu ngược lại luôn để mọi lần đăng nhập/mở trình duyệt sau
+        của tài khoản này (kể cả trong login.py) đều đi cùng 1 IP — tránh Google báo CookieMismatch
+        do cookie sinh ra ở 1 IP nhưng lại bị dùng qua IP khác. Trả proxy string hoặc None."""
+        if not self.proxy_pool or not email:
+            return None
+        proxy_str = None
+        saved_proxy = a.get("proxy")
+        if saved_proxy:
+            proxy_str = self.proxy_pool.assign_specific(email, saved_proxy)
+        if not proxy_str:
+            proxy_str = self.proxy_pool.assign(email)
+            if proxy_str and proxy_str != a.get("proxy"):
+                a["proxy"] = proxy_str
+                try:
+                    save_accs(self.accounts)
+                except Exception:
+                    pass
+        return proxy_str
+
+    def _sv_auto_relaunch_ext_browser(self, st):
+        """Tự động thử mở lại trình duyệt Extension mode khi phát hiện MẤT KẾT NỐI bridge GIỮA
+        CHỪNG lúc đang chạy (trước đây chỉ log cảnh báo rồi chờ vô thời hạn, người dùng phải tự
+        vào tay bấm 🧩 mở lại). Giới hạn 1 lần / 90s / tài khoản — nhiều worker thread của cùng 1
+        tài khoản có thể cùng lúc phát hiện mất kết nối, tránh dồn nhiều lần mở cùng lúc.
+        Sau 3 lần thất bại LIÊN TIẾP (nhiều khả năng cookie đã hết hạn thật, mở lại bằng đúng
+        cookie chết đó vô ích) → NGỪNG tự thử, giãn cooldown ra 30 phút + báo rõ 1 lần cần Auto
+        login lại, tránh cứ mở đi mở lại vô nghĩa mỗi 90s mà không giải quyết được gì."""
+        now = time.time()
+        cooldown = 1800 if getattr(st, "_relaunch_fail_streak", 0) >= 3 else 90
+        if now - getattr(st, "_last_relaunch_attempt", 0.0) < cooldown:
+            return
+        st._last_relaunch_attempt = now
+        email = st.email
+        acc = st.acc
+
+        def work():
+            if not self._acquire_profile(email):
+                # Đang có thao tác khác dùng profile này (Auto login / Health Check re-login...)
+                # → KHÔNG mở Chrome song song, để lần kiểm tra sau thử lại.
+                return
+            try:
+                import flow_bridge
+                import recaptcha_farm as RF
+                flow_bridge.start()
+                pool = RF.get_extension_pool(log_func=lambda m: self._sv_log_msg(f"[🧩] {m}"))
+                pool.set_proxy_resolver(lambda em: (self.proxy_pool.get_str(em) if self.proxy_pool else None))
+                self._resolve_fixed_proxy(email, acc)
+                ok = pool.start_account(email, acc.get("cookie"), flow_project_id=acc.get("flow_project_id"))
+                if ok:
+                    st._relaunch_fail_streak = 0
+                    self._sv_log_msg(f"  🔄 [{email[:16]}] Tự mở lại trình duyệt (mất kết nối giữa chừng): ✅ thành công")
+                else:
+                    st._relaunch_fail_streak = getattr(st, "_relaunch_fail_streak", 0) + 1
+                    if st._relaunch_fail_streak >= 3:
+                        self._sv_log_msg(f"  ❌ [{email[:16]}] Tự mở lại trình duyệt thất bại {st._relaunch_fail_streak} lần liên tiếp — "
+                                          f"nhiều khả năng cookie đã hết hạn. NGỪNG tự thử (chờ 30p), "
+                                          f"vào tab Tài khoản bấm 'Auto login' rồi thử lại.")
+                    else:
+                        self._sv_log_msg(f"  🔄 [{email[:16]}] Tự mở lại trình duyệt (mất kết nối giữa chừng): ❌ thất bại (xem log phía trên)")
+            except Exception as ex:
+                self._sv_log_msg(f"  ⚠️ [{email[:16]}] Lỗi tự mở lại trình duyệt: {ex}")
+            finally:
+                self._release_profile(email)
+        threading.Thread(target=work, daemon=True).start()
+
     def _start_extension_pool(self, accs):
-        """Khởi động flow_bridge.py (WS server) và CHỜ extension kết nối tới —
-        KHÔNG tự mở trình duyệt. Người dùng tự đăng nhập tài khoản Flow trong 1
-        Chrome profile thật của họ, tự cài extension/ (Load unpacked), extension
-        tự kết nối bridge và tự báo email qua popup — xem extension/popup.html.
-        (ExtensionBrowserPool trong recaptcha_farm.py vẫn còn đó cho phương án tự
-        động hóa sau này nếu cần, nhưng không được gọi ở đây nữa.)"""
+        """Khởi động flow_bridge.py (WS server) rồi TỰ MỞ trình duyệt Chrome riêng cho từng
+        tài khoản qua ExtensionBrowserPool (recaptcha_farm.py) — mỗi tài khoản 1 proxy CỐ ĐỊNH
+        (đồng nhất IP giữa ThinAPTM và trình duyệt login Flow của tài khoản đó), gán 1 lần rồi
+        lưu vào accounts.json['proxy'] để giữ nguyên qua các lần khởi động sau. Tài khoản nào đã
+        kết nối bridge từ trước (trình duyệt do người dùng tự mở tay) được bỏ qua — không mở trùng
+        cửa sổ; 2 cơ chế (tự mở + tự nhận diện) chạy song song, không xung đột."""
         try:
             import flow_bridge
+            import recaptcha_farm as RF
             flow_bridge.start()
-            emails = [get_acc_email(a) for a in accs if get_acc_email(a)]
-            self._sv_log_msg(f"🧩 Extension mode: đã bật cầu nối (ws://127.0.0.1:{__import__('flow_bridge').WS_PORT}). "
-                              f"Chờ trình duyệt của {len(emails)} tài khoản kết nối tới "
-                              f"({', '.join(e[:20] for e in emails[:5])}{'...' if len(emails) > 5 else ''}).")
+            pool = RF.get_extension_pool(log_func=lambda m: self._sv_log_msg(f"[🧩] {m}"))
+            pool.set_proxy_resolver(lambda em: (self.proxy_pool.get_str(em) if self.proxy_pool else None))
+
+            self._sv_ext_failed_emails = set()
+            opened = skipped_connected = failed = 0
+            for a in accs:
+                email = get_acc_email(a)
+                if not email:
+                    continue
+                if flow_bridge.is_account_connected(email):
+                    skipped_connected += 1
+                    continue
+                if not self._acquire_profile(email):
+                    self._sv_log_msg(f"  ⏭ [{email[:16]}] Đang có thao tác khác dùng profile (login/health check) → bỏ qua lần này.")
+                    skipped_connected += 1
+                    continue
+                try:
+                    self._resolve_fixed_proxy(email, a)
+                    ok = pool.start_account(email, a.get("cookie"), flow_project_id=a.get("flow_project_id"))
+                finally:
+                    self._release_profile(email)
+                if ok:
+                    opened += 1
+                else:
+                    failed += 1
+                    self._sv_ext_failed_emails.add(email)
+
+            self._sv_log_msg(f"🧩 Extension mode: cầu nối ws://127.0.0.1:{flow_bridge.WS_PORT} đã bật. "
+                              f"Tự mở {opened} trình duyệt, bỏ qua {skipped_connected} (đã kết nối sẵn)"
+                              f"{f', {failed} lỗi (xem log phía trên)' if failed else ''}.")
         except Exception as ex:
             self._log(f"[Extension] Lỗi khởi động cầu nối: {ex}")
 
     def _stop_extension_pool(self):
+        try:
+            import recaptcha_farm as RF
+            RF.stop_extension_pool()
+        except Exception:
+            pass
         try:
             import flow_bridge
             flow_bridge.stop()
@@ -1662,6 +1958,9 @@ class App(ctk.CTk):
             ctk.CTkButton(row, text="🗑", width=28, height=24, fg_color="#ef5350", hover_color="#c62828",
                           font=("", 11), corner_radius=4,
                           command=lambda idx=orig_i: self._delete_acc(idx)).pack(side="left", padx=(4, 0))
+            ctk.CTkButton(row, text="🧩", width=28, height=24, fg_color="#00897B", hover_color="#00695C",
+                          font=("", 11), corner_radius=4,
+                          command=lambda idx=orig_i: self._manual_open_ext_browser(idx)).pack(side="left", padx=(4, 0))
             # --- Các cột phụ (Cookie / Pass / 2FA) ---
             ctk.CTkLabel(row, text='có' if a.get('cookie') else 'không', font=("Consolas", 11), width=50, anchor="w", text_color=T2).pack(side="left", padx=(6, 0))
             has_pass = bool(a.get('password'))
@@ -1732,6 +2031,37 @@ class App(ctk.CTk):
             save_accs(self.accounts)
             self._refresh_acc()
 
+    def _manual_open_ext_browser(self, idx):
+        """Mở TAY 1 trình duyệt Extension mode cho đúng tài khoản này — không cần bấm 'Bắt Đầu' ở
+        tab Server-Video, không đụng tới các tài khoản khác đang chạy. Dùng khi cần kiểm tra/đăng
+        nhập lại riêng 1 tài khoản, hoặc mở lại sau khi đã có cookie mới qua Auto login."""
+        if idx < 0 or idx >= len(self.accounts):
+            return
+        a = self.accounts[idx]
+        email = get_acc_email(a)
+        if not a.get("cookie"):
+            messagebox.showwarning("Chưa có cookie", f"{email}: chưa có cookie — bấm 'Auto login' hoặc dán cookie trước rồi thử lại.")
+            return
+        self._log(f"[🧩] {email}: đang mở trình duyệt Extension mode (thủ công)...")
+        def work():
+            if not self._acquire_profile(email):
+                self._log(f"[🧩] {email}: ⏭ đang có thao tác khác dùng profile này (login/health check) → thử lại sau.")
+                return
+            try:
+                import flow_bridge
+                import recaptcha_farm as RF
+                flow_bridge.start()
+                pool = RF.get_extension_pool(log_func=lambda m: self._log(f"[🧩] {m}"))
+                pool.set_proxy_resolver(lambda em: (self.proxy_pool.get_str(em) if self.proxy_pool else None))
+                self._resolve_fixed_proxy(email, a)
+                ok = pool.start_account(email, a.get("cookie"), flow_project_id=a.get("flow_project_id"))
+                self._log(f"[🧩] {email}: {'✅ đã mở trình duyệt, extension đã kết nối bridge.' if ok else '❌ mở thất bại (xem log phía trên để biết lý do).'}")
+            except Exception as ex:
+                self._log(f"[🧩] Lỗi mở trình duyệt tay cho {email}: {ex}")
+            finally:
+                self._release_profile(email)
+        threading.Thread(target=work, daemon=True).start()
+
     def _import_accs(self):
         dlg = ctk.CTkInputDialog(text="Dán mỗi dòng: email|password|2fa_secret", title="Import tài khoản")
         raw = dlg.get_input()
@@ -1766,15 +2096,21 @@ class App(ctk.CTk):
                     if self._stop: break
                     email = get_acc_email(a)
                     profile_dir = _profile_dir(email)
+                    proxy_str = self._resolve_fixed_proxy(email, a)
+                    if not self._acquire_profile(email):
+                        logp(f"⏭ [{i}/{len(need_login)}] {email}: profile đang được dùng bởi thao tác khác → bỏ qua.")
+                        continue
                     logp(f"🔑 [{i}/{len(need_login)}] Đang login {email} (auto-fill email+pass+2FA)...")
                     try:
                         ck = L.login_get_cookie(email, a["password"], a.get("totp", ""),
-                                                profile_dir=profile_dir, log=logp)
+                                                profile_dir=profile_dir, log=logp, proxy=proxy_str)
                     except Exception as ex:
                         logp(f"❌ [{i}/{len(need_login)}] Lỗi login {email}: {ex}")
                         ck = None
+                    finally:
+                        self._release_profile(email)
                     if ck:
-                        b, em = _bearer_and_email(ck)
+                        b, em = _bearer_and_email(ck, proxy=ProxyPool._to_dict(proxy_str))
                         a["cookie"] = ck; a["status"] = "ok" if b else "dead"
                         _apply_acc_email(a, em, email)
                         if b:
@@ -1789,37 +2125,161 @@ class App(ctk.CTk):
                 logp(f"✅ Auto-fill login xong ({len(need_login)} tài khoản).")
             else:
                 # ── Pha 2: Không có tài khoản nào có password → mở Chrome thủ công như cũ ──
+                # Chưa biết trước tài khoản nào sẽ đăng nhập → mượn TẠM 1 proxy + 1 thư mục profile
+                # từ pool để cookie sinh ra khớp IP ngay từ đầu. Sau khi biết email thật: chuyển
+                # proxy tạm thành cố định (assign_specific) VÀ đổi tên thư mục profile tạm thành
+                # đúng thư mục cố định của tài khoản đó — để lần sau ExtensionBrowserPool tái sử
+                # dụng được NGUYÊN phiên Chrome thật vừa đăng nhập (không phải tiêm cookie CDP kém
+                # tin cậy hơn, nguyên nhân gây CookieMismatch đã gặp thực tế).
+                tmp_proxy_key = f"_pending_manual_{uuid.uuid4().hex[:8]}"
+                tmp_proxy = self.proxy_pool.assign(tmp_proxy_key) if self.proxy_pool else None
+                tmp_profile_dir = _profile_dir(tmp_proxy_key)
                 logp("🖐 Không có tài khoản nào cần login có password — mở Chrome để đăng nhập thủ công...")
                 try:
-                    ck = L.manual_login(log=logp)
+                    ck = L.manual_login(log=logp, proxy=tmp_proxy, profile_dir=tmp_profile_dir)
                 except Exception as ex:
                     logp(f"❌ Lỗi mở Chrome: {ex}")
                     ck = None
                 if ck:
-                    b, em = _bearer_and_email(ck)
+                    b, em = _bearer_and_email(ck, proxy=ProxyPool._to_dict(tmp_proxy))
                     if b:
-                        found = next((a for a in self.accounts if a.get("email") == em), None)
-                        if found:
-                            found["cookie"] = ck; found["status"] = "ok"; found["email"] = em
+                        if em:
+                            if self.proxy_pool and tmp_proxy:
+                                self.proxy_pool.release(tmp_proxy_key)
+                                self.proxy_pool.assign_specific(em, tmp_proxy)
+                            self._adopt_profile_dir(tmp_profile_dir, em)
+                            found = next((a for a in self.accounts if a.get("email") == em), None)
+                            if found:
+                                found["cookie"] = ck; found["status"] = "ok"; found["email"] = em
+                                if tmp_proxy:
+                                    found["proxy"] = tmp_proxy
+                            else:
+                                new_acc = {"id": em, "email": em, "password": "", "totp": "", "cookie": ck, "status": "ok"}
+                                if tmp_proxy:
+                                    new_acc["proxy"] = tmp_proxy
+                                self.accounts.append(new_acc)
+                            save_accs(self.accounts)
+                            self.after(0, lambda: (self._refresh_acc(), logp(f"✅ Đã thêm {em}")))
                         else:
-                            self.accounts.append({"id": em, "email": em, "password": "", "totp": "", "cookie": ck, "status": "ok"})
-                        save_accs(self.accounts)
-                        self.after(0, lambda: (self._refresh_acc(), logp(f"✅ Đã thêm {em}")))
+                            # Cookie hợp lệ nhưng KHÔNG dò được email (Google không phải lúc nào cũng
+                            # set cookie 'email=...') — hỏi người dùng gõ tay thay vì tạo dòng
+                            # tài khoản email=None/"?" vô nghĩa như trước.
+                            logp("⚠️ Có cookie hợp lệ nhưng không tự dò được email — hỏi bạn nhập tay.")
+                            self.after(0, lambda ck=ck, tp=tmp_proxy, tk=tmp_proxy_key, pd=tmp_profile_dir:
+                                       self._prompt_manual_email_and_save_cookie(ck, tp, tk, pd))
                     else:
                         logp("⚠️ Có cookie nhưng chưa dùng được — thử lại.")
+                        if self.proxy_pool and tmp_proxy:
+                            self.proxy_pool.release(tmp_proxy_key)
                 else:
                     logp("Chưa lấy được cookie (chưa đăng nhập xong / đã đóng Chrome).")
+                    if self.proxy_pool and tmp_proxy:
+                        self.proxy_pool.release(tmp_proxy_key)
         threading.Thread(target=work, daemon=True).start()
+
+    def _adopt_profile_dir(self, tmp_profile_dir, email):
+        """Đổi tên thư mục profile Chrome TẠM (dùng lúc chưa biết tài khoản nào sẽ đăng nhập) thành
+        đúng thư mục profile cố định của tài khoản vừa xác định được email — để phiên Chrome THẬT
+        (cookie tự nhiên trên đĩa) được ExtensionBrowserPool tái sử dụng đúng sau này, thay vì phải
+        tiêm cookie qua CDP (kém tin cậy hơn, đã gặp CookieMismatch thực tế khi dùng cách đó)."""
+        if not tmp_profile_dir or not os.path.isdir(tmp_profile_dir):
+            return
+        target_dir = _profile_dir(email)
+        if os.path.exists(target_dir):
+            return  # đã có profile cũ cho tài khoản này -> không ghi đè, giữ an toàn
+        try:
+            import shutil
+            shutil.move(tmp_profile_dir, target_dir)
+        except Exception:
+            pass
+
+    def _prompt_manual_email_and_save_cookie(self, ck, tmp_proxy=None, tmp_proxy_key=None, tmp_profile_dir=None):
+        """Cookie vừa đăng nhập thủ công hợp lệ nhưng không tự dò được email (Google không phải lúc
+        nào cũng set cookie 'email=...') — hỏi người dùng gõ tay (họ vừa tự đăng nhập nên chắc chắn
+        biết đúng địa chỉ) thay vì âm thầm tạo 1 dòng tài khoản email=None hiển thị '?'. PHẢI chạy
+        trên main thread (CTkInputDialog không thread-safe)."""
+        dlg = ctk.CTkInputDialog(
+            text="Không tự dò được email từ cookie vừa đăng nhập.\nGõ đúng email Google bạn vừa đăng nhập:",
+            title="Nhập email tài khoản")
+        em = (dlg.get_input() or "").strip()
+        if not em or "@" not in em:
+            self._log("[Manual Login] ⚠️ Không nhập email hợp lệ → huỷ, không thêm tài khoản.")
+            if self.proxy_pool and tmp_proxy and tmp_proxy_key:
+                self.proxy_pool.release(tmp_proxy_key)
+            return
+        if self.proxy_pool and tmp_proxy and tmp_proxy_key:
+            self.proxy_pool.release(tmp_proxy_key)
+            self.proxy_pool.assign_specific(em, tmp_proxy)
+        self._adopt_profile_dir(tmp_profile_dir, em)
+        found = next((a for a in self.accounts if a.get("email") == em), None)
+        if found:
+            found["cookie"] = ck; found["status"] = "ok"; found["email"] = em
+            if tmp_proxy:
+                found["proxy"] = tmp_proxy
+        else:
+            new_acc = {"id": em, "email": em, "password": "", "totp": "", "cookie": ck, "status": "ok"}
+            if tmp_proxy:
+                new_acc["proxy"] = tmp_proxy
+            self.accounts.append(new_acc)
+        save_accs(self.accounts)
+        self._refresh_acc()
+        self._log(f"[Manual Login] ✅ Đã thêm {em} (email nhập tay).")
 
     def _clear_accs(self):
         if messagebox.askyesno("Xóa", "Xóa tất cả tài khoản?"):
             self.accounts = []; save_accs(self.accounts); self._refresh_acc()
 
+    def _acquire_profile(self, email):
+        """Giành quyền độc quyền mở Chrome trên profile của tài khoản này. Trả False nếu 1 thao
+        tác khác (login/health check/extension) đang giữ — caller PHẢI bỏ qua, không được mở
+        Chrome song song trên cùng thư mục profile."""
+        if not email:
+            return False
+        email = str(email).strip().lower()
+        with self._profile_busy_lock:
+            if email in self._profile_busy:
+                return False
+            self._profile_busy.add(email)
+            return True
+
+    def _release_profile(self, email):
+        if not email:
+            return
+        with self._profile_busy_lock:
+            self._profile_busy.discard(str(email).strip().lower())
+
+    def _acc_proxy_dict(self, a):
+        """Proxy (dạng dict) của 1 tài khoản, để kiểm tra cookie ĐÚNG QUA IP mà cookie được cấp.
+        Kiểm tra bằng IP máy (proxy=None) sẽ bị Google từ chối và báo 'chết' OAN cho cookie vẫn
+        còn sống — cookie Google gắn với IP/phiên lúc đăng nhập (đã gặp thực tế: CookieMismatch
+        khi dùng cookie qua IP khác)."""
+        try:
+            email = get_acc_email(a)
+            if self.proxy_pool and email:
+                d = self.proxy_pool.get_dict(email)
+                if d:
+                    return d
+            saved = a.get("proxy")
+            if saved:
+                return ProxyPool._to_dict(saved)
+        except Exception:
+            pass
+        return None
+
     def _check_accs(self):
         def work():
             def one(a):
+                # Tài khoản đang kết nối bridge = đang chạy thật, chắc chắn còn sống → giữ "ok",
+                # không kiểm qua REST (dễ báo chết oan do IP/độ trễ, đã gặp thực tế).
+                try:
+                    import flow_bridge as _FB
+                    if _FB.is_account_connected(get_acc_email(a)):
+                        a["status"] = "ok"
+                        return a
+                except Exception:
+                    pass
                 if a.get("cookie"):
-                    b, em = _bearer_and_email(a["cookie"])
+                    b, em = _bearer_and_email(a["cookie"], proxy=self._acc_proxy_dict(a))
                     a["status"] = "ok" if b else "dead"
                     if em: a["email"] = em
                 return a
@@ -1844,7 +2304,7 @@ class App(ctk.CTk):
                 if not (a.get("enabled", True) or a.get("role") == "donor"):
                     continue
                 if a.get("cookie") and a.get("status") == "ok":
-                    b, _em = _bearer_and_email(a["cookie"])
+                    b, _em = _bearer_and_email(a["cookie"], proxy=self._acc_proxy_dict(a))
                     if not b:
                         a["status"] = "dead"
                         logp(f"🩺 {a.get('email', '?')}: cookie đã hết hạn → cần login lại.")
@@ -1863,38 +2323,53 @@ class App(ctk.CTk):
                 if self._stop: break
                 email = a.get('email') or a.get('id') or '?'
                 profile_dir = _profile_dir(email)
-
-                # Pha 1: Thử mở profile cũ (CHỈ khi KHÔNG có password)
-                # Nếu có password → bỏ qua profile cũ, đi thẳng Pha 2 để lấy cookie tươi 100% (session mới hoàn toàn)
-                # Tránh lỗi "cookie bán-chết": profile cũ có session sắp hết hạn → cookie chỉ sống 1-2 phút
-                if os.path.exists(profile_dir) and not a.get("password"):
-                    logp(f"🔄 [{i}/{len(todo)}] Thử profile cũ cho {email} (không có password)...")
-                    ck = L.reopen_profile_cookie(profile_dir, log=logp, timeout=90, poll=3)
-                    if ck:
-                        b, em = _bearer_and_email(ck)
-                        a["cookie"] = ck; a["status"] = "ok" if b else "dead"
-                        if em: a["email"] = em
-                        if b:
-                            logp(f"✅ [{i}/{len(todo)}] {email}: profile login thành công!")
-                            save_accs(self.accounts); self.after(0, self._refresh_acc)
-                            continue
-
-                # Pha 2: Dùng password nếu có
-                if a.get("password"):
-                    logp(f"🔑 [{i}/{len(todo)}] Đang login {email} bằng password...")
-                    ck = L.login_get_cookie(a["email"], a["password"], a.get("totp", ""),
-                                            profile_dir=profile_dir, log=logp)
-                    if ck:
-                        b, em = _bearer_and_email(ck)
-                        a["cookie"] = ck; a["status"] = "ok" if b else "dead"
-                        if em: a["email"] = em
-                    else:
-                        a["status"] = "dead"
-                else:
-                    logp(f"⚠️ [{i}/{len(todo)}] {email}: không có profile cũ + không có password → bấm ✏️ để nhập.")
+                # Dùng ĐÚNG proxy cố định của tài khoản này (nếu đã có) cho mọi bước login — cookie
+                # sinh ra khớp IP với proxy sẽ dùng về sau, tránh Google báo CookieMismatch khi
+                # Extension mode mở trình duyệt qua proxy khác với lúc cookie được cấp.
+                proxy_str = self._resolve_fixed_proxy(email, a) if "@" in email else None
+                if not self._acquire_profile(email):
+                    logp(f"⏭ [{i}/{len(todo)}] {email}: profile đang được dùng bởi thao tác khác (extension/health check) → bỏ qua.")
+                    continue
+                try:
+                    self._auto_login_one(a, email, profile_dir, proxy_str, logp, i, len(todo))
+                finally:
+                    self._release_profile(email)
                 save_accs(self.accounts); self.after(0, self._refresh_acc)
             logp("✅ Auto login xong.")
         threading.Thread(target=work, daemon=True).start()
+
+    def _auto_login_one(self, a, email, profile_dir, proxy_str, logp, i, total):
+        """Đăng nhập lại 1 tài khoản trong luồng Auto login. Tách riêng để nơi gọi bọc được khoá
+        profile (tránh mở Chrome song song với extension/health check trên cùng thư mục)."""
+        # Pha 1: Thử mở profile cũ (CHỈ khi KHÔNG có password) — Google session trong profile còn
+        # sống thì lấy được cookie mới mà không cần gõ password.
+        # Có password → bỏ qua profile cũ, đi thẳng Pha 2 lấy cookie tươi 100% (tránh "cookie
+        # bán-chết": session cũ sắp hết hạn, cookie chỉ sống 1-2 phút).
+        if os.path.exists(profile_dir) and not a.get("password"):
+            logp(f"🔄 [{i}/{total}] Thử profile cũ cho {email} (không có password)...")
+            ck = L.reopen_profile_cookie(profile_dir, log=logp, timeout=90, poll=3, proxy=proxy_str)
+            if ck:
+                b, em = _bearer_and_email(ck, proxy=ProxyPool._to_dict(proxy_str))
+                a["cookie"] = ck; a["status"] = "ok" if b else "dead"
+                if em: a["email"] = em
+                if b:
+                    logp(f"✅ [{i}/{total}] {email}: profile login thành công!")
+                    return
+
+        # Pha 2: Dùng password nếu có
+        if a.get("password"):
+            logp(f"🔑 [{i}/{total}] Đang login {email} bằng password...")
+            ck = L.login_get_cookie(a["email"], a["password"], a.get("totp", ""),
+                                    profile_dir=profile_dir, log=logp, proxy=proxy_str)
+            if ck:
+                b, em = _bearer_and_email(ck, proxy=ProxyPool._to_dict(proxy_str))
+                a["cookie"] = ck; a["status"] = "ok" if b else "dead"
+                if em: a["email"] = em
+            else:
+                a["status"] = "dead"
+        else:
+            logp(f"⚠️ [{i}/{total}] {email}: không có profile cũ + không có password → bấm ✏️ để nhập.")
+
     # ============ AUTO COOKIE HEALTH CHECK ============
     def _toggle_health_check(self):
         """Bật/tắt tự kiểm tra cookie định kỳ."""
@@ -1960,8 +2435,23 @@ class App(ctk.CTk):
                     self.after(0, self._refresh_acc)
                     _last_save_ts[0] = now
 
-            # Bước 1: Kiểm tra cookie song song
-            accs_with_cookie = [a for a in self.accounts if a.get("cookie") and (a.get("enabled", True) or a.get("role") == "donor")]
+            # Bước 1: Kiểm tra cookie song song.
+            # BỎ QUA tài khoản đang kết nối bridge (Extension mode): nó đang tạo video thành công
+            # ngay lúc này nên chắc chắn còn sống — không cần kiểm tra qua REST, và tuyệt đối không
+            # được kết luận "chết" rồi đi login lại (đã gặp thực tế: health check kết luận sai, giết
+            # trình duyệt Extension đang chạy để login lại, gây vòng lặp tranh profile, upload lỗi).
+            def _is_ext_live(a):
+                try:
+                    import flow_bridge as _FB
+                    return _FB.is_account_connected(get_acc_email(a))
+                except Exception:
+                    return False
+            accs_with_cookie = [a for a in self.accounts
+                                if a.get("cookie") and (a.get("enabled", True) or a.get("role") == "donor")
+                                and not _is_ext_live(a)]
+            _skipped_live = sum(1 for a in self.accounts if a.get("cookie") and _is_ext_live(a))
+            if _skipped_live:
+                self._log(f"🩺 [Health Check] Bỏ qua {_skipped_live} tài khoản đang chạy qua extension (đang sống, không cần check).")
             if not accs_with_cookie:
                 self._log("🩺 [Health Check] Không có tài khoản nào cần check.")
                 self.after(0, lambda: self._hc_status_lbl.configure(text="Không có tài khoản", text_color=T2))
@@ -1972,7 +2462,7 @@ class App(ctk.CTk):
                 # Xóa cache cũ trước khi kiểm tra — tránh "phantom token" từ cache 10 phút
                 try: E.invalidate_wiz_cache(a["cookie"])
                 except Exception: pass
-                b, em = _bearer_and_email(a["cookie"])
+                b, em = _bearer_and_email(a["cookie"], proxy=self._acc_proxy_dict(a))
                 if b:
                     a["status"] = "ok"
                     _apply_acc_email(a, em, get_acc_email(a))
@@ -2025,15 +2515,19 @@ class App(ctk.CTk):
                         return
                     with _hc_attempted_lock:
                         self._hc_attempted_accs[email] = now
+                    if not self._acquire_profile(email):
+                        self._log(f"  [{i}/{len(dead_accs)}] {email}: profile đang được dùng bởi thao tác khác (extension/login) → bỏ qua, không giết trình duyệt đang chạy.")
+                        with still_dead_lock: still_dead.append(a)
+                        return
                     self._log(f"  [{i}/{len(dead_accs)}] {email}: đang mở profile cũ...")
                     try:
                         ck = L.reopen_profile_cookie(
                             profile_dir,
                             log=lambda m, _e=email: self._log(f"  [Profile {_e}] {m}"),
-                            timeout=90, poll=3
+                            timeout=90, poll=3, proxy=a.get("proxy")
                         )
                         if ck:
-                            b, em = _bearer_and_email(ck)
+                            b, em = _bearer_and_email(ck, proxy=self._acc_proxy_dict(a))
                             a["cookie"] = ck
                             a["status"] = "ok" if b else "dead"
                             _apply_acc_email(a, em, email)
@@ -2048,6 +2542,8 @@ class App(ctk.CTk):
                     except Exception as ex:
                         with still_dead_lock: still_dead.append(a)
                         self._log(f"⚠️ [Health Check] {email}: lỗi profile: {ex}")
+                    finally:
+                        self._release_profile(email)
                     _debounced_save_refresh()
 
                 # Song song hoá (tối đa 4 Chrome cùng lúc) thay vì tuần tự từng tài khoản (90s/tk) —
@@ -2064,15 +2560,19 @@ class App(ctk.CTk):
                         text=f"🔑 Password login {len(relogin_accs)} tk...", text_color="#F9A825"))
                     for i, a in enumerate(relogin_accs, 1):
                         email = get_acc_email(a)
+                        if not self._acquire_profile(email):
+                            self._log(f"🔑 [Health Check] [{i}/{len(relogin_accs)}] {email}: profile đang được dùng bởi thao tác khác → bỏ qua lần này.")
+                            continue
                         self._log(f"🔑 [Health Check] [{i}/{len(relogin_accs)}] Re-login {email} bằng password...")
                         try:
                             ck = L.login_get_cookie(
                                 email, a["password"], a.get("totp", ""),
                                 profile_dir=_profile_dir(email),
-                                log=lambda m: self._log(f"  [Health Check] {m}")
+                                log=lambda m: self._log(f"  [Health Check] {m}"),
+                                proxy=a.get("proxy")
                             )
                             if ck:
-                                b, em = _bearer_and_email(ck)
+                                b, em = _bearer_and_email(ck, proxy=self._acc_proxy_dict(a))
                                 a["cookie"] = ck
                                 a["status"] = "ok" if b else "dead"
                                 _apply_acc_email(a, em, email)
@@ -2085,6 +2585,8 @@ class App(ctk.CTk):
                                 self._log(f"❌ [Health Check] {email}: password re-login thất bại.")
                         except Exception as ex:
                             self._log(f"❌ [Health Check] {email}: lỗi re-login: {ex}")
+                        finally:
+                            self._release_profile(email)
                         _debounced_save_refresh()
                     _debounced_save_refresh(force=True)
                 elif still_dead:
@@ -2918,6 +3420,36 @@ class App(ctk.CTk):
         except Exception as e:
             self._log(f"❌ Lỗi đổi luồng upload: {e}")
 
+    def _on_acc_aimd_toggle(self, st, enabled):
+        """Bật/tắt AIMD RIÊNG cho 1 tài khoản — ghi đè công tắc AIMD chung của cả Pool. Tắt để giữ
+        cố định số luồng cài tay (không tự tăng/giảm theo tốc độ học được), bật lại để quay về theo
+        đúng công tắc chung."""
+        st.use_aimd = enabled
+        for a in self.accounts:
+            if (a.get("email") or a.get("id")) == st.email:
+                a["use_aimd"] = enabled
+                break
+        save_accs(self.accounts)
+        with st._gate:
+            st._gate.notify_all()
+        # Mở/khoá dropdown Upload NGAY khi bấm — đồng bộ định kỳ ở _sv_update_pool chỉ chạy khi
+        # aimd_var lệch với st.use_aimd, mà 2 giá trị này đã khớp nhau ngay từ đây nên nhánh đó
+        # không bao giờ chạy tới, để dropdown bị kẹt ở trạng thái cũ (đã gặp thực tế).
+        for _rows_attr in ("_sv_pool_rows", "_sp_pool_rows", "_q_pool_rows"):
+            _rows = getattr(self, _rows_attr, None)
+            if _rows and st.email in _rows:
+                _r = _rows[st.email]
+                if _r.get("u"):
+                    _r["u"].configure(state="disabled" if enabled else "normal")
+        msg = f"⚙️ {st.email[:16]}: AIMD riêng cho tài khoản này → {'BẬT' if enabled else 'TẮT (khoá cố định số luồng cài tay)'}"
+        # CHỈ ghi 1 trong 2 kênh log — trước đây ghi cả _sv_log_msg() lẫn _log() cho cùng 1 dòng,
+        # cả 2 đều ra chung log.txt nên hiện thành 2 dòng trùng nhau mỗi lần bấm (đã gặp thực tế,
+        # nhìn như log bị loạn).
+        if hasattr(self, '_sv_log_msg') and getattr(self, '_sv_running', False):
+            self._sv_log_msg(msg)
+        else:
+            self._log(msg)
+
     def _update_pool(self):
         """Panel POOL VIDEO (cập nhật mỗi 2s) — tối ưu chỉ redraw khi giá trị thay đổi."""
         try:
@@ -3003,6 +3535,8 @@ class App(ctk.CTk):
                         _connected = False
                     if _connected:
                         _set(r["p"], f"m_{e}_p", text="🧩 Extension đã kết nối", text_color=GR)
+                    elif e in getattr(self, "_sv_ext_failed_emails", ()):
+                        _set(r["p"], f"m_{e}_p", text="❌ Không mở được (xem log)", text_color=RD)
                     else:
                         _set(r["p"], f"m_{e}_p", text="⏳ Chờ kết nối extension", text_color="#F9A825")
                 else:
@@ -3932,7 +4466,7 @@ class App(ctk.CTk):
                             return "retry_soft"
 
                         st.on_submit_ok()
-                        pk, mid, _ = EXT.poll_video_ext(st.email, st.project, ops, max_attempts=POLL_MAX, interval=8, timeout=90)
+                        pk, mid, _ = EXT.poll_video_ext(st.email, st.project, ops, max_attempts=EXT_POLL_MAX, interval=8, timeout=EXT_POLL_RPC_TIMEOUT)
                         if pk == "done":
                             sz = EXT.download_video_ext(mid, st.email, job["out"], timeout=180)
                             if sz == E.DL_NET_FAIL:
@@ -5262,9 +5796,13 @@ class App(ctk.CTk):
                     try:
                         import flow_bridge as _FB
                         is_conn = _FB.is_account_connected(s.email)
-                        _set(r["p"], f"sp_{e}_p",
-                             text="🧩 Extension đã kết nối" if is_conn else "⏳ Chờ kết nối extension",
-                             text_color="#00897B" if is_conn else "#F57C00")
+                        if is_conn:
+                            _txt, _clr = "🧩 Extension đã kết nối", "#00897B"
+                        elif s.email in getattr(self, "_sv_ext_failed_emails", ()):
+                            _txt, _clr = "❌ Không mở được (xem log)", RD
+                        else:
+                            _txt, _clr = "⏳ Chờ kết nối extension", "#F57C00"
+                        _set(r["p"], f"sp_{e}_p", text=_txt, text_color=_clr)
                     except Exception:
                         _set(r["p"], f"sp_{e}_p", text="🧩 Extension", text_color="#00897B")
                 else:
@@ -6144,7 +6682,7 @@ class App(ctk.CTk):
                         for seg_i, clip_path, ops in submitted_ops:
                             if self._shopee_stop_flag: break
                             self._sp_log_msg(f"  ⏳ Đoạn {seg_i+1}: Chờ render (Extension)...")
-                            kind, poll_result, _ = EXT.poll_video_ext(st.email, st.project, ops, max_attempts=60, interval=8, timeout=90)
+                            kind, poll_result, _ = EXT.poll_video_ext(st.email, st.project, ops, max_attempts=EXT_POLL_MAX, interval=8, timeout=EXT_POLL_RPC_TIMEOUT)
                             if kind != "done":
                                 self._sp_log_msg(f"  ❌ Đoạn {seg_i+1} render thất bại (Extension): {kind} — {poll_result}")
                                 if kind == "failed" and E.is_policy_reason(poll_result, include_audio=True):
@@ -6911,6 +7449,8 @@ class App(ctk.CTk):
 
         if hasattr(self, '_sv_pool_states') and self._sv_pool_states:
             for st in self._sv_pool_states:
+                if st.acc.get("use_aimd") is not None:
+                    continue  # tài khoản này đã tự chọn riêng ở dòng của nó -> không ghi đè
                 st.use_aimd = is_aimd
                 with st._gate:
                     st._gate.notify_all()
@@ -6969,7 +7509,7 @@ class App(ctk.CTk):
                     import flow_bridge as _FB
                     known = {str(get_acc_email(a)).strip().lower() for a in self.accounts}
                     new_emails = [e for e in _FB.get_bridge().connected_accounts()
-                                  if e.strip().lower() not in known]
+                                  if "@" in e and e.strip().lower() not in known]
                     if new_emails:
                         for em in new_emails:
                             self.accounts.append({
@@ -7013,7 +7553,7 @@ class App(ctk.CTk):
                                  font=("", 11), text_color=T2).pack(anchor="w", pady=6)
                 else:
                     cols = [("Tài khoản", 130), ("✅ Xong", 50), ("❌ Lỗi", 45),
-                            ("⚡ Tạo", 40), ("🚀 Tốc độ", 65), ("Trạng thái", 105), ("🌐 Proxy", 150), ("Hành động", 65), ("📤 Upload", 60)]
+                            ("⚡ Tạo", 40), ("🚀 Tốc độ", 65), ("Trạng thái", 105), ("🌐 Proxy", 150), ("Hành động", 65), ("📤 Upload", 60), ("AIMD", 44)]
                     hdr = ctk.CTkFrame(self._sv_pool_rows_frame, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 2))
                     for txt, w in cols:
                         ctk.CTkLabel(hdr, text=txt, font=("", 10, "bold"), text_color=T2, width=w, anchor="w").pack(side="left", padx=(2, 0))
@@ -7034,7 +7574,12 @@ class App(ctk.CTk):
                                                command=lambda v, st=s: self._on_acc_upload_threads_change(st, v))
                         uo.pack(side="left", padx=(4, 0))
                         uo.set(str(getattr(s, "upload_threads", 1)))
-                        self._sv_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab, "u": uo}
+                        av = ctk.BooleanVar(value=getattr(s, "use_aimd", True))
+                        asw = ctk.CTkSwitch(row, text="", variable=av, width=36, height=18,
+                                            command=lambda st=s, v=av: self._on_acc_aimd_toggle(st, v.get()))
+                        asw.pack(side="left", padx=(6, 0))
+                        uo.configure(state="disabled" if av.get() else "normal")
+                        self._sv_pool_rows[s.email] = {"w": wl, "f": fl, "b": bl, "r": rl, "s": sl, "p": pl, "a": ab, "u": uo, "aimd": asw, "aimd_var": av}
 
             # Fix 4: Chỉ update dòng có giá trị thay đổi (cached)
             for s in states:
@@ -7048,6 +7593,10 @@ class App(ctk.CTk):
                 cur_up = str(getattr(s, "upload_threads", 1))
                 if r.get("u") and r["u"].get() != cur_up:
                     r["u"].set(cur_up)
+                cur_aimd = bool(getattr(s, "use_aimd", True))
+                if r.get("aimd_var") is not None and r["aimd_var"].get() != cur_aimd:
+                    r["aimd_var"].set(cur_aimd)
+                    r["u"].configure(state="disabled" if cur_aimd else "normal")
                 # Chế độ Extension: cột này đổi nghĩa thành "trạng thái kết nối extension"
                 # thay vì proxy — cắm proxy không áp dụng, tài khoản chạy qua trình duyệt
                 # thật người dùng tự quản lý.
@@ -7059,6 +7608,8 @@ class App(ctk.CTk):
                         _connected = False
                     if _connected:
                         _set(r["p"], f"{e}_p", text="🧩 Extension đã kết nối", text_color=GR)
+                    elif e in getattr(self, "_sv_ext_failed_emails", ()):
+                        _set(r["p"], f"{e}_p", text="❌ Không mở được (xem log)", text_color=RD)
                     else:
                         _set(r["p"], f"{e}_p", text="⏳ Chờ kết nối extension", text_color="#F9A825")
                 else:
@@ -8337,7 +8888,9 @@ class App(ctk.CTk):
                         st.clear_rest()
                         st.reset_circuit_breaker()
                         self._sv_log_msg(f"  🧩 {st.email[:20]}: Extension đã kết nối → bỏ qua cooldown lỗi auth cũ ({err})")
-                is_aimd = getattr(self, "_sv_use_aimd", None) and self._sv_use_aimd.get()
+                _global_aimd = bool(getattr(self, "_sv_use_aimd", None) and self._sv_use_aimd.get())
+                _acc_aimd = a.get("use_aimd")  # None = theo công tắc chung; True/False = ghi đè riêng cho TK này
+                is_aimd = _global_aimd if _acc_aimd is None else bool(_acc_aimd)
                 st.use_aimd = is_aimd
                 if is_aimd:
                     st.upload_threads = max(1, min(20, int(a.get("upload_threads", UPLOAD_MIN_THREADS))))
@@ -8434,7 +8987,8 @@ class App(ctk.CTk):
                         if not _FB.is_account_connected(st.email):
                             if st.should_log_throttle():
                                 self._sv_log_msg(f"  ⏳ [{st.email[:16]}] Chưa có trình duyệt/extension kết nối bridge — "
-                                                  f"vào popup extension, nhập đúng email, bấm 'Lưu & Kết nối'.")
+                                                  f"đang tự thử mở lại...")
+                            self._sv_auto_relaunch_ext_browser(st)
                         elif not st.acc.get("flow_project_id"):
                             if st.should_log_throttle():
                                 self._sv_log_msg(f"  ⚠️ [{st.email[:16]}] Thiếu 'flow_project_id' trong accounts.json — "
@@ -8743,7 +9297,7 @@ class App(ctk.CTk):
                         st.proxy_fail_streak = 0
 
                         self._sv_log_msg(f"  ⏳ Polling segment {seg_idx+1} (Extension)...")
-                        kind, poll_result, _ = EXT.poll_video_ext(st.email, st.project, ops, max_attempts=60, interval=8, timeout=90)
+                        kind, poll_result, _ = EXT.poll_video_ext(st.email, st.project, ops, max_attempts=EXT_POLL_MAX, interval=8, timeout=EXT_POLL_RPC_TIMEOUT)
                         if kind != "done":
                             self._sv_log_msg(f"  ❌ Segment {seg_idx+1} render thất bại (Extension): {kind} — {poll_result}")
                             if kind == "failed" and E.is_policy_reason(poll_result, include_audio=True):
@@ -8983,10 +9537,16 @@ class App(ctk.CTk):
                         time.sleep(1); continue
                     w = st.rest_remaining()
                     if w > 0:
+                        # "circuit_breaker" CỐ Ý bỏ khỏi danh sách mở khoá sớm này — trước đây có
+                        # trong danh sách, gây bug thật: mở khoá NGAY khi thấy bridge còn kết nối,
+                        # bất kể lý do trip thật sự là gì, có thể bỏ qua toàn bộ 60s nghỉ dự định.
+                        # Giờ để circuit_breaker nghỉ ĐỦ 60s như thiết kế; phục hồi đáng tin cậy hơn
+                        # đã chuyển sang ensure_auth_ext() (luôn tự reset khi xác nhận bridge sống),
+                        # không phụ thuộc đúng lúc kiểm tra như ở đây.
                         if gen_mode == "Extension":
                             try:
                                 import flow_bridge as _FB
-                                if _FB.is_account_connected(st.email) and st.rest_reason in ("permanent_error", "auth", "circuit_breaker"):
+                                if _FB.is_account_connected(st.email) and st.rest_reason in ("permanent_error", "auth"):
                                     st.clear_rest()
                                     st.reset_circuit_breaker()
                                     self._sv_log_msg(f"  ⚡ [{st.email[:16]}] Extension đã kết nối → tự động mở khóa (hủy nghỉ lỗi auth cũ)!")
@@ -9006,7 +9566,8 @@ class App(ctk.CTk):
                             if st.should_log_throttle():
                                 import flow_bridge as _FB
                                 if not _FB.is_account_connected(st.email):
-                                    self._sv_log_msg(f"  ⏳ [{st.email[:16]}] Chưa có trình duyệt/extension kết nối bridge.")
+                                    self._sv_log_msg(f"  ⏳ [{st.email[:16]}] Chưa có trình duyệt/extension kết nối bridge — đang tự thử mở lại...")
+                                    self._sv_auto_relaunch_ext_browser(st)
                                 elif not st.acc.get("flow_project_id") and not _FB.get_project(st.email):
                                     self._sv_log_msg(f"  ⚠️ [{st.email[:16]}] Đã kết nối extension nhưng chưa có Flow project — đang chờ extension tự phát hiện/tạo.")
                             time.sleep(2)
@@ -9251,6 +9812,115 @@ class App(ctk.CTk):
             pass
         self._sv_log_msg(f"  🚩 {st.email[:16]}: Google gắn cờ khi {where} (lần {st.unusual_count}) "
                          f"→ hạ về 1 luồng upload, nghỉ {int(rest_s // 60)}p")
+        if st.unusual_count >= IP_BURN_THRESHOLD:
+            self._sv_try_rotate_burned_ip(st)
+
+    def _sv_try_rotate_burned_ip(self, st):
+        """Bị gắn cờ UNUSUAL_ACTIVITY >= IP_BURN_THRESHOLD lần trong cùng 1 cửa sổ 2h → nghi IP
+        hiện tại đã "cháy" (đã xác nhận thực nghiệm: đổi hẳn IP là hết gắn cờ, đổi tốc độ không
+        ăn thua — xem 1 phần mềm khác dùng cửa sổ cố định 10p cho UNUSUAL, không leo thang, cũng
+        không hề nói tới việc hạ tốc độ). Tự động: đóng trình duyệt cũ, xoay sang proxy KHÁC, xoá
+        profile Chrome cũ (gắn với IP cháy — dùng cookie mới trên IP mới mà giữ profile cũ sẽ lại
+        dính CookieMismatch, đã gặp thực tế), đăng nhập lại từ đầu qua IP mới, rồi để cơ chế tự
+        mở lại trình duyệt (đã có) tự lo phần mở lại Extension mode."""
+        email = st.email
+        acc = st.acc
+        if getattr(st, "_ip_rotating", False):
+            return
+        now = time.time()
+        if now - getattr(st, "_last_ip_rotate_attempt", 0.0) < IP_ROTATE_COOLDOWN:
+            return
+        st._last_ip_rotate_attempt = now
+        try:
+            import flow_bridge as _FB
+            if not _FB.is_account_connected(email):
+                return  # không phải tài khoản Extension mode đang hoạt động -> không áp dụng
+        except Exception:
+            return
+        if not self.proxy_pool or not self.proxy_pool.has_proxies():
+            return
+        if not acc.get("password"):
+            self._sv_log_msg(f"  ⚠️ [{email[:16]}] IP nghi ngờ đã cháy (gắn cờ {st.unusual_count} lần/2h) "
+                              f"nhưng chưa có password lưu sẵn → không tự đăng nhập lại qua IP mới được. "
+                              f"Bấm ✏️ nhập password cho tài khoản này.")
+            return
+        if not self._acquire_profile(email):
+            return  # có thao tác khác đang giữ profile -> nhường, thử lại ở lần gắn cờ sau
+        st._ip_rotating = True
+
+        def work():
+            try:
+                old_proxy_disp = (acc.get("proxy") or "?").split("@")[-1][:30]
+                self._sv_log_msg(f"  🔥 [{email[:16]}] Bị gắn cờ {st.unusual_count} lần trong 2h → nghi IP đã cháy. "
+                                  f"Tự động xoay proxy mới + đăng nhập lại...")
+                try:
+                    import recaptcha_farm as RF
+                    RF.get_extension_pool().stop_account(email)
+                except Exception:
+                    pass
+                # Cách ly proxy cháy 1 giờ trước khi TK khác được nhận lại (dài hơn hẳn mức 60s
+                # mặc định cho lỗi 429 thoáng qua — chưa có dữ liệu Google giữ đánh dấu IP bao lâu,
+                # 1 giờ là lựa chọn thận trọng, không phải số đã xác thực).
+                new_proxy, _old = self.proxy_pool.rotate(email, cooldown=3600)
+                # Đánh dấu CHÁY BỀN VỮNG (qua settings.json, sống sót qua khởi động lại app) — không
+                # chỉ cooldown 1 giờ trong bộ nhớ. Đã gặp thực tế: thiếu bước này khiến app khởi động
+                # lại (hoặc gán tay 1 proxy khác rồi rotate() lại) chọn NGAY LẠI đúng proxy vừa cháy
+                # cho 1 tài khoản KHÁC, vì pool coi nó "chưa ai giữ" như bình thường.
+                if _old:
+                    try:
+                        self.proxy_pool.mark_flagged(_old)
+                        self.settings["flagged_proxies"] = self.proxy_pool.get_flagged()
+                        save_settings(self.settings)
+                    except Exception as _ex:
+                        # Lưu flagged-proxy chỉ là "nice to have" — KHÔNG được để lỗi ở đây (thiếu
+                        # self.settings, lỗi ghi đĩa...) làm bỏ dở phần đăng nhập lại thật sự quan
+                        # trọng hơn phía dưới (đã gặp thực tế qua test: 1 AttributeError ở đây từng
+                        # làm toàn bộ hàm thoát sớm, tài khoản kẹt ở trạng thái dở dang).
+                        self._sv_log_msg(f"  ⚠️ [{email[:16]}] Không lưu được danh sách proxy cháy: {_ex}")
+                if not new_proxy:
+                    self._sv_log_msg(f"  ❌ [{email[:16]}] Không còn proxy khác trong pool để xoay — hết proxy dự phòng.")
+                    return
+                acc["proxy"] = new_proxy
+                acc["cookie"] = ""
+                acc["status"] = "new"
+                save_accs(self.accounts)
+                new_proxy_disp = new_proxy.split("@")[-1][:30] if "@" in new_proxy else new_proxy[:30]
+                self._sv_log_msg(f"  🔄 [{email[:16]}] Đã xoay proxy: {old_proxy_disp} → {new_proxy_disp}")
+
+                profile_dir = _profile_dir(email)
+                if os.path.isdir(profile_dir):
+                    import shutil
+                    shutil.rmtree(profile_dir, ignore_errors=True)
+
+                ck = L.login_get_cookie(email, acc["password"], acc.get("totp", ""),
+                                         profile_dir=profile_dir,
+                                         log=lambda m: self._sv_log_msg(f"  [Xoay IP] {m}"),
+                                         proxy=new_proxy)
+                if not ck:
+                    self._sv_log_msg(f"  ❌ [{email[:16]}] Đăng nhập lại qua IP mới thất bại.")
+                    return
+                b, em = _bearer_and_email(ck, proxy=ProxyPool._to_dict(new_proxy))
+                acc["cookie"] = ck
+                acc["status"] = "ok" if b else "dead"
+                if em:
+                    acc["email"] = em
+                # Reset bộ điều tốc — hình phạt cũ gắn với IP cháy, không mang sang IP mới sạch.
+                acc["rate_gov"] = {"limit": RATE_START, "ceiling": None, "last_unusual": 0.0, "unusual_count": 0}
+                acc["upload_threads"] = UPLOAD_MIN_THREADS + 1
+                save_accs(self.accounts)
+                st.unusual_count = 0
+                st.rate_limit = RATE_START
+                st.rate_ceiling = None
+                self.after(0, self._refresh_acc)
+                self._sv_log_msg(f"  ✅ [{email[:16]}] Đăng nhập lại thành công qua IP mới — đã reset bộ điều tốc. "
+                                  f"Trình duyệt Extension sẽ tự mở lại trong giây lát.")
+            except Exception as ex:
+                self._sv_log_msg(f"  ⚠️ [{email[:16]}] Lỗi khi xoay IP: {ex}")
+            finally:
+                st._ip_rotating = False
+                self._release_profile(email)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _sv_mark_account_dead(self, st, reason=""):
         """Cookie chết hẳn → đánh dấu tài khoản ❌ Chết và dừng dùng (giống AccountStatus.Expired của
@@ -9310,6 +9980,7 @@ class App(ctk.CTk):
                 custom_prompts = self.loaded_prompts
 
             s = {
+                **self.settings,   # giữ lại các key không có ô UI tương ứng (vd flagged_proxies) — trước đây bị mất mỗi lần tắt app
                 "gen_mode": self.gen_mode.get(),
                 "ref_dir": self.ent_ref.get(),
                 "aspect": self.opt_aspect.get(),

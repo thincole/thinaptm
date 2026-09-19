@@ -54,8 +54,6 @@ EXCLUDE_DIRS = {'.git', '.agents', '.gemini', '__pycache__', 'output_seedvis', '
 
 def _is_ignored(path_str):
     low = path_str.lower().replace("\\", "/")
-    if 'seedvis' in low or 'seedvid' in low:
-        return True
     parts = low.split('/')
     if any(p in EXCLUDE_DIRS for p in parts):
         return True

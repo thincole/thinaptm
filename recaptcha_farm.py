@@ -47,6 +47,16 @@ def get_chrome_path():
     return None
 
 
+def get_chrome_for_testing_path():
+    """Lấy đường dẫn bản 'Chrome for Testing' (chrome_for_testing/chrome-win64/chrome.exe) — BẮT
+    BUỘC dùng bản này thay vì Chrome thường để nạp extension unpacked cho Extension mode, vì từ
+    Chrome 136-137 (2025) Chrome thường CHẶN nạp extension unpacked (kể cả 'Load unpacked' thủ
+    công) khi trình duyệt đang bị điều khiển qua CDP (đúng cách DrissionPage hoạt động) — biện
+    pháp bảo mật mới của Google. Trả None nếu chưa tải (script/README hướng dẫn cách tải)."""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chrome_for_testing", "chrome-win64", "chrome.exe")
+    return p if os.path.isfile(p) else None
+
+
 def hide_pid_windows_from_taskbar(pid):
     """Ẩn toàn bộ cửa sổ của tiến trình Chrome khỏi màn hình và Taskbar Windows (SW_HIDE + ToolWindow)."""
     if not pid:
@@ -1010,10 +1020,40 @@ class ExtensionBrowserPool:
 
     def start_account(self, email, cookie, flow_project_id=None):
         """Mở 1 trình duyệt cho đúng tài khoản này. Gọi lại nhiều lần cho cùng
-        email là an toàn (bỏ qua nếu đã có trình duyệt đang chạy)."""
+        email là an toàn (bỏ qua nếu đã có trình duyệt đang chạy). FAIL-CLOSED
+        theo đúng mục tiêu "đồng nhất IP": không có cookie hoặc không có proxy
+        thì KHÔNG mở trình duyệt (thay vì âm thầm chạy bằng IP máy/chưa đăng nhập)."""
         with self._lock:
-            if email in self._pages:
+            existing = self._pages.get(email)
+        if existing is not None:
+            # Xác nhận trình duyệt cũ THẬT SỰ còn sống + extension còn kết nối bridge — không chỉ
+            # dựa vào việc còn nằm trong self._pages (đã gặp thực tế: trình duyệt/kết nối cũ đã
+            # chết nhưng vẫn được coi là "đang chạy" nên lần gọi sau KHÔNG mở trình duyệt mới,
+            # trong khi worker lại thấy bridge chưa kết nối -> kẹt vĩnh viễn, không ai mở lại).
+            alive = False
+            try:
+                alive = existing.run_js("return 1") == 1
+            except Exception:
+                alive = False
+            if alive:
+                try:
+                    import flow_bridge as _FB
+                    alive = _FB.is_account_connected(email)
+                except Exception:
+                    pass
+            if alive:
                 return True
+            with self._lock:
+                self._pages.pop(email, None)
+            try:
+                existing.quit()
+            except Exception:
+                pass
+            self._log(f"[{email[:16]}] ♻️ Trình duyệt cũ đã mất kết nối — mở lại từ đầu.")
+
+        if not cookie:
+            self._log(f"❌ [{email[:16]}] Chưa có cookie — vào tab Tài khoản bấm 'Auto login' trước rồi thử lại.")
+            return False
 
         try:
             from DrissionPage import ChromiumOptions, ChromiumPage
@@ -1037,8 +1077,13 @@ class ExtensionBrowserPool:
             time.sleep(1)
             proxy_str = _resolve_proxy()
 
+        if not proxy_str:
+            self._log(f"❌ [{email[:16]}] Hết proxy khả dụng trong pool — KHÔNG mở trình duyệt bằng IP máy "
+                      f"(phá mục tiêu đồng nhất IP). Thêm proxy vào pool rồi thử lại.")
+            return False
+
         co = ChromiumOptions()
-        chrome_path = get_chrome_path()
+        chrome_path = get_chrome_for_testing_path() or get_chrome_path()
         if chrome_path:
             co.set_browser_path(chrome_path)
         profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1047,6 +1092,11 @@ class ExtensionBrowserPool:
         co.set_argument("--no-first-run")
         co.set_argument("--no-default-browser-check")
         co.set_argument("--disable-blink-features=AutomationControlled")
+        # Thu nhỏ xuống taskbar ngay khi mở — Chrome không cho JS/extension chặn nút X để hỏi xác
+        # nhận trước khi thoát, nên cách thực tế để giảm nguy cơ người dùng bấm nhầm tắt cửa sổ
+        # đang chạy là không để nó nằm chắn ngay trước mắt. Vẫn xem lại được bất cứ lúc nào qua
+        # taskbar khi cần kiểm tra.
+        co.set_argument("--start-minimized")
         # BẮT BUỘC: không set thì DrissionPage cố kết nối cổng debug MẶC ĐỊNH 9222 —
         # nếu chưa có Chrome nào tự mở sẵn trên đúng cổng đó, "ChromiumPage(co)" báo
         # "Browser connect failed... port 9222" như đã gặp thực tế. Mỗi trình duyệt
@@ -1078,6 +1128,14 @@ class ExtensionBrowserPool:
                     co.set_argument("--proxy-server", f"http://{_h}:{_pt}")
                     if _u:
                         proxy_creds = (_u, _p or "")
+            # BẮT BUỘC: không có dòng này thì Chrome route LUÔN cả traffic tới 127.0.0.1:<cổng
+            # bridge> (WebSocket nội bộ ThinAPTM <-> extension) qua proxy ở xa — proxy đó không thể
+            # route ngược về localhost của chính máy mình nên extension KHÔNG BAO GIỜ kết nối được
+            # bridge (mọi request tới bridge sẽ mãi timeout dù browser/Flow vẫn hoạt động bình
+            # thường, vì Flow đi ra ngoài qua proxy vẫn ổn — chỉ riêng kết nối ngược về localhost
+            # là bị proxy nuốt mất). Đã xác nhận đúng nguyên nhân qua thực tế: bridge chỉ từng kết
+            # nối được ở các lần KHÔNG dùng proxy.
+            co.set_argument("--proxy-bypass-list", "127.0.0.1;localhost;<local>")
             self._log(f"[{email[:16]}] 🌐 Extension mode qua proxy {(_url.split('@')[-1] if _url else '?')[:34]}")
         else:
             self._log(f"[{email[:16]}] ⚠️ Không có proxy → chạy bằng IP máy")
@@ -1096,24 +1154,82 @@ class ExtensionBrowserPool:
         except Exception as e:
             self._log(f"[{email[:16]}] ⚠️ Lỗi nạp stealth/proxy-auth: {e}")
 
+        # Nếu profile này đã có phiên Chrome THẬT đang sống (vừa login qua login.py với đúng
+        # profile_dir + proxy này) → dùng LUÔN session tự nhiên đó, KHÔNG tiêm cookie đè lên.
+        # Lý do: cookie lưu trong accounts.json chỉ là 1 tập con đã lọc (_labs_cookie), tiêm qua
+        # CDP Network.setCookie đè lên 1 session thật đang sống dễ làm lệch các cookie xoay vòng
+        # (SIDCC/__Secure-1PSIDTS...) → Google phát hiện bất thường, báo CookieMismatch — đã gặp
+        # thực tế dù proxy + profile khớp hệt lúc login.
+        # QUAN TRỌNG: kiểm tra bằng cookie THẬT đang có trong trình duyệt (page.cookies() sau khi
+        # điều hướng), KHÔNG dùng sự tồn tại của file "Local State" — Chrome tạo file đó ngay khi
+        # mở lần đầu dù CHƯA đăng nhập gì cả (đã gặp thực tế: lần mở đầu thất bại vẫn để lại file
+        # này, khiến lần mở sau tưởng nhầm "đã có session" rồi bỏ qua tiêm cookie, để lại trình
+        # duyệt hoàn toàn trống).
         try:
             page.get("https://flow.google.com")
             time.sleep(1.5)
-            _inject_cookies(page, cookie)
+            has_real_session = False
+            try:
+                live_cookies = page.cookies(all_domains=True) or []
+                has_real_session = any(
+                    "google" in (c.get("domain", "") or "") and c.get("name") in
+                    ("SID", "__Secure-1PSID", "__Secure-3PSID", "HSID", "SSID", "OSID", "__Secure-OSID")
+                    for c in live_cookies
+                )
+            except Exception:
+                has_real_session = False
+            if not has_real_session:
+                _inject_cookies(page, cookie)
+            else:
+                self._log(f"[{email[:16]}] 🍪 Dùng phiên Chrome thật đã có sẵn trong profile (không tiêm cookie đè).")
         except Exception as e:
             self._log(f"[{email[:16]}] ⚠️ Lỗi inject cookie: {e}")
 
-        pid = flow_project_id or "513f3b20-fa17-4be7-89b5-f179860de580"
-        target_url = f"https://flow.google.com/project/{pid}?_tam_email={email}"
+        # KHÔNG đoán bừa 1 UUID project cố định khi chưa biết flow_project_id thật của tài khoản
+        # này — project đó thuộc về tài khoản KHÁC (thường là tài khoản đầu tiên từng test), TK
+        # khác không có quyền truy cập sẽ bị Google trả "Project not found" (404), rơi vào trang
+        # lỗi mà content.js không nhận diện được (script tự tạo project mới chỉ tìm nút "Dự án
+        # mới" trên trang chủ, không có trên trang 404) → kẹt vĩnh viễn, không tự phục hồi được.
+        # Chưa biết project thật → điều hướng thẳng về TRANG CHỦ, để content.js tự phát hiện +
+        # tự bấm "Dự án mới" đúng luồng đã thiết kế.
+        target_url = (f"https://flow.google.com/project/{flow_project_id}?_tam_email={email}"
+                      if flow_project_id else f"https://flow.google.com/?_tam_email={email}")
         try:
             page.get(target_url)
         except Exception as e:
             self._log(f"[{email[:16]}] ❌ Không điều hướng được tới Flow: {e}")
+            try:
+                page.quit()
+            except Exception:
+                pass
             return False
+
+        # Xác nhận extension THỰC SỰ đã kết nối bridge trước khi báo thành công — nếu không,
+        # đóng luôn trình duyệt vừa mở (tránh treo cửa sổ vô ích không ai theo dõi).
+        try:
+            import flow_bridge as _FB
+            connected = False
+            for _ in range(30):
+                if _FB.is_account_connected(email):
+                    connected = True
+                    break
+                if self._stop:
+                    break
+                time.sleep(1)
+            if not connected:
+                self._log(f"❌ [{email[:16]}] Trình duyệt đã mở nhưng extension không tự kết nối bridge sau 30s "
+                          f"— kiểm tra extension đã cài đúng chưa. Đang đóng trình duyệt này lại.")
+                try:
+                    page.quit()
+                except Exception:
+                    pass
+                return False
+        except Exception as e:
+            self._log(f"[{email[:16]}] ⚠️ Lỗi kiểm tra kết nối bridge: {e}")
 
         with self._lock:
             self._pages[email] = page
-        self._log(f"[{email[:16]}] 🧩 Đã mở trình duyệt Extension mode, đang chờ kết nối bridge...")
+        self._log(f"[{email[:16]}] 🧩 Đã mở trình duyệt Extension mode, extension đã kết nối bridge thành công.")
         return True
 
     def is_running(self, email):

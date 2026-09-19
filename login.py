@@ -33,10 +33,56 @@ def get_chrome_path():
     return None
 
 
-def _opts(profile_dir=None, headless=False):
+def get_chrome_for_testing_path():
+    """Lấy đường dẫn bản 'Chrome for Testing' (nếu đã tải về chrome_for_testing/) — BẮT BUỘC dùng
+    bản này (không phải Chrome thường) để nạp extension unpacked, vì từ Chrome 136-137 (2025), Chrome
+    bản thường CHẶN nạp extension unpacked (--load-extension và cả 'Load unpacked' thủ công) khi
+    trình duyệt đang bị điều khiển qua CDP (chính là cách DrissionPage hoạt động) — biện pháp bảo
+    mật mới của Google chống framework tự động hoá chèn extension độc hại. Chrome for Testing là
+    bản build riêng của Google dành cho automation, không bị hạn chế này.
+    Trả None nếu chưa tải (khi đó các luồng gọi nên tự fallback về get_chrome_path())."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    p = os.path.join(here, "chrome_for_testing", "chrome-win64", "chrome.exe")
+    return p if os.path.isfile(p) else None
+
+
+def _parse_proxy(proxy_str):
+    """Tách proxy string (ip:port | ip:port:user:pass | http://user:pass@ip:port | socks5://...)
+    thành (proxy_server_arg, user, passwd) — dùng cho ChromiumOptions + CDP proxy-auth. Trả
+    (None, None, None) nếu proxy_str rỗng."""
+    if not proxy_str:
+        return None, None, None
+    import re
+    s = proxy_str.strip()
+    if '#' in s and (s.startswith("socks") or s.startswith("http")):
+        s = s.split('#')[0]
+    if s.startswith("socks"):
+        return s, None, None
+    if s.startswith("http://") or s.startswith("https://"):
+        m = re.match(r"https?://(?:([^:]+):([^@]+)@)?([^:]+):(\d+)", s)
+        if m:
+            u, p, h, pt = m.groups()
+            return f"http://{h}:{pt}", u, p
+        return s, None, None
+    parts = s.split(":")
+    if len(parts) >= 4:
+        ip, port, user = parts[0], parts[1], parts[2]
+        passwd = ":".join(parts[3:])
+        return f"http://{ip}:{port}", user, passwd
+    if len(parts) == 3:
+        ip, port, userpass = parts
+        return f"http://{ip}:{port}", userpass, userpass
+    if len(parts) == 2:
+        return f"http://{parts[0]}:{parts[1]}", None, None
+    return f"http://{s}", None, None
+
+
+def _opts(profile_dir=None, headless=False, proxy_server=None):
     from DrissionPage import ChromiumOptions
     co = ChromiumOptions()
-    chrome_path = get_chrome_path()
+    # Ưu tiên Chrome for Testing (nếu đã tải) — Chrome thường chặn nạp extension unpacked khi bị
+    # điều khiển qua CDP (từ Chrome 136-137 trở lên), xem get_chrome_for_testing_path().
+    chrome_path = get_chrome_for_testing_path() or get_chrome_path()
     if chrome_path:
         co.set_browser_path(chrome_path)
     co.set_argument("--no-first-run"); co.set_argument("--no-default-browser-check")
@@ -44,6 +90,19 @@ def _opts(profile_dir=None, headless=False):
         co.set_argument("--window-position=-30000,0")
         co.set_argument("--window-size=800,600")
         co.set_argument("--start-minimized")
+    if proxy_server:
+        co.set_argument("--proxy-server", proxy_server)
+    # Nạp extension ThinAPTM Flow Bridge NGAY TỪ LẦN ĐẦU profile này được Chrome khởi tạo, kể cả
+    # khi chỉ dùng để lấy cookie — Chrome có thể bỏ qua --load-extension nếu thêm vào SAU trên 1
+    # profile đã tồn tại mà chưa từng có extension unpacked nào (đã gặp thực tế: profile login
+    # xong rồi mới add_extension ở lần mở khác thì extension không hiện trong chrome://extensions).
+    if profile_dir:
+        ext_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extension")
+        if os.path.isdir(ext_dir):
+            try:
+                co.add_extension(ext_dir)
+            except Exception:
+                pass
     if profile_dir:
         try:
             os.makedirs(profile_dir, exist_ok=True)
@@ -389,25 +448,28 @@ def repair_corrupted_profile(profile_dir, log=print):
 
 
 # ============ 1) NHẬP THỦ CÔNG: user tự đăng nhập ============
-def manual_login(log=print, timeout=360, poll=2, profile_dir=None):
+def manual_login(log=print, timeout=360, poll=2, profile_dir=None, proxy=None):
     """Mở Chrome -> user tự đăng nhập Google + vào Flow. Khi có cookie labs (đã login) -> lấy + TẮT Chrome.
     Nếu có profile_dir → lưu session Google vào profile để lần sau tự đăng nhập lại.
+    Nếu có proxy → đăng nhập NGAY qua đúng proxy đó, để cookie sinh ra khớp IP với proxy sẽ dùng
+    về sau (tránh Google báo CookieMismatch khi đổi IP giữa chừng cho 1 cookie đã có).
     Trả cookie (str) hoặc None (hết giờ / user đóng)."""
     try:
         from DrissionPage import ChromiumPage
     except Exception:
         log("Thiếu DrissionPage -> chạy SETUP.bat"); return None
+    proxy_server, p_user, p_pass = _parse_proxy(proxy)
     page = None
     try:
         if profile_dir:
             check_and_convert_gemlogin_profile(profile_dir, log)
         try:
-            page = ChromiumPage(_opts(profile_dir))
+            page = ChromiumPage(_opts(profile_dir, proxy_server=proxy_server))
         except Exception as e:
             if profile_dir:
                 log(f"⚠️ Trình duyệt lỗi kết nối, đang thử tự động sửa chữa profile...")
                 if repair_corrupted_profile(profile_dir, log):
-                    page = ChromiumPage(_opts(profile_dir))
+                    page = ChromiumPage(_opts(profile_dir, proxy_server=proxy_server))
                 else:
                     raise e
             else:
@@ -415,6 +477,8 @@ def manual_login(log=print, timeout=360, poll=2, profile_dir=None):
         try:
             import browser_stealth
             browser_stealth.apply_stealth(page, log_fn=log)
+            if p_user:
+                browser_stealth.prime_proxy_auth(page, p_user, p_pass, log_fn=log)
         except Exception:
             pass
         page.get(LABS)
@@ -441,11 +505,12 @@ def manual_login(log=print, timeout=360, poll=2, profile_dir=None):
 
 
 # ============ 2) AUTO LOGIN: email|password|2fa ============
-def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=print):
+def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=print, proxy=None):
     try:
         from DrissionPage import ChromiumPage
     except Exception:
         log("Thiếu DrissionPage -> chạy SETUP.bat"); return None
+    proxy_server, p_user, p_pass = _parse_proxy(proxy)
     page = None
     try:
         if profile_dir:
@@ -466,12 +531,12 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
 
         log(f"🔑 Mở Chrome login {email}...")
         try:
-            page = ChromiumPage(_opts(profile_dir))
+            page = ChromiumPage(_opts(profile_dir, proxy_server=proxy_server))
         except Exception as e:
             if profile_dir:
                 log(f"⚠️ Trình duyệt lỗi kết nối, đang thử tự động sửa chữa profile...")
                 if repair_corrupted_profile(profile_dir, log):
-                    page = ChromiumPage(_opts(profile_dir))
+                    page = ChromiumPage(_opts(profile_dir, proxy_server=proxy_server))
                 else:
                     raise e
             else:
@@ -479,6 +544,8 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
         try:
             import browser_stealth
             browser_stealth.apply_stealth(page, log_fn=log)
+            if p_user:
+                browser_stealth.prime_proxy_auth(page, p_user, p_pass, log_fn=log)
         except Exception:
             pass
 
@@ -645,9 +712,11 @@ def login_get_cookie(email, password, totp_secret="", profile_dir=None, log=prin
 
 
 # ============ 3) REOPEN PROFILE: mở Chrome profile cũ, Google tự login ============
-def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3):
+def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3, proxy=None):
     """Mở Chrome với profile CŨ (có sẵn session Google) → navigate tới Flow → Google tự đăng nhập →
     lấy cookie mới mà KHÔNG cần password/totp.
+    Nếu có proxy → mở qua ĐÚNG proxy đó (khớp IP với cookie cũ trong profile, và với cookie mới sẽ
+    được cấp), tránh Google báo CookieMismatch/yêu cầu xác minh thêm do đổi IP giữa chừng.
     Trả cookie (str) hoặc None (profile không tồn tại / session hết hạn / hết giờ)."""
     if not _has_profile_data(profile_dir):
         log(f"⚠️ Profile không có dữ liệu Chrome: {profile_dir}")
@@ -656,18 +725,19 @@ def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3):
         from DrissionPage import ChromiumPage
     except Exception:
         log("Thiếu DrissionPage → chạy SETUP.bat"); return None
+    proxy_server, p_user, p_pass = _parse_proxy(proxy)
     page = None
     try:
         if profile_dir:
             check_and_convert_gemlogin_profile(profile_dir, log)
         log("🔄 Mở Chrome với profile cũ (không cần password)...")
         try:
-            page = ChromiumPage(_opts(profile_dir, headless=True))
+            page = ChromiumPage(_opts(profile_dir, headless=True, proxy_server=proxy_server))
         except Exception as e:
             if profile_dir:
                 log(f"⚠️ Trình duyệt lỗi kết nối, đang thử tự động sửa chữa profile...")
                 if repair_corrupted_profile(profile_dir, log):
-                    page = ChromiumPage(_opts(profile_dir, headless=True))
+                    page = ChromiumPage(_opts(profile_dir, headless=True, proxy_server=proxy_server))
                 else:
                     raise e
             else:
@@ -680,6 +750,8 @@ def reopen_profile_cookie(profile_dir, log=print, timeout=120, poll=3):
         try:
             import browser_stealth
             browser_stealth.apply_stealth(page, log_fn=log)
+            if p_user:
+                browser_stealth.prime_proxy_auth(page, p_user, p_pass, log_fn=log)
         except Exception:
             pass
         page.get(LABS)
