@@ -1445,7 +1445,7 @@ class SeedvisApp(ctk.CTk):
             f"5. SECTION 5 (CAMERA & TECHNICAL SPECS): Smartphone-style photorealism, eye-level angle, 35mm/50mm lens feel, natural soft lighting, clean white balance, optical depth of field.\n"
             f"6. SECTION 6 (DIALOGUE SCRIPT): The presenter speaks naturally in {lang_name} about \"{product_name}\" (authentic UGC tone, ~15-20 words, no exaggerated claims, ending with soft CTA).\n\n"
             f"═══ OUTPUT FORMAT ═══\n"
-            f"NEGATIVE DIRECTIVES: extra limbs, extra hands, extra arms, third arm, floating hands, six fingers.\nOutput EXACTLY {n_segments} lines. One prompt per line.\n"
+            f"CRITICAL: DO NOT use negative words like "extra limbs", "mutated", "deformed", or "missing fingers" in your output because the video AI will block it for safety. Instead, describe the anatomy POSITIVELY (e.g., "two perfectly normal hands", "natural five fingers").\nOutput EXACTLY {n_segments} lines. One prompt per line.\n"
             f"No numbering (1. 2. 3.), no bullet points, no markdown, no explanations.\n"
             f"Just {n_segments} raw prompt lines.\n"
         )
