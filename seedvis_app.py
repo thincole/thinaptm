@@ -53,7 +53,7 @@ RD = "#d93025"
 SEEDVIS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 SEEDVIS_PACKAGE_CONCURRENT = 32
 SETTINGS_FILE = os.path.join(HERE, "seedvis_settings.json")
-LOG_FILE = os.path.join(HERE, "logseedvis.txt")
+LOG_FILE = os.path.join(HERE, "log.txt")
 
 
 class SeedvisApp(ctk.CTk):
@@ -86,6 +86,10 @@ class SeedvisApp(ctk.CTk):
         self._seed_video_done_count = 0
         self._seed_completion_times = collections.deque()
         self._seed_run_started_at = time.time()
+        # Xoa trang file log.txt khi khoi dong
+        with open("log.txt", "w", encoding="utf-8") as f:
+            f.write(f"--- PHIEN LAM VIEC MOI SEEDVIS ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
+
         self._seed_log_buffer = []
         self._seed_log_flush_scheduled = False
 
@@ -1604,6 +1608,10 @@ class SeedvisApp(ctk.CTk):
             self.after(0, lambda: self._seed_video_done_lbl.configure(text=""))
             self._seed_completion_times = collections.deque()
             self._seed_run_started_at = time.time()
+        # Xoa trang file log.txt khi khoi dong
+        with open("log.txt", "w", encoding="utf-8") as f:
+            f.write(f"--- PHIEN LAM VIEC MOI SEEDVIS ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
+
             self.after(0, lambda: self._seed_speed_lbl.configure(text="⚡ -- video/phút"))
             self.after(5000, self._seed_update_speed_label)
             error_count = [0]
