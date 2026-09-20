@@ -649,6 +649,7 @@ class SeedvisApp(ctk.CTk):
         self.after(0, _do)
 
     def _seed_claim_jobs(self):
+        self._save_settings()
         """Nhận lô SP cho Seedvis từ Server Database."""
         import re as _re
         self._seed_cached_url = self._seed_url.get().strip()
@@ -820,6 +821,7 @@ class SeedvisApp(ctk.CTk):
         self.after(0, lambda: self._seed_btn_claim.configure(state="normal", text="📥 Nhận SP"))
 
     def _seed_start(self):
+        self._save_settings()
         """Bắt đầu tạo video qua Seedvis (Veo 3.1 Image-to-Video)."""
         if SV is None:
             messagebox.showerror("Lỗi", "Module shopeevideo.py không tải được.")
