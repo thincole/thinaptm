@@ -238,6 +238,12 @@ class SeedvisApp(ctk.CTk):
                 icon.stop()
                 self._seed_stop_flag = True
                 self._save_settings()
+                try:
+                    c_id = self._seed_client_entry.get().strip()
+                    if c_id:
+                        self._seed_api_call("POST", "/api/thinaptm/release-jobs", {"clientId": c_id})
+                except Exception:
+                    pass
                 # Dọn dẹp temp_render khi tắt phần mềm theo Rule #8
                 try:
                     import shutil
@@ -1208,12 +1214,12 @@ class SeedvisApp(ctk.CTk):
                 if ai_mode == "Gemini":
                     prompts = self._seed_ai_gen_prompts(
                         prod_name, scene_en, n_segments, duration_sec, lang_code,
-                        review_style, mode="gemini", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys, product_desc=p.get("description", "")
+                        review_style, mode="gemini", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys, product_desc=p.get("description", ""), img_path=img_path
                     )
                 elif ai_mode == "Groq":
                     prompts = self._seed_ai_gen_prompts(
                         prod_name, scene_en, n_segments, duration_sec, lang_code,
-                        review_style, mode="groq", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys, product_desc=p.get("description", "")
+                        review_style, mode="groq", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys, product_desc=p.get("description", ""), img_path=img_path
                     )
 
                 if not prompts and SV:
@@ -1258,7 +1264,7 @@ class SeedvisApp(ctk.CTk):
 
     def _seed_ai_gen_prompts(self, product_name, scene_en, n_segments,
                               duration_sec, lang_code, review_style,
-                              mode="gemini", gemini_keys=None, groq_keys=None, product_desc=None):
+                              mode="gemini", gemini_keys=None, groq_keys=None, product_desc=None, img_path=None):
         """Gọi Gemini hoặc Groq để sinh prompt video review sản phẩm chất lượng cao.
         Trả về list[str] prompts hoặc None nếu thất bại."""
         lang_map = {"vi": "Vietnamese", "en": "English", "id": "Indonesian", "my": "Malay", "ph": "Filipino"}
@@ -1435,7 +1441,7 @@ class SeedvisApp(ctk.CTk):
             f"5. SECTION 5 (CAMERA & TECHNICAL SPECS): Smartphone-style photorealism, eye-level angle, 35mm/50mm lens feel, natural soft lighting, clean white balance, optical depth of field.\n"
             f"6. SECTION 6 (DIALOGUE SCRIPT): The presenter speaks naturally in {lang_name} about \"{product_name}\" (authentic UGC tone, ~15-20 words, no exaggerated claims, ending with soft CTA).\n\n"
             f"═══ OUTPUT FORMAT ═══\n"
-            f"Output EXACTLY {n_segments} lines. One prompt per line.\n"
+            f"NEGATIVE DIRECTIVES: extra limbs, extra hands, extra arms, third arm, floating hands, six fingers.\nOutput EXACTLY {n_segments} lines. One prompt per line.\n"
             f"No numbering (1. 2. 3.), no bullet points, no markdown, no explanations.\n"
             f"Just {n_segments} raw prompt lines.\n"
         )
