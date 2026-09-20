@@ -44,5 +44,11 @@
   },
   "side_panel": {
     "default_path": "side_panel.html"
+  },
+  "commands": {
+    "open-panel": {
+      "suggested_key": { "default": "Alt+Shift+P" },
+      "description": "Mở panel ThinAPTM Flow Bridge"
+    }
   }
 }

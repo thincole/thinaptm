@@ -1227,6 +1227,15 @@ class ExtensionBrowserPool:
         except Exception as e:
             self._log(f"[{email[:16]}] ⚠️ Lỗi kiểm tra kết nối bridge: {e}")
 
+        # Tự hiện panel ThinAPTM Flow Bridge (góc phải) mà không cần bấm icon thủ công —
+        # chrome.sidePanel.open() chỉ chạy được trong 1 "user gesture" thật, JS tự gọi
+        # không tính; gửi phím tắt Alt+Shift+P qua CDP Input.dispatchKeyEvent (Chrome coi
+        # là input thật) để kích hoạt lệnh "open-panel" đã đăng ký trong manifest/background.js.
+        try:
+            page.actions.key_down('alt').key_down('shift').type('p').key_up('shift').key_up('alt')
+        except Exception as e:
+            self._log(f"[{email[:16]}] ⚠️ Không tự mở được panel extension: {e}")
+
         with self._lock:
             self._pages[email] = page
         self._log(f"[{email[:16]}] 🧩 Đã mở trình duyệt Extension mode, extension đã kết nối bridge thành công.")

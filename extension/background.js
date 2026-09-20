@@ -71,6 +71,18 @@ try {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 } catch {}
 
+// chrome.sidePanel.open() chỉ được gọi trong 1 user gesture thật (không tự mở khi
+// tab load xong) — dùng phím tắt lệnh (chrome.commands) làm cổng vào, vì ThinAPTM
+// tự động hoá bằng CDP Input.dispatchKeyEvent (Chrome coi là input thật, giống hệt
+// cơ chế Puppeteer/Playwright dùng) ngay sau khi mở trình duyệt cho tài khoản —
+// nhờ vậy panel tự hiện luôn mà không cần người dùng bấm icon thủ công.
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command !== 'open-panel') return;
+  const windowId = tab && tab.windowId;
+  if (windowId == null) return;
+  chrome.sidePanel.open({ windowId }).catch(() => {});
+});
+
 function ensureInitialized() {
   if (!initializationPromise) {
     initializationPromise = initialize().catch((error) => {

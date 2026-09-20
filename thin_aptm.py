@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.33"
+APP_VERSION = "ThinAPTM 1.2.34"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -257,12 +257,14 @@ UNUSUAL_LADDER = [600]  # UNUSUAL_ACTIVITY → cách ly 10 PHÚT CỐ ĐỊNH, K
 # 1 luồng / 0.5 video/phút (chậm gấp ~7 lần ngưỡng an toàn) mà VẪN bị gắn cờ sau 5 phút → tốc độ
 # không phải nguyên nhân, nên phạt nặng dần chỉ mất throughput chứ không ngăn được gắn cờ.
 UNUSUAL_RESET = 2 * 3600        # êm 2 giờ thì bậc thang nghỉ quay về lần 1
-IP_BURN_THRESHOLD = 3           # bị gắn cờ >= 3 lần trong cùng cửa sổ UNUSUAL_RESET (2h) → nghi
-                                 # IP hiện tại đã "cháy" (Google đánh dấu theo IP, không chỉ theo
-                                 # tài khoản) → tự xoay proxy khác + đăng nhập lại. THỬ NGHIỆM,
-                                 # dựa trên 1 lần quan sát thực tế (IP cũ dính 3-4 lần/~1h20p rồi
-                                 # liên tục; IP mới chạy sạch 37p/68 video) — không phải số chính
-                                 # thức, chỉnh nếu thấy phản ứng quá sớm/muộn.
+IP_BURN_THRESHOLD = 5           # bị gắn cờ >= 5 lần trong cùng cửa sổ UNUSUAL_RESET (2h) → nghi
+                                 # IP hiện tại đã "cháy" → tự xoay proxy khác. Trước là 3 — dữ liệu
+                                 # 1 đêm chạy cho thấy tài khoản xoay/đăng nhập lại NHIỀU LẦN trong
+                                 # ngày còn bị gắn cờ dồn dập hơn tài khoản ít xoay dù cùng ngưỡng
+                                 # (mỗi lần đăng nhập lại là 1 tín hiệu "thiết bị/vị trí lạ" riêng,
+                                 # tự cộng dồn nghi ngờ cho TÀI KHOẢN, không chỉ IP) → nới ngưỡng để
+                                 # giảm số lần phải xoay/đăng nhập lại. THỬ NGHIỆM, chỉnh nếu thấy
+                                 # phản ứng quá sớm/muộn.
 IP_ROTATE_COOLDOWN = 300        # tối thiểu giữa 2 lần thử xoay IP cho cùng 1 tài khoản (tránh
                                  # dồn dập gọi lại nếu lần xoay trước thất bại/hết proxy)
 # --- Circuit Breakers toàn cục (v1.0.6) ---
@@ -2533,6 +2535,10 @@ class App(ctk.CTk):
                             _apply_acc_email(a, em, email)
                             if b:
                                 self._log(f"✅ [Health Check] {email}: profile re-login thành công! (không cần password)")
+                                for _st in (self._sv_pool_states or []):
+                                    if _st.email == email:
+                                        _st._relaunch_fail_streak = 0
+                                        _st._last_relaunch_attempt = 0.0
                             else:
                                 self._log(f"⚠️ [Health Check] {email}: có cookie mới nhưng không dùng được.")
                                 with still_dead_lock: still_dead.append(a)
@@ -2578,6 +2584,15 @@ class App(ctk.CTk):
                                 _apply_acc_email(a, em, email)
                                 if b:
                                     self._log(f"✅ [Health Check] {email}: password re-login thành công!")
+                                    # Reset "streak thất bại mở trình duyệt" — nếu không, tài khoản
+                                    # vừa có cookie mới VẪN phải chờ tới 30p mới được thử mở lại
+                                    # (đã gặp thực tế: cookie sống nhưng bridge vẫn đứng im do
+                                    # _sv_auto_relaunch_ext_browser tự khoá cooldown dài từ TRƯỚC
+                                    # khi cookie này còn chết, Health Check không hề biết mà gỡ).
+                                    for _st in (self._sv_pool_states or []):
+                                        if _st.email == email:
+                                            _st._relaunch_fail_streak = 0
+                                            _st._last_relaunch_attempt = 0.0
                                 else:
                                     self._log(f"⚠️ [Health Check] {email}: có cookie mới nhưng không dùng được.")
                             else:
@@ -4277,8 +4292,8 @@ class App(ctk.CTk):
                                 self._log(f"  ⚠️ {st.email[:16]}: ảnh đầu vào vi phạm chính sách Google")
                                 return ("fail", "vi phạm cs")
                             if ref_mid == "throttle":
-                                st.rest(60, "throttle")
-                                self._log(f"  ⏳ {st.email[:16]}: upload bị throttle (Extension) → nghỉ 60s")
+                                rest_s = st.on_upload_throttle()
+                                self._log(f"  ⏳ {st.email[:16]}: upload bị throttle (Extension) → nghỉ {int(rest_s)}s (lần {st.upload_throttle_streak})")
                                 return "retry_soft"
                             if not ref_mid or ref_mid in ("net_fail", "forbidden"):
                                 self._log(f"  ❌ {st.email[:16]}: upload lỗi (Extension): {ref_mid}")
@@ -6217,7 +6232,7 @@ class App(ctk.CTk):
                                 if ev: ev.set()
                             return ("fail", "vi phạm cs")
                         if mid == "throttle":
-                            st.rest(60, "throttle")
+                            st.on_upload_throttle()
                             with cache_lock:
                                 ev = model_uploading_locks.pop((st.email, model_img), None)
                                 if ev: ev.set()
@@ -6247,7 +6262,7 @@ class App(ctk.CTk):
                     if product_mid == "vi phạm cs":
                         return ("fail", "vi phạm cs")
                     if product_mid == "throttle":
-                        st.rest(60, "throttle")
+                        st.on_upload_throttle()
                         return "retry_soft"
                     if not product_mid or product_mid in ("forbidden", "net_fail"):
                         return ("fail", "Upload ảnh SP lỗi")
@@ -6591,7 +6606,7 @@ class App(ctk.CTk):
                             st.release_upload()
                         if not comp_mid or comp_mid in ("forbidden", "throttle", "net_fail", "vi phạm cs"):
                             if comp_mid == "vi phạm cs": return ("fail", "vi phạm cs")
-                            if comp_mid == "throttle": st.rest(60, "throttle")
+                            if comp_mid == "throttle": st.on_upload_throttle()
                             return "retry_soft"
                         st.on_upload_ok()
                     else:
@@ -8956,6 +8971,7 @@ class App(ctk.CTk):
             # Stuck worker detector: phát hiện worker kẹt > 10 phút
             def _stuck_detector():
                 worker_last_activity = {}  # email -> last_wins+fails
+                stuck_streak = {}          # email -> so lan kiem tra lien tiep khong tien trien
                 while not done_flag[0] and not self._sv_stop_flag:
                     time.sleep(300)  # kiểm tra mỗi 5 phút
                     if done_flag[0] or self._sv_stop_flag:
@@ -8968,7 +8984,21 @@ class App(ctk.CTk):
                             continue
                         if total == prev and st.busy > 0 and not st.is_circuit_broken() and st.rest_remaining() <= 0:
                             # TK có busy > 0 nhưng không tạo thêm video nào trong 5 phút
-                            self._sv_log_msg(f"  ⚠️ [Stuck?] {st.email[:16]}: busy={st.busy} nhưng 5 phút không có output → có thể kẹt")
+                            n = stuck_streak.get(st.email, 0) + 1
+                            stuck_streak[st.email] = n
+                            self._sv_log_msg(f"  ⚠️ [Stuck?] {st.email[:16]}: busy={st.busy} nhưng 5 phút không có output → có thể kẹt (lần {n} liên tiếp)")
+                            # Kẹt 2 lần kiểm tra liên tiếp = đứng im >= 10 phút dù vẫn "busy" — không
+                            # phải báo giả kiểu vừa mất-kết-nối-vừa-mở-lại (những ca đó tự thoát ở
+                            # lần kiểm tra kế). Đã gặp thực tế: proxy chập chờn khiến Chrome hiện hộp
+                            # thoại xin user/pass proxy — không ai nhập được vì chạy tự động, đứng im
+                            # vô thời hạn không tự thoát. Coi như IP/proxy cháy, xử lý bằng đúng cơ
+                            # chế xoay proxy đã có (không cần đăng nhập lại — xem _sv_try_rotate_burned_ip).
+                            if n >= 2:
+                                self._sv_log_msg(f"  🔥 [{st.email[:16]}] Kẹt >= 10 phút liên tục → nghi proxy chết/chập chờn, tự xoay proxy...")
+                                stuck_streak[st.email] = 0
+                                self._sv_try_rotate_burned_ip(st)
+                        else:
+                            stuck_streak[st.email] = 0
                         worker_last_activity[st.email] = total
             threading.Thread(target=_stuck_detector, daemon=True).start()
 
@@ -9110,8 +9140,12 @@ class App(ctk.CTk):
                         self._sv_log_msg(f"  ⚠️ [{st.email[:12]}] Ảnh SP vi phạm chính sách Google")
                         return ("fail", "vi phạm cs")
                     if mid == "throttle":
-                        st.rest(60, "throttle")
-                        self._sv_log_msg(f"  ⏳ [{st.email[:12]}] Upload bị throttle/unusual (Extension) → nghỉ 60s")
+                        # Trước đây nghỉ cố định 60s, không tăng dần — dính liên tục thì lặp mãi
+                        # đúng 60s không bao giờ thoát (thấy thật: vovantrung 02:41-02:48, 8 lần
+                        # liên tiếp). Dùng chung on_upload_throttle() với chế độ API: bậc thang
+                        # 15→22→34→51→76→90s + tự hạ 1 luồng sau 2 lần liên tiếp.
+                        rest_s = st.on_upload_throttle()
+                        self._sv_log_msg(f"  ⏳ [{st.email[:12]}] Upload bị throttle/unusual (Extension) → nghỉ {int(rest_s)}s (lần {st.upload_throttle_streak})")
                         return "retry_soft"
                     if not mid or mid in ("net_fail", "forbidden"):
                         self._sv_log_msg(f"  ❌ Upload lỗi (Extension): {mid}")
@@ -9819,10 +9853,16 @@ class App(ctk.CTk):
         """Bị gắn cờ UNUSUAL_ACTIVITY >= IP_BURN_THRESHOLD lần trong cùng 1 cửa sổ 2h → nghi IP
         hiện tại đã "cháy" (đã xác nhận thực nghiệm: đổi hẳn IP là hết gắn cờ, đổi tốc độ không
         ăn thua — xem 1 phần mềm khác dùng cửa sổ cố định 10p cho UNUSUAL, không leo thang, cũng
-        không hề nói tới việc hạ tốc độ). Tự động: đóng trình duyệt cũ, xoay sang proxy KHÁC, xoá
-        profile Chrome cũ (gắn với IP cháy — dùng cookie mới trên IP mới mà giữ profile cũ sẽ lại
-        dính CookieMismatch, đã gặp thực tế), đăng nhập lại từ đầu qua IP mới, rồi để cơ chế tự
-        mở lại trình duyệt (đã có) tự lo phần mở lại Extension mode."""
+        không hề nói tới việc hạ tốc độ). Tự động: đóng trình duyệt cũ, xoay sang proxy KHÁC.
+
+        KHÔNG đăng nhập lại bằng password/2FA nữa (khác bản trước) — GIỮ NGUYÊN profile Chrome +
+        phiên đăng nhập thật đang sống, để cơ chế tự mở lại trình duyệt (đã có) mở Chrome với
+        proxy MỚI nhưng profile CŨ, Extension mode tự nhận ra "phiên Chrome thật đã có sẵn" và
+        dùng luôn, không cần tiêm cookie mới. Lý do đổi: dữ liệu thực tế 1 đêm cho thấy tài khoản
+        phải đăng nhập lại (password+2FA) càng nhiều lần trong ngày càng bị gắn cờ dồn dập hơn —
+        mỗi lần đăng nhập lại là 1 tín hiệu "thiết bị/vị trí lạ" tự cộng dồn nghi ngờ cho CHÍNH
+        TÀI KHOẢN đó, không chỉ IP. Đánh đổi: có rủi ro gặp lại CookieMismatch (lý do bản trước
+        chọn xoá profile + đăng nhập lại) — cần theo dõi thêm."""
         email = st.email
         acc = st.acc
         if getattr(st, "_ip_rotating", False):
@@ -9839,11 +9879,6 @@ class App(ctk.CTk):
             return
         if not self.proxy_pool or not self.proxy_pool.has_proxies():
             return
-        if not acc.get("password"):
-            self._sv_log_msg(f"  ⚠️ [{email[:16]}] IP nghi ngờ đã cháy (gắn cờ {st.unusual_count} lần/2h) "
-                              f"nhưng chưa có password lưu sẵn → không tự đăng nhập lại qua IP mới được. "
-                              f"Bấm ✏️ nhập password cho tài khoản này.")
-            return
         if not self._acquire_profile(email):
             return  # có thao tác khác đang giữ profile -> nhường, thử lại ở lần gắn cờ sau
         st._ip_rotating = True
@@ -9852,7 +9887,7 @@ class App(ctk.CTk):
             try:
                 old_proxy_disp = (acc.get("proxy") or "?").split("@")[-1][:30]
                 self._sv_log_msg(f"  🔥 [{email[:16]}] Bị gắn cờ {st.unusual_count} lần trong 2h → nghi IP đã cháy. "
-                                  f"Tự động xoay proxy mới + đăng nhập lại...")
+                                  f"Tự động xoay proxy mới (giữ nguyên phiên đăng nhập)...")
                 try:
                     import recaptcha_farm as RF
                     RF.get_extension_pool().stop_account(email)
@@ -9873,37 +9908,19 @@ class App(ctk.CTk):
                         save_settings(self.settings)
                     except Exception as _ex:
                         # Lưu flagged-proxy chỉ là "nice to have" — KHÔNG được để lỗi ở đây (thiếu
-                        # self.settings, lỗi ghi đĩa...) làm bỏ dở phần đăng nhập lại thật sự quan
-                        # trọng hơn phía dưới (đã gặp thực tế qua test: 1 AttributeError ở đây từng
-                        # làm toàn bộ hàm thoát sớm, tài khoản kẹt ở trạng thái dở dang).
+                        # self.settings, lỗi ghi đĩa...) làm bỏ dở phần dưới quan trọng hơn (đã gặp
+                        # thực tế qua test: 1 AttributeError ở đây từng làm toàn bộ hàm thoát sớm).
                         self._sv_log_msg(f"  ⚠️ [{email[:16]}] Không lưu được danh sách proxy cháy: {_ex}")
                 if not new_proxy:
                     self._sv_log_msg(f"  ❌ [{email[:16]}] Không còn proxy khác trong pool để xoay — hết proxy dự phòng.")
                     return
+                # KHÔNG đụng acc["cookie"]/acc["status"]/profile Chrome — giữ nguyên phiên đăng
+                # nhập thật đang sống, chỉ đổi IP thoát ra ngoài.
                 acc["proxy"] = new_proxy
-                acc["cookie"] = ""
-                acc["status"] = "new"
                 save_accs(self.accounts)
                 new_proxy_disp = new_proxy.split("@")[-1][:30] if "@" in new_proxy else new_proxy[:30]
                 self._sv_log_msg(f"  🔄 [{email[:16]}] Đã xoay proxy: {old_proxy_disp} → {new_proxy_disp}")
 
-                profile_dir = _profile_dir(email)
-                if os.path.isdir(profile_dir):
-                    import shutil
-                    shutil.rmtree(profile_dir, ignore_errors=True)
-
-                ck = L.login_get_cookie(email, acc["password"], acc.get("totp", ""),
-                                         profile_dir=profile_dir,
-                                         log=lambda m: self._sv_log_msg(f"  [Xoay IP] {m}"),
-                                         proxy=new_proxy)
-                if not ck:
-                    self._sv_log_msg(f"  ❌ [{email[:16]}] Đăng nhập lại qua IP mới thất bại.")
-                    return
-                b, em = _bearer_and_email(ck, proxy=ProxyPool._to_dict(new_proxy))
-                acc["cookie"] = ck
-                acc["status"] = "ok" if b else "dead"
-                if em:
-                    acc["email"] = em
                 # Reset bộ điều tốc — hình phạt cũ gắn với IP cháy, không mang sang IP mới sạch.
                 acc["rate_gov"] = {"limit": RATE_START, "ceiling": None, "last_unusual": 0.0, "unusual_count": 0}
                 acc["upload_threads"] = UPLOAD_MIN_THREADS + 1
@@ -9912,8 +9929,8 @@ class App(ctk.CTk):
                 st.rate_limit = RATE_START
                 st.rate_ceiling = None
                 self.after(0, self._refresh_acc)
-                self._sv_log_msg(f"  ✅ [{email[:16]}] Đăng nhập lại thành công qua IP mới — đã reset bộ điều tốc. "
-                                  f"Trình duyệt Extension sẽ tự mở lại trong giây lát.")
+                self._sv_log_msg(f"  ✅ [{email[:16]}] Đã xoay proxy xong — đã reset bộ điều tốc. "
+                                  f"Trình duyệt Extension sẽ tự mở lại (cùng phiên đăng nhập cũ) trong giây lát.")
             except Exception as ex:
                 self._sv_log_msg(f"  ⚠️ [{email[:16]}] Lỗi khi xoay IP: {ex}")
             finally:

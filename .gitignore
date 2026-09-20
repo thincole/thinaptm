@@ -1,6 +1,7 @@
 # Private & Configs
 accounts.json
 settings.json
+seedvis_settings.json
 uploaded_image_cache.json
 *.tmp
 

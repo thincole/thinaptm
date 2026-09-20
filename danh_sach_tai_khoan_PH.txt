@@ -1,0 +1,161 @@
+TỔNG CỘNG: 157 TÀI KHOẢN PH (Hoạt động: 126, Tắt: 31)
+==========================================================================================
+STT   | Username        | Trạng thái   | Proxy                                             
+------------------------------------------------------------------------------------------
+1     | PH0101          | Hoạt động    | proxy12123.pproxy.id.vn:13227:ava859:oda2mju0odez 
+2     | PH0102          | Hoạt động    | proxy12123.pproxy.id.vn:13227:ava859:oda2mju0odez 
+3     | PH0103          | Hoạt động    | proxy03007.cproxy.online:42204:liam82:nji0nzmwnzi5
+4     | PH0104          | Hoạt động    | proxy12067.pproxy.id.vn:43089:ava272:mzkwmtg4mtu3 
+5     | PH0105          | Hoạt động    | proxy07102.jproxy.online:59623:liam82:nji0nzmwnzi5
+6     | PH008           | Hoạt động    | proxy04110.gproxy.online:4034:emma720:mdq3mdu2ntm4
+7     | PH009           | Hoạt động    | proxy04151.kproxy.online:12683:william439:nzmxntc2ndkxmw==
+8     | PH011           | Hoạt động    | proxy04224.kproxy.online:26789:noah426:mzmynzgxmdk2
+9     | PH019           | Hoạt động    | proxy05127.vproxy.online:28742:olivia242:otqxotg4nzk4
+10    | PH0107          | Hoạt động    | proxy05151.vproxy.online:58412:william258:mjq3mda3ndi2
+11    | PH022           | Hoạt động    | proxy06064.qproxy.online:48992:william439:nzmxntc2ndkxmw==
+12    | PH0214          | Hoạt động    | proxy05239.vproxy.online:1875:william258:mjq3mda3ndi2
+13    | PH0220          | Hoạt động    | proxy06064.qproxy.online:48992:william439:nzmxntc2ndkxmw==
+14    | PH0221          | Hoạt động    | proxy07102.jproxy.online:59623:liam82:nji0nzmwnzi5
+15    | PH0223          | Hoạt động    | proxy02063.aproxy.online:59685:liam82:nji0nzmwnzi5
+16    | PH0224          | Hoạt động    | proxy10180.eproxy.online:45218:olivia289:mjc5nzuynje3mw==
+17    | PH0225          | Hoạt động    | proxy14060.yproxy.id.vn:60464:ava859:oda2mju0odez 
+18    | PH0226          | Hoạt động    | proxy12123.pproxy.id.vn:13227:ava859:oda2mju0odez 
+19    | PH0228          | Hoạt động    | proxy11030.kproxy.online:55476:ava859:oda2mju0odez
+20    | PH0109          | Hoạt động    | proxy11221.zproxy.online:26335:noah426:mzmynzgxmdk2
+21    | PH0110          | Hoạt động    | proxy15106.rproxy.id.vn:54983:ava859:oda2mju0odez 
+22    | PH0111          | Hoạt động    | proxy12123.pproxy.id.vn:13227:ava859:oda2mju0odez 
+23    | PH0112          | Hoạt động    | proxy13040.iproxy.id.vn:58413:ava859:oda2mju0odez 
+24    | PH0116          | Hoạt động    | proxy13040.iproxy.id.vn:58413:ava859:oda2mju0odez 
+25    | PH030           | Hoạt động    | proxy13088.iproxy.id.vn:24119:ava859:oda2mju0odez 
+26    | PH035           | Hoạt động    | proxy15078.rproxy.id.vn:1744:liam82:nji0nzmwnzi5  
+27    | PH036           | Hoạt động    | proxy13220.uproxy.id.vn:23029:sophia637:mzy3mti0otg2
+28    | PH037           | Hoạt động    | proxy13225.uproxy.id.vn:18235:william439:nzmxntc2ndkxmw==
+29    | PH040           | Hoạt động    | proxy14060.yproxy.id.vn:60464:ava859:oda2mju0odez 
+30    | PH048           | Hoạt động    | proxy15078.rproxy.id.vn:1744:liam82:nji0nzmwnzi5  
+31    | PH0229          | Hoạt động    | proxy15088.rproxy.id.vn:38358:ava859:oda2mju0odez 
+32    | PH0230          | Hoạt động    | proxy11221.zproxy.online:26335:noah426:mzmynzgxmdk2
+33    | PH0231          | Hoạt động    | proxy11030.kproxy.online:55476:ava859:oda2mju0odez
+34    | PH0232          | Hoạt động    | proxy11030.kproxy.online:55476:ava859:oda2mju0odez
+35    | PH0235          | Hoạt động    | proxy03007.cproxy.online:42204:liam82:nji0nzmwnzi5
+36    | PH0236          | Hoạt động    | proxy03206.eproxy.online:2461:olivia465:ody1otm4ndk4
+37    | PH0117          | Hoạt động    | proxy03219.eproxy.online:36567:sophia637:mzy3mti0otg2
+38    | PH0118          | Hoạt động    | proxy04110.gproxy.online:4034:emma720:mdq3mdu2ntm4
+39    | PH0119          | Hoạt động    | proxy04151.kproxy.online:12683:william439:nzmxntc2ndkxmw==
+40    | PH0120          | Hoạt động    | proxy04224.kproxy.online:26789:noah426:mzmynzgxmdk2
+41    | 01PH0201        | Hoạt động    | proxy05127.vproxy.online:28742:olivia242:otqxotg4nzk4
+42    | 01PH0210        | Hoạt động    | proxy05151.vproxy.online:58412:william258:mjq3mda3ndi2
+43    | 01PH0211        | Hoạt động    | proxy05127.vproxy.online:28742:olivia242:otqxotg4nzk4
+44    | 01PH0212        | Hoạt động    | proxy15106.rproxy.id.vn:54983:ava859:oda2mju0odez 
+45    | 01PH0213        | Hoạt động    | proxy06064.qproxy.online:48992:william439:nzmxntc2ndkxmw==
+46    | 01PH0106        | Hoạt động    | proxy07102.jproxy.online:59623:liam82:nji0nzmwnzi5
+47    | 01PH0108        | Hoạt động    | proxy13088.iproxy.id.vn:24119:ava859:oda2mju0odez 
+48    | 01PH0113        | Hoạt động    | proxy10180.eproxy.online:45218:olivia289:mjc5nzuynje3mw==
+49    | 01PH0121        | Hoạt động    | proxy14060.yproxy.id.vn:60464:ava859:oda2mju0odez 
+50    | 01PH0122        | Hoạt động    | proxy07102.jproxy.online:59623:liam82:nji0nzmwnzi5
+51    | 01PH0123        | Hoạt động    | proxy11030.kproxy.online:55476:ava859:oda2mju0odez
+52    | 01PH0125        | Hoạt động    | proxy11221.zproxy.online:26335:noah426:mzmynzgxmdk2
+53    | 01PH0126        | Hoạt động    | proxy03219.eproxy.online:36567:sophia637:mzy3mti0otg2
+54    | 01PH0128        | Hoạt động    | proxy12123.pproxy.id.vn:13227:ava859:oda2mju0odez 
+55    | 01PH0129        | Hoạt động    | proxy12129.oproxy.id.vn:35867:ava859:oda2mju0odez 
+56    | 01PH0130        | Hoạt động    | proxy07102.jproxy.online:59623:liam82:nji0nzmwnzi5
+57    | 01PH0131        | Hoạt động    | proxy13088.iproxy.id.vn:24119:ava859:oda2mju0odez 
+58    | 01PH0132        | Hoạt động    | proxy13093.iproxy.id.vn:27554:liam82:nji0nzmwnzi5 
+59    | 01PH0133        | Hoạt động    | proxy13220.uproxy.id.vn:23029:sophia637:mzy3mti0otg2
+60    | 01PH0134        | Hoạt động    | proxy13225.uproxy.id.vn:18235:william439:nzmxntc2ndkxmw==
+61    | 01PH0135        | Hoạt động    | proxy03206.eproxy.online:2461:olivia465:ody1otm4ndk4
+62    | 01PH0136        | Hoạt động    | proxy15078.rproxy.id.vn:1744:liam82:nji0nzmwnzi5  
+63    | 01PH0137        | Hoạt động    | proxy15088.rproxy.id.vn:38358:ava859:oda2mju0odez 
+64    | 01PH0138        | Hoạt động    | proxy15106.rproxy.id.vn:54983:ava859:oda2mju0odez 
+65    | 01PH0139        | Hoạt động    | proxy13225.uproxy.id.vn:18235:william439:nzmxntc2ndkxmw==
+66    | 01PH0140        | Hoạt động    | proxy15088.rproxy.id.vn:38358:ava859:oda2mju0odez 
+67    | 01PH0141        | Hoạt động    | proxy03007.cproxy.online:42204:liam82:nji0nzmwnzi5
+68    | 01PH0142        | Hoạt động    | proxy03206.eproxy.online:2461:olivia465:ody1otm4ndk4
+69    | 01PH0143        | Hoạt động    | proxy03219.eproxy.online:36567:sophia637:mzy3mti0otg2
+70    | 01PH0145        | Hoạt động    | proxy04110.gproxy.online:4034:emma720:mdq3mdu2ntm4
+71    | 01PH0146        | Hoạt động    | proxy04151.kproxy.online:12683:william439:nzmxntc2ndkxmw==
+72    | 01PH0147        | Hoạt động    | proxy04224.kproxy.online:26789:noah426:mzmynzgxmdk2
+73    | 01PH0148        | Hoạt động    | proxy05127.vproxy.online:28742:olivia242:otqxotg4nzk4
+74    | 01PH0149        | Hoạt động    | proxy05151.vproxy.online:58412:william258:mjq3mda3ndi2
+75    | 01PH0150        | Hoạt động    | proxy15106.rproxy.id.vn:54983:ava859:oda2mju0odez 
+76    | 01PH0151        | Hoạt động    | proxy05239.vproxy.online:1875:william258:mjq3mda3ndi2
+77    | 01PH0152        | Hoạt động    | proxy06064.qproxy.online:48992:william439:nzmxntc2ndkxmw==
+78    | 01PH0153        | Hoạt động    | proxy07102.jproxy.online:59623:liam82:nji0nzmwnzi5
+79    | 01PH0154        | Hoạt động    | proxy10079.bproxy.online:18270:emma720:mdq3mdu2ntm4
+80    | 01PH0155        | Hoạt động    | proxy10180.eproxy.online:45218:olivia289:mjc5nzuynje3mw==
+81    | 01PH0156        | Hoạt động    | proxy05239.vproxy.online:1875:william258:mjq3mda3ndi2
+82    | 01PH0158        | Hoạt động    | proxy05151.vproxy.online:58412:william258:mjq3mda3ndi2
+83    | 01PH0159        | Hoạt động    | proxy11030.kproxy.online:55476:ava859:oda2mju0odez
+84    | 01PH0161        | Hoạt động    | proxy11221.zproxy.online:26335:noah426:mzmynzgxmdk2
+85    | 01PH0162        | Hoạt động    | proxy12067.pproxy.id.vn:43089:ava272:mzkwmtg4mtu3 
+86    | 01PH0163        | Hoạt động    | proxy12123.pproxy.id.vn:13227:ava859:oda2mju0odez 
+87    | M1PH1003        | Hoạt động    | proxy12129.oproxy.id.vn:35867:ava859:oda2mju0odez 
+88    | M1PH1004        | Hoạt động    | proxy02063.aproxy.online:59685:liam82:nji0nzmwnzi5
+89    | M1PH1005        | Hoạt động    | proxy13088.iproxy.id.vn:24119:ava859:oda2mju0odez 
+90    | M1PH1006        | Hoạt động    | proxy13093.iproxy.id.vn:27554:liam82:nji0nzmwnzi5 
+91    | M1PH1007        | Hoạt động    | proxy13220.uproxy.id.vn:23029:sophia637:mzy3mti0otg2
+92    | M1PH1008        | Hoạt động    | proxy05127.vproxy.online:28742:olivia242:otqxotg4nzk4
+93    | M1PH1009        | Hoạt động    | proxy13093.iproxy.id.vn:27554:liam82:nji0nzmwnzi5 
+94    | M1PH1010        | Hoạt động    | proxy03206.eproxy.online:2461:olivia465:ody1otm4ndk4
+95    | M1PH1011        | Hoạt động    | proxy15088.rproxy.id.vn:38358:ava859:oda2mju0odez 
+96    | M1PH1014        | Hoạt động    | proxy15106.rproxy.id.vn:54983:ava859:oda2mju0odez 
+97    | M1PH1015        | Hoạt động    | proxy11221.zproxy.online:26335:noah426:mzmynzgxmdk2
+98    | M1PH1016        | Hoạt động    | proxy03206.eproxy.online:2461:olivia465:ody1otm4ndk4
+99    | M1PH1019        | Hoạt động    | proxy03007.cproxy.online:42204:liam82:nji0nzmwnzi5
+100   | M1PH1020        | Hoạt động    | proxy03206.eproxy.online:2461:olivia465:ody1otm4ndk4
+101   | M1PH1021        | Hoạt động    | proxy13225.uproxy.id.vn:18235:william439:nzmxntc2ndkxmw==
+102   | M1PH1022        | Hoạt động    | proxy04224.kproxy.online:26789:noah426:mzmynzgxmdk2
+103   | M1PH1023        | Hoạt động    | proxy04151.kproxy.online:12683:william439:nzmxntc2ndkxmw==
+104   | M1PH1024        | Hoạt động    | proxy06064.qproxy.online:48992:william439:nzmxntc2ndkxmw==
+105   | M1PH1025        | Hoạt động    | proxy05127.vproxy.online:28742:olivia242:otqxotg4nzk4
+106   | M1PH1026        | Hoạt động    | proxy05151.vproxy.online:58412:william258:mjq3mda3ndi2
+107   | M1PH1027        | Hoạt động    | proxy15088.rproxy.id.vn:38358:ava859:oda2mju0odez 
+108   | M1PH1028        | Hoạt động    | proxy05239.vproxy.online:1875:william258:mjq3mda3ndi2
+109   | M1PH1029        | Hoạt động    | proxy06064.qproxy.online:48992:william439:nzmxntc2ndkxmw==
+110   | M1PH1030        | Hoạt động    | proxy07102.jproxy.online:59623:liam82:nji0nzmwnzi5
+111   | PH3001          | Hoạt động    | 171.246.142.112:27554:liam82:nji0nzmwnzi5         
+112   | PH3002          | Hoạt động    | 171.241.64.63:1744:liam82:nji0nzmwnzi5            
+113   | PH3003          | Tắt          | 171.246.170.64:42204:liam82:nji0nzmwnzi5          
+114   | PH3004          | Hoạt động    | 171.252.44.191:59623:liam82:nji0nzmwnzi5          
+115   | PH3005          | Hoạt động    | 171.250.14.194:59685:liam82:nji0nzmwnzi5          
+116   | PH3008          | Hoạt động    | 123.23.84.221:18235:william439:nzmxntc2ndkxmw==   
+117   | PH3009          | Hoạt động    | 14.231.203.140:12683:william439:nzmxntc2ndkxmw==  
+118   | PH3010          | Tắt          | 14.187.146.38:48992:william439:nzmxntc2ndkxmw==   
+119   | PH3011          | Hoạt động    | 113.188.124.157:2461:olivia465:ody1otm4ndk4       
+120   | PH3012          | Hoạt động    | 14.250.78.117:3889:william439:nzmxntc2ndkxmw==    
+121   | PH3013          | Tắt          | 171.252.43.194:55476:ava859:oda2mju0odez          
+122   | PH3014          | Hoạt động    | 171.246.133.71:24119:ava859:oda2mju0odez          
+123   | PH3015          | Hoạt động    | 171.241.65.217:38358:ava859:oda2mju0odez          
+124   | PH3016          | Hoạt động    | 171.246.142.243:58413:ava859:oda2mju0odez         
+125   | PH3017          | Hoạt động    | 171.241.8.8:54983:ava859:oda2mju0odez             
+126   | PH3018          | Hoạt động    | 171.246.213.231:13227:ava859:oda2mju0odez         
+127   | PH3019          | Hoạt động    | 171.241.52.41:60464:ava859:oda2mju0odez           
+128   | PH3020          | Tắt          | 171.246.248.212:35867:ava859:oda2mju0odez         
+129   | PH3021          | Tắt          | 171.246.253.66:43089:ava272:mzkwmtg4mtu3          
+130   | PH3023          | Tắt          | 171.241.77.140:28742:olivia242:otqxotg4nzk4       
+131   | PH3026          | Tắt          | 123.22.100.10:23029:sophia637:mzy3mti0otg2        
+132   | PH3028          | Tắt          | 14.187.148.89:41475:sophia637:mzy3mti0otg2        
+133   | PH3029          | Tắt          | 123.25.217.131:36567:sophia637:mzy3mti0otg2       
+134   | PH3030          | Tắt          | 14.187.148.200:45218:olivia289:mjc5nzuynje3mw==   
+135   | PH3031          | Tắt          | 171.241.74.18:4034:emma720:mdq3mdu2ntm4           
+136   | PH3032          | Tắt          | 171.226.224.140:18270:emma720:mdq3mdu2ntm4        
+137   | PH3033          | Tắt          | 14.231.242.206:26789:noah426:mzmynzgxmdk2         
+138   | PH3034          | Tắt          | 14.187.139.245:26335:noah426:mzmynzgxmdk2         
+139   | PH3035          | Tắt          | 14.231.185.30:1875:william258:mjq3mda3ndi2        
+140   | PH3036          | Tắt          | 14.231.185.41:57965:william258:mjq3mda3ndi2       
+141   | PH3037          | Tắt          | 14.231.205.94:58412:william258:mjq3mda3ndi2       
+142   | PH3038          | Hoạt động    | 171.246.142.112:27554:liam82:nji0nzmwnzi5         
+143   | PH3041          | Tắt          | 171.241.64.63:1744:liam82:nji0nzmwnzi5            
+144   | PH3042          | Tắt          | 171.246.170.64:42204:liam82:nji0nzmwnzi5          
+145   | PH3043          | Tắt          | 171.252.44.191:59623:liam82:nji0nzmwnzi5          
+146   | PH3044          | Tắt          | 171.250.14.194:59685:liam82:nji0nzmwnzi5          
+147   | PH3045          | Tắt          | 123.23.84.221:18235:william439:nzmxntc2ndkxmw==   
+148   | PH3046          | Tắt          | 14.231.203.140:12683:william439:nzmxntc2ndkxmw==  
+149   | PH3047          | Tắt          | 14.187.146.38:48992:william439:nzmxntc2ndkxmw==   
+150   | PH3048          | Tắt          | 113.188.124.157:2461:olivia465:ody1otm4ndk4       
+151   | PH3049          | Tắt          | 14.250.78.117:3889:william439:nzmxntc2ndkxmw==    
+152   | PH3050          | Tắt          | 171.252.43.194:55476:ava859:oda2mju0odez          
+153   | PH3051          | Tắt          | 171.246.133.71:24119:ava859:oda2mju0odez          
+154   | PH3052          | Hoạt động    | 171.241.65.217:38358:ava859:oda2mju0odez          
+155   | PH3054          | Tắt          | 171.246.142.243:58413:ava859:oda2mju0odez         
+156   | PH3057          | Tắt          | 171.241.8.8:54983:ava859:oda2mju0odez             
+157   | PH3059          | Tắt          | 171.246.213.231:13227:ava859:oda2mju0odez         
