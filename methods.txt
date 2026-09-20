@@ -1,0 +1,85 @@
+def _sp_restore_line_colors(self):
+        """Khôi phục màu sắc cho các dòng đã có trạng thái (✅/❌) khi load lại."""
+        try:
+            text = self._sp_products.get("1.0", "end").strip()
+            for i, line in enumerate(text.splitlines()):
+                tk_line = i + 1
+                if line.startswith("✅ "):
+                    self._sp_products.tag_add("status_success", f"{tk_line}.0", f"{tk_line}.end")
+                elif line.startswith("❌ "):
+                    self._sp_products.tag_add("status_error", f"{tk_line}.0", f"{tk_line}.end")
+        except Exception:
+            pass
+
+    def _sp_update_count(self):
+        text = self._sp_products.get("1.0", "end").strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        # Đếm trạng thái
+        total = len(lines)
+        done = sum(1 for l in lines if l.startswith("✅"))
+        fail = sum(1 for l in lines if l.startswith("❌"))
+        pending = total - done - fail
+        if done or fail:
+            self._sp_prod_count.configure(text=f"{total} SP (✅{done} ❌{fail} ⏳{pending})")
+        else:
+            self._sp_prod_count.configure(text=f"{total} SP")
+
+    def _sp_clear_status(self):
+        """Xóa trạng thái ✅/❌/⏳ khỏi tất cả các dòng để chạy lại."""
+        if not messagebox.askyesno("❓ Xác nhận", "Xóa trạng thái ✅/❌/⏳ của tất cả dòng?\nCác dòng sẽ quay về trạng thái chưa chạy."):
+            return
+        text = self._sp_products.get("1.0", "end").strip()
+        lines = text.splitlines()
+        new_lines = [self._sp_strip_status(l) for l in lines]
+        self._sp_products.delete("1.0", "end")
+        self._sp_products.insert("1.0", "\n".join(new_lines))
+        # Xóa tất cả tag màu
+        for t in ("status_success", "status_error", "status_running"):
+            self._sp_products.tag_remove(t, "1.0", "end")
+        self._sp_update_count()
+        self._sp_log_msg("🔄 Đã xóa trạng thái tất cả dòng — sẵn sàng chạy lại")
+
+    def _sp_clear_success(self):
+        """Xóa các dòng đã thành công (✅) khỏi danh sách."""
+        text = self._sp_products.get("1.0", "end").strip()
+        lines = text.splitlines()
+        kept = [l for l in lines if not l.startswith("✅ ")]
+        removed = len(lines) - len(kept)
+        self._sp_products.delete("1.0", "end")
+        if kept:
+            self._sp_products.insert("1.0", "\n".join(kept))
+        # Restore màu cho các dòng còn lại
+        self._sp_restore_line_colors()
+        self._sp_update_count()
+        self._sp_log_msg(f"✅ Đã xóa {removed} dòng thành công, còn {len(kept)} dòng")
+
+    def _sp_clear_all(self):
+        """Xóa toàn bộ danh sách sản phẩm + preview."""
+        if not messagebox.askyesno("⚠️ Xác nhận xóa hết", "Xóa TOÀN BỘ danh sách sản phẩm?\nHành động này không thể hoàn tác."):
+            return
+        self._sp_products.delete("1.0", "end")
+        self._sp_img_folder = ""
+        self._sp_update_count()
+        # Panel preview là tùy chọn (có thể chưa được dựng trong layout) → chỉ dọn khi tồn tại
+        if hasattr(self, "_sp_preview_scroll"):
+            for w in self._sp_preview_scroll.winfo_children():
+                w.destroy()
+            self._sp_thumb_cache = []
+            ctk.CTkLabel(self._sp_preview_scroll, text="(Chưa có SP)",
+                         font=("", 11), text_color=T2).pack(pady=20)
+        self._sp_log_msg("🗑 Đã xóa toàn bộ danh sách SP")
+
+    def _sp_resolve_img(self, img_path):
+        """Resolve tên file thành full path nếu cần (dùng _sp_img_folder)."""
+        if not img_path:
+            return ""
+        if os.path.isabs(img_path) and os.path.isfile(img_path):
+            return img_path
+        # Thử ghép với thư mục ảnh
+        if self._sp_img_folder:
+            full = os.path.join(self._sp_img_folder, img_path)
+            if os.path.isfile(full):
+                return full
+        return img_path  # trả nguyên nếu không resolve được
+
+    def _sp_import_folder

@@ -23,7 +23,7 @@ try:
 except Exception:
     SV = None
 
-APP_VERSION = "ThinAPTM 1.2.34"
+APP_VERSION = "ThinAPTM 1.2.35"
 ACC_FILE = os.path.join(HERE, "accounts.json")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 ctk.set_appearance_mode("light"); ctk.set_default_color_theme("blue")
@@ -267,6 +267,12 @@ IP_BURN_THRESHOLD = 5           # bị gắn cờ >= 5 lần trong cùng cửa s
                                  # phản ứng quá sớm/muộn.
 IP_ROTATE_COOLDOWN = 300        # tối thiểu giữa 2 lần thử xoay IP cho cùng 1 tài khoản (tránh
                                  # dồn dập gọi lại nếu lần xoay trước thất bại/hết proxy)
+FLAGGED_PROXY_TTL = 6 * 3600    # proxy "cháy" tự hết hạn sau 6h (không phải mãi mãi) — dữ liệu
+                                 # thực tế 1 ngày chạy 2 tài khoản: pool 23 proxy cháy hết 22/23
+                                 # chỉ trong ~21 tiếng vì trước đây flag vĩnh viễn, không proxy nào
+                                 # được "nguội" lại để dùng tiếp, dồn về đúng vài proxy còn lại
+                                 # (ping-pong qua lại) và cắm cờ càng lúc càng nhanh. 6h ước theo
+                                 # cùng nhịp CEIL_RELAX_EVERY đã dùng ở chỗ khác trong file này.
 # --- Circuit Breakers toàn cục (v1.0.6) ---
 MODEL_DENIED_CIRCUIT = 10       # v1.0.6: 10 lỗi MODEL_ACCESS_DENIED → dừng toàn bộ queue
 DOWNLOAD_FAIL_CIRCUIT = 20      # v1.0.6: 20 download thất bại liên tiếp → dừng queue
@@ -298,22 +304,49 @@ class ProxyPool:
         # (chỉ tồn tại trong bộ nhớ, mất khi app khởi động lại). Thiếu cái này đã gặp thực tế:
         # rotate() chọn bừa ngay ĐÚNG proxy vừa bị đánh dấu cháy cho tài khoản trước đó, chỉ vì lúc
         # app khởi động lại pool coi nó là "chưa ai giữ" như bình thường.
-        self._flagged = set(flagged or [])
+        # {proxy_str: thời điểm bị đánh dấu cháy} — KHÔNG phải set nữa, để tự hết hạn sau
+        # FLAGGED_PROXY_TTL (trước đây cháy là vĩnh viễn, gặp thực tế: chạy 2 TK ~21 tiếng
+        # là cháy hết 22/23 proxy trong pool, dồn về vài proxy cháy sẵn ping-pong qua lại).
+        self._flagged = {}
+        if flagged:
+            if isinstance(flagged, dict):
+                self._flagged = {str(p): float(t) for p, t in flagged.items()}
+            else:
+                # Định dạng cũ (list phẳng, không có mốc thời gian) — coi như đã cháy từ
+                # TRƯỚC ĐÓ RẤT LÂU nên hết hạn ngay, giải phóng luôn thay vì bắt đầu đếm
+                # lại 6h mới từ bây giờ (đa số entry cũ trong settings.json đã hàng giờ rồi).
+                _expired = time.time() - FLAGGED_PROXY_TTL
+                self._flagged = {str(p): _expired for p in flagged}
         self.PROXY_COOL_SEC = 60 # proxy bị 429 không được gán lại cho TK khác trong 60s
         if proxy_lines:
             self.load(proxy_lines)
 
     def mark_flagged(self, proxy_str):
         """Đánh dấu 1 proxy là đã biết gây cháy (UNUSUAL_ACTIVITY lặp lại) — rotate()/assign() sẽ
-        tránh chọn lại nó cho BẤT KỲ tài khoản nào khác, trừ khi không còn proxy nào khác."""
+        tránh chọn lại nó cho BẤT KỲ tài khoản nào khác trong FLAGGED_PROXY_TTL tới, trừ khi
+        không còn proxy nào khác."""
         if proxy_str:
             with self._lock:
-                self._flagged.add(proxy_str)
+                self._flagged[proxy_str] = time.time()
+
+    def _is_flagged_locked(self, proxy_str):
+        """Còn đang cháy (chưa quá FLAGGED_PROXY_TTL) hay đã tự nguội? PHẢI gọi trong self._lock.
+        Tự dọn luôn entry đã hết hạn (không cần vòng dọn riêng)."""
+        ts = self._flagged.get(proxy_str)
+        if ts is None:
+            return False
+        if time.time() - ts >= FLAGGED_PROXY_TTL:
+            del self._flagged[proxy_str]
+            return False
+        return True
 
     def get_flagged(self):
-        """Danh sách proxy đã đánh dấu cháy — để App lưu vào settings.json."""
+        """{proxy: thời điểm cháy} của các proxy CÒN đang trong hạn cháy — để App lưu vào
+        settings.json. Tự dọn các entry đã nguội trong lúc trả về."""
         with self._lock:
-            return sorted(self._flagged)
+            now = time.time()
+            self._flagged = {p: t for p, t in self._flagged.items() if now - t < FLAGGED_PROXY_TTL}
+            return dict(self._flagged)
 
     def load(self, proxy_lines):
         """Load danh sách proxy từ list string (mỗi phần tử 1 proxy). Tự động lọc bỏ các dòng proxy lỗi, cắt cụt (vd '97:...')."""
@@ -404,14 +437,15 @@ class ProxyPool:
             if email in self._assigned and self._assigned[email] not in self._dead:
                 return self._assigned[email]
             # Tìm proxy chưa ai dùng + chưa dead + chưa cooling + CHƯA từng bị đánh dấu cháy
+            # (hoặc đã cháy nhưng nguội quá FLAGGED_PROXY_TTL rồi)
             for p in self._alive:
-                if p not in self._reverse and p not in self._cooldown and p not in self._flagged:
+                if p not in self._reverse and p not in self._cooldown and not self._is_flagged_locked(p):
                     self._assigned[email] = p
                     self._reverse[p] = email
                     return p
             # Fallback: nếu tất cả (chưa cháy) đều cooling, bỏ qua cooldown nhưng vẫn né proxy cháy
             for p in self._alive:
-                if p not in self._reverse and p not in self._flagged:
+                if p not in self._reverse and not self._is_flagged_locked(p):
                     self._assigned[email] = p
                     self._reverse[p] = email
                     return p
@@ -490,8 +524,9 @@ class ProxyPool:
             if old:
                 self._cooldown[old] = now + (cooldown if cooldown is not None else self.PROXY_COOL_SEC)
             # Tìm proxy khác: chưa ai dùng + khác proxy cũ + chưa cooling + CHƯA từng bị đánh dấu cháy
+            # (hoặc đã cháy nhưng nguội quá FLAGGED_PROXY_TTL rồi)
             for p in self._alive:
-                if p not in self._reverse and p != old and p not in self._cooldown and p not in self._flagged:
+                if p not in self._reverse and p != old and p not in self._cooldown and not self._is_flagged_locked(p):
                     if old:
                         self._reverse.pop(old, None)
                     self._assigned[email] = p
@@ -499,7 +534,7 @@ class ProxyPool:
                     return p, old
             # Fallback: bỏ qua cooldown nhưng vẫn né proxy cháy
             for p in self._alive:
-                if p not in self._reverse and p != old and p not in self._flagged:
+                if p not in self._reverse and p != old and not self._is_flagged_locked(p):
                     if old:
                         self._reverse.pop(old, None)
                     self._assigned[email] = p
