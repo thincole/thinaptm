@@ -162,7 +162,7 @@ class SeedvisApp(ctk.CTk):
                 "sv_server_url": self._seed_url.get().strip(),
                 "sv_api_key": self._seed_apikey.get().strip(),
                 "sv_client_id": self._seed_client_entry.get().strip(),
-                "seedvis_api_key": self._seed_apikey_input.get().strip(),
+                "seedvis_api_key": self._seed_apikey_input.get("1.0", "end").strip(),
                 "seedvis_model": self._seed_model.get(),
                 "seedvis_duration": self._seed_duration.get(),
                 "seedvis_upscale": self._seed_upscale.get(),
@@ -215,7 +215,7 @@ class SeedvisApp(ctk.CTk):
                                 except Exception:
                                     pass
                         if count > 0:
-                            self._seed_log_msg(f"  dYZz [Auto-Clean] dA? d?n d?p {count} file rAc trong temp_render.")
+                            self._seed_log_msg(f"  🧹 [Auto-Clean] Đã dọn dẹp {count} file rác trong temp_render.")
                 except Exception:
                     pass
                     
@@ -331,11 +331,11 @@ class SeedvisApp(ctk.CTk):
         api_card.pack(fill="x", padx=12, pady=4)
         api_row = ctk.CTkFrame(api_card, fg_color="transparent")
         api_row.pack(fill="x", padx=12, pady=6)
-        ctk.CTkLabel(api_row, text="🔑 Seedvis API Key:", font=("", 12)).pack(side="left")
-        self._seed_apikey_input = ctk.CTkEntry(api_row, width=380, font=("", 11), show="*")
+        ctk.CTkLabel(api_row, text="🔑 Seedvis API Keys (1 key/dòng, tối đa 3):", font=("", 12)).pack(side="left")
+        self._seed_apikey_input = ctk.CTkTextbox(api_row, width=380, height=52, font=("Consolas", 10))
         self._seed_apikey_input.pack(side="left", padx=4)
         default_seed_key = self.settings.get("seedvis_api_key", "")
-        self._seed_apikey_input.insert(0, default_seed_key)
+        self._seed_apikey_input.insert("1.0", default_seed_key)
 
         ctk.CTkLabel(api_row, text="Model:", font=("", 12)).pack(side="left", padx=(12, 0))
         self._seed_model = ctk.CTkOptionMenu(api_row, values=["Veo-3.1"], width=110)
@@ -843,17 +843,20 @@ class SeedvisApp(ctk.CTk):
         if not out_dir:
             messagebox.showwarning("Thiếu", "Hãy chọn thư mục lưu video.")
             return
-        api_key = self._seed_apikey_input.get().strip()
-        if not api_key:
-            messagebox.showerror("Thiếu API Key", "Vui lòng nhập Seedvis API Key.")
+        _raw_keys = self._seed_apikey_input.get("1.0", "end").strip()
+        api_keys = [k.strip() for k in _raw_keys.splitlines() if k.strip()]
+        if not api_keys:
+            messagebox.showerror("Thiếu API Key", "Vui lòng nhập ít nhất 1 Seedvis API Key.")
             return
+        api_key = api_keys[0]
+
 
         self._seed_cached_url = self._seed_url.get().strip()
         if self._seed_cached_url and not (self._seed_cached_url.startswith("http://") or self._seed_cached_url.startswith("https://")):
             self._seed_cached_url = "http://" + self._seed_cached_url
         self._seed_cached_apikey = self._seed_apikey.get().strip()
 
-        self._seed_start_work(api_key)
+        self._seed_start_work(api_keys)
 
     def _run_ghep_anh_12s(self, video_path, image_path, output_path):
         """Ghép ảnh vào video tạo ra video 12s."""
@@ -1545,8 +1548,17 @@ class SeedvisApp(ctk.CTk):
                 if res: return res
         return None
 
-    def _seed_start_work(self, api_key):
+    def _seed_start_work(self, api_keys):
         """Worker chính xử lý tạo video qua Seedvis API (Veo 3.1)."""
+        # Round-robin Seedvis API keys
+        self._sv_key_lock = threading.Lock()
+        self._sv_key_idx = 0
+        def _next_sv_key():
+            with self._sv_key_lock:
+                key = api_keys[self._sv_key_idx % len(api_keys)]
+                self._sv_key_idx += 1
+            return key
+        api_key = api_keys[0]  # default for backward compat
         out_dir = self._seed_outdir.get().strip()
         products = list(self._seed_claimed_products)
         scene_choice = self._seed_scene.get()
@@ -1622,10 +1634,11 @@ class SeedvisApp(ctk.CTk):
                 jobq.put(prod)
 
             def submit_seedvis_job(prompt, b64_img, filename, image_url=None):
+                _cur_key = _next_sv_key()
                 endpoint = "https://seedvis.com/api/v1/developer/generations"
                 idem_key = str(uuid.uuid4())
                 headers = {
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {_cur_key}",
                     "Content-Type": "application/json",
                     "Idempotency-Key": idem_key,
                     "User-Agent": SEEDVIS_UA,
