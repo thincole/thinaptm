@@ -2,4 +2,4 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 title Thin Aptm - Seedvis Veo 3.1
-python seedvis_app.py 2>> crash_log.txt
+start "" pythonw seedvis_app.py
