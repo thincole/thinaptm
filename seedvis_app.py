@@ -91,6 +91,7 @@ class SeedvisApp(ctk.CTk):
 
         self._ui_queue = queue.Queue()
         self._poll_ui_queue()
+        self._start_temp_cleaner()
 
         import multiprocessing
         self._ffmpeg_sem = threading.Semaphore(max(2, (multiprocessing.cpu_count() or 4) // 2))
@@ -184,6 +185,38 @@ class SeedvisApp(ctk.CTk):
                 json.dump(self.settings, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"Lỗi lưu settings: {e}")
+
+
+    def _start_temp_cleaner(self):
+        def _cleaner_loop():
+            import time
+            import shutil
+            while True:
+                interval_mins = int(self.settings.get("seedvis_clean_interval", 60))
+                time.sleep(interval_mins * 60)
+                if getattr(self, '_seed_stop_flag', False):
+                    break
+                
+                try:
+                    temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_render")
+                    if os.path.exists(temp_dir):
+                        count = 0
+                        for file in os.listdir(temp_dir):
+                            # Skip recent files (less than 10 mins old) to avoid deleting active processing files!
+                            filepath = os.path.join(temp_dir, file)
+                            if time.time() - os.path.getmtime(filepath) > 600:
+                                try:
+                                    os.remove(filepath)
+                                    count += 1
+                                except Exception:
+                                    pass
+                        if count > 0:
+                            self._seed_log_msg(f"  dYZz [Auto-Clean] dA? d?n d?p {count} file rAc trong temp_render.")
+                except Exception:
+                    pass
+                    
+        import threading
+        threading.Thread(target=_cleaner_loop, daemon=True).start()
 
     def _on_closing(self):
         self.withdraw()
@@ -868,7 +901,7 @@ class SeedvisApp(ctk.CTk):
             try:
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True, startupinfo=startupinfo)
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True, startupinfo=startupinfo, creationflags=0x08000000)
                 return len(result.stdout.strip()) > 0
             except:
                 return False
@@ -878,7 +911,7 @@ class SeedvisApp(ctk.CTk):
             try:
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True, startupinfo=startupinfo)
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True, startupinfo=startupinfo, creationflags=0x08000000)
                 data = json.loads(result.stdout)
                 stream = data['streams'][0]
                 width = int(stream['width'])
@@ -1066,7 +1099,7 @@ class SeedvisApp(ctk.CTk):
             cmd.extend(["-threads", "2"])
             self._ffmpeg_sem.acquire()
             try:
-                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, startupinfo=startupinfo, timeout=120)
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, startupinfo=startupinfo, timeout=120, creationflags=0x08000000)
                 return True, ""
             except subprocess.TimeoutExpired:
                 return False, "FFmpeg timed out after 120s"
@@ -1173,12 +1206,12 @@ class SeedvisApp(ctk.CTk):
                 if ai_mode == "Gemini":
                     prompts = self._seed_ai_gen_prompts(
                         prod_name, scene_en, n_segments, duration_sec, lang_code,
-                        review_style, mode="gemini", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys
+                        review_style, mode="gemini", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys, product_desc=p.get("description", "")
                     )
                 elif ai_mode == "Groq":
                     prompts = self._seed_ai_gen_prompts(
                         prod_name, scene_en, n_segments, duration_sec, lang_code,
-                        review_style, mode="groq", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys
+                        review_style, mode="groq", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys, product_desc=p.get("description", "")
                     )
 
                 if not prompts and SV:
@@ -1223,7 +1256,7 @@ class SeedvisApp(ctk.CTk):
 
     def _seed_ai_gen_prompts(self, product_name, scene_en, n_segments,
                               duration_sec, lang_code, review_style,
-                              mode="gemini", gemini_keys=None, groq_keys=None):
+                              mode="gemini", gemini_keys=None, groq_keys=None, product_desc=None):
         """Gọi Gemini hoặc Groq để sinh prompt video review sản phẩm chất lượng cao.
         Trả về list[str] prompts hoặc None nếu thất bại."""
         lang_map = {"vi": "Vietnamese", "en": "English", "id": "Indonesian", "my": "Malay", "ph": "Filipino"}
@@ -1735,14 +1768,12 @@ class SeedvisApp(ctk.CTk):
                 else:
                     if ai_mode == "Gemini":
                         prompts = self._seed_ai_gen_prompts(
-                            product_name, scene_en, n_segments_needed,
-                            duration_sec, lang_code, review_style,
+                            product_name, scene_en, n_segments_needed, duration_sec, lang_code, review_style,
                             mode="gemini", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys
                         )
                     elif ai_mode == "Groq":
                         prompts = self._seed_ai_gen_prompts(
-                            product_name, scene_en, n_segments_needed,
-                            duration_sec, lang_code, review_style,
+                            product_name, scene_en, n_segments_needed, duration_sec, lang_code, review_style,
                             mode="groq", gemini_keys=self.gemini_keys, groq_keys=self.groq_keys
                         )
 
