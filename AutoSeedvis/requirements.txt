@@ -1,7 +1,0 @@
-﻿customtkinter
-Pillow
-pystray
-curl_cffi
-pyreqwest_impersonate
-google-genai
-requests
