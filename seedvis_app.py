@@ -205,6 +205,18 @@ class SeedvisApp(ctk.CTk):
                 icon.stop()
                 self._seed_stop_flag = True
                 self._save_settings()
+                # Dọn dẹp temp_render khi tắt phần mềm theo Rule #8
+                try:
+                    import shutil
+                    temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_render")
+                    if os.path.exists(temp_dir):
+                        for file in os.listdir(temp_dir):
+                            try:
+                                os.remove(os.path.join(temp_dir, file))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 self.after(0, self.destroy)
                 
             menu = pystray.Menu(
